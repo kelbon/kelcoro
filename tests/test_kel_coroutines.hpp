@@ -302,17 +302,15 @@ TEST(ThreadSafety) {
   event<named_tag<"Event">>.notify_all(this_thread_executor{}, 0);
 }
 
-logical_thread waiter_any(std::atomic_flag& flag, uint32_t& count) {
+async_task<void> waiter_any(uint32_t& count) {
   co_await jump_on(another_thread);
   for (int32_t i : std::views::iota(0, 100000)) {
     auto variant = co_await when_any<one, two, three, four>(::test::test_selector{});
     assert(variant.index() != 0);  // something happens
     count++;
   }
-  flag.test_and_set(std::memory_order::relaxed);
-  flag.notify_one();
 }
-logical_thread waiter_all(std::atomic_flag& flag, uint32_t& count) {
+async_task<void> waiter_all(uint32_t& count) {
   co_await jump_on(another_thread);
   for (int32_t i : std::views::iota(0, 100000)) {
     auto tuple = co_await when_all<one, two, three, four>(::test::test_selector{});
@@ -320,8 +318,6 @@ logical_thread waiter_all(std::atomic_flag& flag, uint32_t& count) {
     assert(std::get<1>(tuple) == 5);
     count++;
   }
-  flag.test_and_set(std::memory_order::relaxed);
-  flag.notify_one();
 }
 template <typename Event>
 logical_thread notifier(auto& pool) {
@@ -345,10 +341,9 @@ TEST(WhenAny) {
   auto _2 = notifier<two>(pool, 5);
   auto _3 = notifier<three>(pool, std::vector<std::string>(3, "hello world"));
   auto _4 = notifier<four>(pool);
-  std::atomic_flag flag;
   uint32_t count = 0;
-  waiter_any(flag, count);
-  flag.wait(false);
+  auto anyx = waiter_any(count);
+  anyx.wait();
   stop(_1, _2, _3, _4);
   pool.notify_all<one>();
   pool.notify_all<two>(5);
@@ -362,10 +357,9 @@ TEST(WhenAll) {
   auto _2 = notifier<two>(pool, 5);
   auto _3 = notifier<three>(pool, std::vector<std::string>(3, "hello world"));
   auto _4 = notifier<four>(pool);
-  std::atomic_flag flag;
   uint32_t count = 0;
-  waiter_all(flag, count);
-  flag.wait(false);
+  auto allx = waiter_all(count);
+  allx.wait();
   stop(_1, _2, _3, _4);
   pool.notify_all<one>();
   pool.notify_all<two>(5);
