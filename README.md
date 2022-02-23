@@ -1,4 +1,5 @@
 # KelCoro - C++20 coroutine library for C++
+* [`How to build?`](#build)
 
 Module `kel.coro` includes:
 * Coroutine types
@@ -282,3 +283,11 @@ concept co_awaitable = has_member_co_await<T> || has_global_co_await<T> || co_aw
 ## `executor`
 something with .execute([]{}) method
 
+## `build`
+```
+git clone https://github.com/kelbon/kelcoro
+cd kelcoro
+cmake . -B build OR cmake . -DENABLE_TESTS=ON -B build # with tests and main.cpp to try something
+cmake --build build
+```
+_Note cmake now may not support C++ modules(and clang...)_ 
