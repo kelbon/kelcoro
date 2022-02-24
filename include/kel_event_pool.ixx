@@ -23,6 +23,14 @@ struct event_traits {
   using input_type = nullstruct;
 };
 
+template <typename Event>
+requires requires() {
+  typename Event::input_type;
+}
+struct event_traits<Event> {
+  using input_type = Event::input_type;
+};
+
 template <typename T>
 using event_input_t = event_traits<T>::input_type;
 

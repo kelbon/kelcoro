@@ -22,7 +22,9 @@ import kel.traits;
 namespace kel::test {
 
 struct one {};
-struct two {};
+struct two {
+  using input_type = int;
+};
 struct three {};
 struct four {};
 
@@ -32,11 +34,6 @@ namespace kel {
 
 template <>
 struct event_traits<named_tag<"Event">> {
-  using input_type = int;
-};
-
-template <>
-struct event_traits<test::two> {
   using input_type = int;
 };
 
