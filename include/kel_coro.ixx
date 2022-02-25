@@ -824,9 +824,6 @@ struct generator : coroutine<generator_promise<Yield, MemoryResource>> {
     bool operator==(std::default_sentinel_t) const noexcept {
       return owner.done();
     }
-    bool operator!=(std::default_sentinel_t) const noexcept {
-      return !owner.done();
-    }
     value_type& operator*() const noexcept {
       return *owner.promise().current_result;
     }
@@ -859,13 +856,11 @@ struct generator : coroutine<generator_promise<Yield, MemoryResource>> {
     }
     iterator_owner& operator=(iterator_owner&& other) noexcept {
       std::swap(owner, other.owner);
+      return *this;
     }
 
     bool operator==(std::default_sentinel_t) const noexcept {
       return owner.done();
-    }
-    bool operator!=(std::default_sentinel_t) const noexcept {
-      return !owner.done();
     }
     value_type& operator*() const noexcept {
       return *owner.promise().current_result;
@@ -902,6 +897,13 @@ struct generator : coroutine<generator_promise<Yield, MemoryResource>> {
   }
   [[nodiscard]] bool has_next() const noexcept {
     return !this->my_handle.done();
+  }
+
+  // for using generator as borrowed range
+  // (std::ranges do not forward its arguments, so begin&& will not be called
+  // on rvalue generator in Gen() | std::views*something*) (compilation error)
+  [[nodiscard]] auto view() && {
+    return std::ranges::subrange(std::move(*this).begin(), end());
   }
 };
 

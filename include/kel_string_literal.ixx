@@ -100,7 +100,6 @@ constexpr string_literal<Char, N + M> operator+(string_literal<Char, N> left,
   Char result_data[N + M]{};
   std::ranges::copy(left, result_data);
   std::ranges::copy(right, result_data + N);
-  // TODO understand why std::ranges::join do not works
   return {result_data, no_consteval};
 }
 
@@ -109,7 +108,7 @@ constexpr string_literal<Char, N + M> operator+(string_literal<Char, N> left,
 template <string_literal V>
 struct named_tag {
   static constexpr auto value = V;
-  // MSVC BUG do not compiles without typename (in using declaration) C++20
+
   using char_type = typename decltype(V)::char_type;
 
   // comparing

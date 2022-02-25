@@ -78,8 +78,8 @@ TEST(Generator) {
   static_assert(std::ranges::output_range<kel::generator<int>, int> &&
                 std::ranges::input_range<kel::generator<int>>);
   int i = 1;
-  for (auto gen = Foo();
-       auto value : gen | ::std::views::take(100) | std::views::filter([](auto v) { return v % 2; })) {
+  for (auto value :
+       Foo().view() | ::std::views::take(100) | std::views::filter([](auto v) { return v % 2; })) {
     verify(value == i);
     i += 2;
   }
@@ -211,7 +211,7 @@ async_task<size_t> GetResult(auto just_task) {
 }
 TEST(GenMM) {
   int i = 0;
-  for (auto gen = GenMM(); auto& task : gen | std::views::filter([](auto&&) { return true; })) {
+  for (auto& task : GenMM().view() | std::views::filter([](auto&&) { return true; })) {
     verify(GetResult(std::move(task)).get() == i);
     ++i;
   }
