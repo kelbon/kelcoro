@@ -75,7 +75,7 @@ struct test_adder {
 std::string concat(auto... values) {
   std::stringstream result;
   ((result << values), ...);
-  return result.str().c_str();
+  return result.str();
 }
 
 }  // namespace detail
