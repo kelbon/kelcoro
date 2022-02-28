@@ -22,8 +22,6 @@ struct signature;
 template <typename R, typename... Types>
 struct signature<R(Types...)> {
   using result_type = R;
-  // only for invoked in
-  using type = type_list<Types&&...>;
   using parameter_list = type_list<Types...>;
 };
 
@@ -298,9 +296,14 @@ struct NEED_CO_AWAIT invoked_in {
  private:
   using cb_signature = std::remove_cvref_t<typename find_signature<Args...>::type>;
   static constexpr size_t signature_nb = find_signature<Args...>::value;
-  using cb_args_tuple = insert_type_list_t<std::tuple, typename cb_signature::type>;
+  using cb_args_tuple = insert_type_list_t<std::tuple, typename cb_signature::parameter_list>;
   using cb_result_type = typename cb_signature::result_type;
-  using cb_result_storage = std::optional<cb_result_type>;
+  using cb_result_storage = typename decltype([] {
+    if constexpr (std::is_void_v<cb_result_type>)
+      return std::type_identity<nullstruct>{};
+    else
+      return std::type_identity<std::optional<cb_result_type>>{};
+  }())::type;
 
   using result_args_tuple = std::conditional_t<
       std::is_void_v<cb_result_type>, cb_args_tuple,
