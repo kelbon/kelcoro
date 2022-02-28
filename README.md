@@ -25,6 +25,24 @@ Module `kel.coro` includes:
 
 # Class Details
 ## `generator<T>`
+interface:
+```C++
+// not const! Calculates first value when called!
+  iterator begin() &;
+// generator can be borrowed range, if you explicitly ask
+  iterator_owner begin() &&;
+  static std::default_sentinel_t end();
+
+  // maybe you need it for something
+  value_type& next();
+  bool has_next() const;
+
+  // for using generator as borrowed range
+  // (std::ranges do not forward its arguments, so begin&& will not be called
+  // on rvalue generator in Gen() | std::views*something*) (compilation error)
+  // but Get().view() | ... works perfectly
+  auto view() &&;
+```
 * Calculates first value when.begin() / .next() called
 * It is an input AND output range(co_yielded lvalues can be safely changed from consumer side), which means every value from generator will appear only once
 
@@ -65,9 +83,10 @@ Lifetime: If not .detach(), then coroutine frame dies with coroutine object, els
 example :
 ```C++
 kel::logical_thread Bar() {
-// imagine that already C++46 and networking in the standard
+// imagine that already C++47 and networking in the standard
   auto socket = co_await async_connect(endpoint);
-  while (true) {
+  auto token = co_await this_coro::stop_token; // cancellable coroutine can get stop token associated with it
+  while (!token.stop_requested()) {
 	auto write_info = co_await socket.async_write("Hello world");
 	auto read_result = co_await socket.async_read();
 	std::cout << read_result;
