@@ -17,7 +17,7 @@ jobs:
           sudo ln -sf /usr/local/bin/ld /usr/bin/lld
       - name: Configure CMake
         run: |
-          cmake . -DKELCORO_ENABLE_TESTS=ON -B build -D CMAKE_CXX_FLAGS="-fcoroutines" \
+          cmake . -DKELCORO_ENABLE_TESTS=ON -B build -D CMAKE_CXX_FLAGS="-fcoroutines -fmodules-ts" \
             -G "Ninja"                  \
             -DCMAKE_BUILD_TYPE=Debug    \
             -DCMAKE_C_COMPILER=gcc-10   \
