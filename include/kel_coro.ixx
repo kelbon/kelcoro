@@ -60,11 +60,6 @@ struct find_signature {
   static constexpr size_t value = result_t::value;  // signature's number in type list
 };
 
-template <typename... Types>
-consteval auto add_universal_ref_for_all(kel::type_list<Types...>) noexcept {
-  return kel::type_list<Types&&...>{};
-}
-
 struct NEED_CO_AWAIT want_handle_t {};
 struct NEED_CO_AWAIT want_promise_t {};
 struct NEED_CO_AWAIT want_stop_token_t {};
@@ -309,10 +304,10 @@ struct NEED_CO_AWAIT invoked_in {
       std::is_void_v<cb_result_type>, cb_args_tuple,
       insert_type_list_t<std::tuple, merge_type_lists_t<cb_args_tuple, type_list<cb_result_storage&>>>>;
 
-  F f;
   std::tuple<Args&&...> input_args;
   // input arguments can be no default constructible(for example references), but i need memory for them now
   std::optional<result_args_tuple> output_args;
+  [[no_unique_address]] F f;
 
   struct awaiter_t {
     invoked_in& my_call;
