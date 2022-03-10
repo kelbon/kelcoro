@@ -425,6 +425,39 @@ TEST(Channel) {
   auto tester = ChannelTester();
   tester.wait();
 }
+
+template <typename Event, int N>
+job notifier_n() {
+  co_await jump_on(another_thread);
+  for (int i = 0; i < N; ++i)
+    every_event<Event>.notify_all(new_thread_executor{});
+}
+template <typename Event, int N>
+logical_thread waiter_n() {
+  co_await jump_on(another_thread);
+  int j = 0;
+  for (int i = 0; i < N; ++i) {
+    co_await every_event<Event>;
+    j++;
+  }
+}
+
+struct ImportantEvent {};
+
+TEST(EveryEvent) {
+  notifier_n<ImportantEvent, 333>();
+  notifier_n<ImportantEvent, 333>();
+  notifier_n<ImportantEvent, 333>();
+  notifier_n<ImportantEvent, 1>();
+  auto _1 = waiter_n<ImportantEvent, 199>();
+  auto _2 = waiter_n<ImportantEvent, 201>();
+  auto _3 = waiter_n<ImportantEvent, 203>();
+  auto _4 = waiter_n<ImportantEvent, 197>();
+  auto _5 = waiter_n<ImportantEvent, 200>();
+  stop(_1, _2, _3, _4, _5);
+  // waiters joined so test will successfully ended. Fail == waiting forever
+}
+
 }  // namespace kel::test
 
 #endif  // !TEST_KEL_COROUTINES_HPP
