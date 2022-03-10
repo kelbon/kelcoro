@@ -285,10 +285,7 @@ struct every_event_t {
         if (!handle.done())  // throws before handle.resume()
           subscribers.push(top);
         top = next;
-        while (top != nullptr) {
-          subscribers.push(top);
-          top = top->next;
-        }
+        subscribers.push_stack(top);
         throw;
       }
       top = next;
