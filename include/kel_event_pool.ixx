@@ -236,14 +236,10 @@ struct every_event_t {
     bool await_ready() const noexcept {
       using enum std::memory_order;
       auto missed_count = my_event->missed_notifies.load(relaxed);
-      if (missed_count == 0)
-        return false;
-      while (!my_event->missed_notifies.compare_exchange_weak(missed_count, missed_count - 1, acq_rel,
-                                                              relaxed)) {
-        if (missed_count == 0)
-          return false;
+      while (missed_count != 0 && !my_event->missed_notifies.compare_exchange_weak(
+                                      missed_count, missed_count - 1, acq_rel, relaxed)) {
       }
-      return true;
+      return missed_count != 0;
     }
     void await_suspend(std::coroutine_handle<void> handle_) noexcept {
       handle = handle_;
