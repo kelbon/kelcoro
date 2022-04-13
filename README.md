@@ -16,6 +16,7 @@ Module `kel.coro` includes:
   * [`yield`](#yield)
 * Event system
   * [`event_t`](#event_t)
+  * [`every_event_t`](#every_event_t)
   * [`when_all`](#when_all)
   * [`when_any`](#when_any)
 * Concepts
@@ -223,8 +224,10 @@ interface:
 ```C++
 // Executor - who will execute tasks. input type by default *nothing*,
 // but is can be customized with specialization event_traits<your_type>
+// or by using input_type = your_type;
+// returns false if no one has been woken up
   template <executor Executor>
-  void notify_all(Executor&& exe, input_type input);
+  bool notify_all(Executor&& exe, input_type input);
 
   // subscribe for not coroutines(allocator for task allocating)
   template <typename Alloc = std::allocator<std::byte>, typename F>
@@ -233,6 +236,26 @@ interface:
   // subscribe, but only for coroutines
   auto operator co_await();
 ```
+## `every_event_t`
+Interface: same as event_t, but have guarantee, that all calls .notify_all() will not be lost. This means:
+```C++
+struct MyTag {};
+job Foo() {
+// this code is NOT a race condition regardless of the order of .notify_all() calls
+co_await every_event<MyTag>;
+// if notify_all() was here on other thread AND we use event<MyTag> we can lose event,
+// but with every_event<MyTag> we cant lose it
+co_await every_event<MyTag>;
+}
+```
+
+Thats why every_event.notify_all() returns void(notifies always will be handled)
+
+
+_Note: if you use notify on event\<X\>, then you must use co_await on event\<X\> too, and if
+you use notify on every_event\<X\>, then you must use co_await on every_event\<X\>_
+_Note: every_event\<X\> do not support input types(ill-formed (compilation error))_
+
 ## `when_all`
 ```C++
 template <typename... Events>
@@ -250,8 +273,12 @@ example:
 ```C++
 // just an event tags
 struct one {};
-struct two {};
-struct three {};
+struct two {
+  using input_type = int;
+};
+struct three {
+  using input_type = std::vector<std::string>;
+};
 
 async_task<void> waiter_all() {
   co_await jump_on(another_thread);

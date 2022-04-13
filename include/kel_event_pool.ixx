@@ -15,6 +15,52 @@ export import : main;
 export namespace kel {
 #define NEED_CO_AWAIT [[nodiscard("forget co_await?")]]
 
+// T must be a type with .next field of type T* (self-controlling node)
+template <typename T>
+struct nonowner_lockfree_stack {
+ private:
+  using enum std::memory_order;
+
+  std::atomic<T*> top{nullptr};
+
+ public:
+  using value_type = T;
+  // may be may be using multithread_category = lock_free_tag;
+
+  void push(T* value_ptr) noexcept {
+    // any other push works with another value_ptr
+    assert(value_ptr != nullptr);
+    value_ptr->next = top.load(relaxed);
+
+    // after this loop this->top == value_ptr, value_ptr->next == previous value of this->top
+    while (!top.compare_exchange_weak(value_ptr->next, value_ptr, acq_rel, acquire)) {
+    }
+  }
+
+  // returns top of the stack
+  [[nodiscard]] T* pop_all() noexcept {
+    return top.exchange(nullptr, acq_rel);
+  }
+
+  // other_top must be a top of other stack ( for example from pop_all() )
+  void push_stack(T* other_top) noexcept {
+    if (other_top == nullptr)
+      return;
+    auto* last = other_top;
+    while (last->next != nullptr)
+      last = last->next;
+    last->next = top.load(relaxed);
+    while (!top.compare_exchange_weak(last->next, other_top, acq_rel, acquire)) {
+    }
+  }
+
+  // not need to release any resources, its not mine!
+  // if any, then coroutine will be not resumed, its memory leak
+  ~nonowner_lockfree_stack() {
+    assert(top.load(relaxed) == nullptr);
+  }
+};
+
 // customization point object, specialize it if you want to transfer arguments into event
 
 template <typename>
@@ -51,9 +97,6 @@ struct event_t {
   static_assert(std::is_nothrow_move_constructible_v<input_type>);
 
  private:
-  template <executor, typename>
-  friend struct event_pool;
-
   // subscribes coroutine on event,
   // make it part of event-based stack of awaiters
   // accepts and returns required arguments for event
@@ -82,39 +125,7 @@ struct event_t {
   // awaiters always alive, unique, one-thread interact with manager
   // (but manager interact with any count of threads)
 
-  struct stack_manager {
-   private:
-    using enum std::memory_order;
-
-    std::atomic<awaiter_t*> top{nullptr};
-
-   public:
-    // may be may be using multithread_category = lock_free_tag;
-
-    // надо возвращать указатель на ноду...
-    void push(awaiter_t* value_ptr) noexcept {
-      // any other push works with another value_ptr
-      assert(value_ptr != nullptr);
-      value_ptr->next = top.load(relaxed);
-
-      // after this loop this->top == value_ptr, value_ptr->next == previous value of this->top
-      while (!top.compare_exchange_weak(value_ptr->next, value_ptr, acq_rel, acquire)) {
-      }
-    }
-
-    // returns top of the stack
-    [[nodiscard]] awaiter_t* pop_all() {
-      return top.exchange(nullptr, acq_rel);
-    }
-
-    // not need to release any resources, its not mine!
-    // if any, then coroutine will be not resumed, its memory leak
-    ~stack_manager() {
-      assert(top.load(relaxed) == nullptr);
-    }
-  };
-
-  stack_manager subscribers{};
+  nonowner_lockfree_stack<awaiter_t> subscribers;
 
  public:
   event_t() noexcept = default;
@@ -123,13 +134,16 @@ struct event_t {
 
   // event source functional
 
+  // returns false if no one has been woken up
   // clang-format off
   template<executor Executor>
   requires(is_nullstruct_v<input_type>)
-  void notify_all(Executor&& exe) {
+  bool notify_all(Executor&& exe) {
     // clang-format on
     // must be carefull - awaiter ptrs are or their coroutine(which we want to execute / destroy)
     awaiter_t* top = subscribers.pop_all();
+    if (top == nullptr)
+      return false;
     awaiter_t* next;
     while (top != nullptr) {
       next = top->next;
@@ -140,23 +154,24 @@ struct event_t {
         if (!handle.done())  // throws before handle.resume()
           subscribers.push(top);
         top = next;
-        while (top != nullptr) {
-          subscribers.push(top);
-          top = top->next;
-        }
+        subscribers.push_stack(top);
         throw;
       }
       top = next;
     }
+    return true;
   }
 
   // copies input for all recievers(all coros returns to waiting if copy constructor throws)
+  // returns false if no one has been woken up
   // clang-format off
   template <executor Executor>
   requires(std::is_copy_constructible_v<input_type> && !is_nullstruct_v<input_type>)
-  void notify_all(Executor&& exe, input_type input) {
+  bool notify_all(Executor&& exe, input_type input) {
     // clang-format on
     awaiter_t* top = subscribers.pop_all();
+    if (top == nullptr)
+      return false;
     awaiter_t* next;
     while (top != nullptr) {
       next = top->next;  // copy from awaiter, which on frame and will die
@@ -164,10 +179,7 @@ struct event_t {
         top->input = input;  // not in copy, input must be on coroutine before await_resume
         std::atomic_thread_fence(std::memory_order::release);
       } catch (...) {
-        while (top != nullptr) {
-          subscribers.push(top);
-          top = top->next;
-        }
+        subscribers.push_stack(top);
         throw;
       }
       std::coroutine_handle<void> handle = top->handle;
@@ -177,14 +189,12 @@ struct event_t {
         if (!handle.done())  // throw was not while resuming
           subscribers.push(top);
         top = next;
-        while (top != nullptr) {
-          subscribers.push(top);
-          top = top->next;
-        }
+        subscribers.push_stack(top);
         throw;
       }
       top = next;
     }
+    return true;
   }
 
   // subscribe for not coroutines
@@ -209,10 +219,102 @@ struct event_t {
   }
 };
 
+template <typename NamedTag>
+struct every_event_t {
+ private:
+  static_assert(is_nullstruct_v<event_input_t<NamedTag>>,
+                "It is impossible to do without thread-safe queue for inputs, use event<X>"
+                "or create thread-safe queue for inputs by yourself");
+
+  // subscribes coroutine on event,
+  // make it part of event-based stack of awaiters
+  struct awaiter_t {
+    every_event_t* my_event;
+    std::coroutine_handle<void> handle;
+    awaiter_t* next = nullptr;  // im a part of awaiters stack!
+
+    bool await_ready() const noexcept {
+      using enum std::memory_order;
+      auto missed_count = my_event->missed_notifies.load(relaxed);
+      while (missed_count != 0 && !my_event->missed_notifies.compare_exchange_weak(
+                                      missed_count, missed_count - 1, acq_rel, relaxed)) {
+      }
+      return missed_count != 0;
+    }
+    void await_suspend(std::coroutine_handle<void> handle_) noexcept {
+      handle = handle_;
+      my_event->subscribers.push(this);
+    }
+    void await_resume() const noexcept {
+    }
+  };
+
+  // non-owning lockfree manager for distributed awaiters system.
+  // awaiters always alive, unique, one-thread interact with manager
+  // (but manager interact with any count of threads)
+
+  nonowner_lockfree_stack<awaiter_t> subscribers;
+  std::atomic<size_t> missed_notifies = 0;
+
+ public:
+  every_event_t() noexcept = default;
+  every_event_t(every_event_t&&) = delete;
+  void operator=(every_event_t&&) = delete;
+
+  // event source functional
+
+  template <executor Executor>
+  void notify_all(Executor&& exe) {
+    // must be carefull - awaiter ptrs are or their coroutine(which we want to execute / destroy)
+    awaiter_t* top = subscribers.pop_all();
+    if (top == nullptr) {
+      missed_notifies.fetch_add(1, std::memory_order::acq_rel);
+      return;
+    }
+    awaiter_t* next;
+    while (top != nullptr) {
+      next = top->next;
+      std::coroutine_handle<void> handle = top->handle;
+      try {
+        std::forward<Executor>(exe).execute(handle);
+      } catch (...) {
+        if (!handle.done())  // throws before handle.resume()
+          subscribers.push(top);
+        top = next;
+        subscribers.push_stack(top);
+        throw;
+      }
+      top = next;
+    }
+  }
+
+  // subscribe for not coroutines
+
+  template <typename Alloc = std::allocator<std::byte>, typename F>
+  void set_callback(F f, Alloc alloc = Alloc{}) {
+    [](every_event_t& event_, F f_, Alloc) -> job_mm<Alloc> {
+      co_await event_;
+      f_();
+    }(*this, std::move(f), std::move(alloc));
+  }
+
+  // subscribe, but only for coroutines
+
+  [[nodiscard]] auto operator co_await() noexcept {
+    return awaiter_t{.my_event = this};
+  }
+};
+
 // default interaction point between recipients and sources of events
 
 template <typename Name>
 inline constinit event_t<Name> event{};
+
+// same as event_t, but guarantees that each notify_all will be counted, even if there are 0 coroutines was
+// waiting for it This means you can immediately returns after co_await every_event<X> without
+// subscribe(because was notify_all already before it)
+template <typename Name>
+inline constinit every_event_t<Name> every_event{};
 
 struct default_selector {
   template <typename Event>
@@ -339,7 +441,7 @@ NEED_CO_AWAIT constexpr auto when_any(Selector selector = {}) {
 }
 
 // Executor may be a lvalue reference too
-// Selector used to select event by selector(std::type_identity<Event>{})->event_t&
+// Selector used to select event by selector(std::type_identity<Event>{})->event_t& / every_event_t&
 // it can be used to event dispatching, logging, categorization ( requires ) etc
 // PRECONDITIONS : associated event must live longer then event pool
 template <executor Executor, typename Selector = default_selector>
