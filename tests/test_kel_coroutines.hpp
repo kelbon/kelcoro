@@ -224,14 +224,14 @@ TEST(JobMM) {
     co_await jump_on(another_thread);
     verify(th_id != std::this_thread::get_id());
     value.fetch_add(1, std::memory_order::release);
-    if (value.load(std::memory_order::relaxed) == 10)
+    if (value.load(std::memory_order::acquire) == 10)
       value.notify_one();
   };
   std::atomic<int32_t> flag = 0;
   for (auto i : std::views::iota(0, 10))
     job_creator(flag, std::pmr::new_delete_resource());
   while (flag.load(std::memory_order::acquire) != 10)
-    flag.wait(flag.load(std::memory_order::relaxed));
+    flag.wait(flag.load(std::memory_order::acquire));
   verify(flag == 10);
 }
 
@@ -265,7 +265,7 @@ job sub(std::atomic<int>& count) {
     int i = co_await event<named_tag<"Event">>;
     if (i == 0)
       co_return;
-    if (count.fetch_add(i, std::memory_order::relaxed) == 1999999)
+    if (count.fetch_add(i, std::memory_order::acq_rel) == 1999999)
       count.notify_one();
   }
 }

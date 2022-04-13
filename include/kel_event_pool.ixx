@@ -235,9 +235,9 @@ struct every_event_t {
 
     bool await_ready() const noexcept {
       using enum std::memory_order;
-      auto missed_count = my_event->missed_notifies.load(relaxed);
+      auto missed_count = my_event->missed_notifies.load(acquire);
       while (missed_count != 0 && !my_event->missed_notifies.compare_exchange_weak(
-                                      missed_count, missed_count - 1, acq_rel, relaxed)) {
+                                      missed_count, missed_count - 1, acq_rel, acquire)) {
       }
       return missed_count != 0;
     }
