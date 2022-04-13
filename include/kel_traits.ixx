@@ -14,9 +14,25 @@ struct type_list;
 template <typename T, T... Values>
 struct value_list;
 
+// for number_of_first_v npos equals to "no such type in pack"
+inline constexpr size_t npos = size_t(-1);
+
 }  // namespace kel
 
 namespace noexport {
+
+template <size_t I, typename... Args>
+struct number_of_impl { // selected only for empty pack Args...
+  static constexpr size_t value = kel::npos;  // no such element in pack
+};
+template <size_t I, typename T, typename... Args>
+struct number_of_impl<I, T, T, Args...> {
+  static constexpr size_t value = I;
+};
+template <size_t I, typename T, typename First, typename... Args>
+struct number_of_impl<I, T, First, Args...> {
+  static constexpr size_t value = number_of_impl<I + 1, T, Args...>::value;
+};
 
 // type_of_element
 template <int64_t, int64_t, typename...>
@@ -248,6 +264,11 @@ struct type_list {
   template <int64_t index>
   using get = typename type_of_element<index, Types...>::type;
 };
+
+// TEMPLATE variable number_of_first_v
+
+template <typename T, typename... Args>
+inline constexpr size_t number_of_first_v = number_of_impl<0, T, Args...>::value;
 
 // TRAIT extract_type_list
 

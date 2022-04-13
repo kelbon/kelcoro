@@ -79,13 +79,13 @@ struct two_way_bound {
   void operator=(two_way_bound&&) = delete;
 
   bool try_inform() noexcept {
-    bool informed = !flag.test_and_set(std::memory_order::relaxed);
+    bool informed = !flag.test_and_set(std::memory_order::acq_rel);
     if (informed)
       flag.notify_one();
     return informed;
   }
   void wait() noexcept {
-    flag.wait(false, std::memory_order::relaxed);
+    flag.wait(false, std::memory_order::acquire);
   }
 };
 

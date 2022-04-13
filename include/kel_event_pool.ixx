@@ -246,14 +246,14 @@ NEED_CO_AWAIT constexpr auto when_all(Selector selector = {}) {
                                      std::type_identity<E>, std::integral_constant<size_t, EventNumber>) {
         if constexpr (is_nullstruct_v<event_input_t<E>>) {
           return [count = std::atomic_ref(this->count), handle] {
-            if (count.fetch_add(1, std::memory_order::relaxed) == sizeof...(EventTags) - 1)
+            if (count.fetch_add(1, std::memory_order::acq_rel) == sizeof...(EventTags) - 1)
               handle.resume();
           };
         } else {
           return [this, handle](event_input_t<E> input_) {
             std::get<EventNumber>(this->input) = std::move(input_);
             auto count_ = std::atomic_ref(this->count);
-            if (count_.fetch_add(1, std::memory_order::relaxed) == sizeof...(EventTags) - 1)
+            if (count_.fetch_add(1, std::memory_order::acq_rel) == sizeof...(EventTags) - 1)
               handle.resume();
           };
         }
@@ -304,7 +304,7 @@ NEED_CO_AWAIT constexpr auto when_any(Selector selector = {}) {
                                      std::type_identity<E>, std::integral_constant<size_t, EventNumber>) {
         if constexpr (is_nullstruct_v<event_input_t<E>>) {
           return [this, count_ptr, handle]() {
-            auto value = count_ptr->fetch_add(1, std::memory_order::relaxed);
+            auto value = count_ptr->fetch_add(1, std::memory_order::acq_rel);
             if (value == 0) {  // + 1 because of monostate in variant
               this->input.emplace<EventNumber + 1>(nullstruct{});
               handle.resume();
@@ -312,7 +312,7 @@ NEED_CO_AWAIT constexpr auto when_any(Selector selector = {}) {
           };
         } else {
           return [this, count_ptr, handle](event_input_t<E> event_input) {
-            auto value = count_ptr->fetch_add(1, std::memory_order::relaxed);
+            auto value = count_ptr->fetch_add(1, std::memory_order::acq_rel);
             if (value == 0) {  // + 1 because of monostate in variant
               this->input.emplace<EventNumber + 1>(std::move(event_input));
               // move ctor for input type always noexcept(static assert in event_t)
