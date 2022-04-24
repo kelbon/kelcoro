@@ -1052,10 +1052,10 @@ struct task : coroutine<task_promise<Result, MemoryResource>> {
         assert(task_handle != nullptr && !task_handle.done());
         return false;
       }
-      void await_suspend(std::coroutine_handle<void> handle) const noexcept {
+      std::coroutine_handle<void> await_suspend(std::coroutine_handle<void> handle) const noexcept {
         task_handle.promise().who_waits = handle;
-        // go to first resume(may be to the end). Resumes who_waits in after final suspend
-        task_handle.resume();
+        // symmetric transfer control to task
+        return task_handle;
       }
       [[nodiscard]] result_type await_resume() {
         if constexpr (!std::is_void_v<result_type>)

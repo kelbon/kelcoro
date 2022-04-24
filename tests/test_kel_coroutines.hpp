@@ -458,6 +458,40 @@ TEST(EveryEvent) {
   // waiters joined so test will successfully ended. Fail == waiting forever
 }
 
+// QT like signal - slot system without MOC and mutexes
+/* User input and notifying(emit in QT)
+using signal = kel::event_t<int>;
+struct button {
+  signal clicked;
+  signal update;
+};
+
+void Foo() {
+  // create a "QObject"
+  button b;
+  // "connect"
+  auto con0 = b.clicked.set_handler([] { std::cout << "Button clicked!\n"; });
+  auto con1 = b.update.set_handler([] { std::cout << "Button updated!\n"; });
+  int i = 0;
+  while (std::cin >> i) {
+    switch (i) {
+      case 0:
+        b.clicked.notify_all(kel::new_thread_executor{});
+        break;
+      case 1:
+        b.update.notify_all(kel::new_thread_executor{});
+        break;
+      default:
+        con0.request_stop();
+        con1.request_stop();
+        b.clicked.notify_all(kel::this_thread_executor{});
+        b.update.notify_all(kel::this_thread_executor{});
+        return;
+    }
+  }
+}
+*/
+
 }  // namespace kel::test
 
 #endif  // !TEST_KEL_COROUTINES_HPP

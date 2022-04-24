@@ -200,18 +200,36 @@ struct event_t {
   // subscribe for not coroutines
 
   template <typename Alloc = std::allocator<std::byte>, typename F>
-  void set_callback(F f, Alloc alloc = Alloc{}) {
-    [](event_t& event_, F f_, Alloc) -> job_mm<Alloc> {
+  void set_callback(F&& f, Alloc alloc = Alloc{}) {
+    [](event_t& event_, std::remove_reference_t<F> f_, Alloc) -> job_mm<Alloc> {
       if constexpr (is_nullstruct_v<input_type>) {
         co_await event_;
         f_();
       } else {
         auto&& input = co_await event_;
         f_(std::forward<decltype(input)>(input));
-      }
+      } // INVOKED HERE
     }(*this, std::move(f), std::move(alloc));
   }
 
+  // not guarantees that every event will be handled!
+  template<typename Alloc = std::allocator<std::byte>, typename F>
+  [[nodiscard]] std::stop_source set_handler(F&& f, Alloc alloc = Alloc{}) {
+    auto coro = [](event_t& event_, std::remove_reference_t<F> f_, Alloc) -> logical_thread_mm<Alloc> {
+      while (true) {
+        if constexpr (is_nullstruct_v<input_type>) {
+          co_await event_;
+          co_await quit_if_requested;
+          f_();
+        } else {
+          auto&& input = co_await event_;
+          co_await quit_if_requested;
+          f_(std::forward<decltype(input)>(input));
+        }
+      }  // INVOKED HERE
+    }(*this, std::forward<F>(f), std::move(alloc));
+    return coro.detach();
+  }
   // subscribe, but only for coroutines
 
   [[nodiscard]] auto operator co_await() noexcept {
