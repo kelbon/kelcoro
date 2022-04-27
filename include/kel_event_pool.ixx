@@ -38,11 +38,19 @@ struct nonowner_lockfree_stack {
   }
 
   // returns top of the stack
-  [[nodiscard]] T* pop_all() noexcept {
+  [[nodiscard]] T* try_pop_all() noexcept {
     return top.exchange(nullptr, acq_rel);
   }
-
-  // other_top must be a top of other stack ( for example from pop_all() )
+  // can block thread until getting
+  [[nodiscard]] T* pop_all() noexcept {
+    T* result = try_pop_all();
+    while (result == nullptr) {
+      top.wait(nullptr);
+      result = try_pop_all();
+    }
+    return result;
+  }
+  // other_top must be a top of other stack ( for example from try_pop_all() )
   void push_stack(T* other_top) noexcept {
     if (other_top == nullptr)
       return;
@@ -141,7 +149,7 @@ struct event_t {
   bool notify_all(Executor&& exe) {
     // clang-format on
     // must be carefull - awaiter ptrs are or their coroutine(which we want to execute / destroy)
-    awaiter_t* top = subscribers.pop_all();
+    awaiter_t* top = subscribers.try_pop_all();
     if (top == nullptr)
       return false;
     awaiter_t* next;
@@ -169,7 +177,7 @@ struct event_t {
   requires(std::is_copy_constructible_v<input_type> && !is_nullstruct_v<input_type>)
   bool notify_all(Executor&& exe, input_type input) {
     // clang-format on
-    awaiter_t* top = subscribers.pop_all();
+    awaiter_t* top = subscribers.try_pop_all();
     if (top == nullptr)
       return false;
     awaiter_t* next;
@@ -284,7 +292,7 @@ struct every_event_t {
   template <executor Executor>
   void notify_all(Executor&& exe) {
     // must be carefull - awaiter ptrs are or their coroutine(which we want to execute / destroy)
-    awaiter_t* top = subscribers.pop_all();
+    awaiter_t* top = subscribers.try_pop_all();
     if (top == nullptr) {
       missed_notifies.fetch_add(1, std::memory_order::acq_rel);
       return;

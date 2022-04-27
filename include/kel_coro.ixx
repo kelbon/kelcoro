@@ -948,6 +948,10 @@ struct channel_promise
 
   auto yield_value(yield_type& lvalue) noexcept {
     current_result = std::addressof(lvalue);
+    // Interesting fact - i dont really know is it needed? I already returns to
+    // current owner because i just need to execute code and its my caller...
+    // so return std::suspend_always{} here seems to be same...
+    // Same logic works also for task<T>...
     return transfer_control_to{current_owner};
   }
 
