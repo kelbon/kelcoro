@@ -262,9 +262,8 @@ struct NEED_CO_AWAIT jump_on {
   constexpr bool await_ready() const noexcept {
     return false;
   }
-  template <typename P>
-  constexpr void await_suspend(std::coroutine_handle<P> handle) const {
-    my_exe.execute([handle] { handle.resume(); });
+  constexpr void await_suspend(std::coroutine_handle<void> handle) const {
+    my_exe.execute(handle);
   }
   constexpr void await_resume() const noexcept {
   }
