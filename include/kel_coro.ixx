@@ -308,10 +308,10 @@ struct NEED_CO_AWAIT invoked_in {
       std::is_void_v<cb_result_type>, cb_args_tuple,
       insert_type_list_t<std::tuple, merge_type_lists_t<cb_args_tuple, type_list<cb_result_storage&>>>>;
 
-  F f;
-  std::tuple<Args&&...> input_args;
   // input arguments can be no default constructible(for example references), but i need memory for them now
   std::optional<result_args_tuple> output_args;
+  [[no_unique_address]] std::tuple<Args&&...> input_args;
+  [[no_unique_address]] F f;
 
   struct awaiter_t {
     invoked_in& my_call;
