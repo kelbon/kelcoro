@@ -310,7 +310,7 @@ struct NEED_CO_AWAIT invoked_in {
 
   // input arguments can be no default constructible(for example references), but i need memory for them now
   std::optional<result_args_tuple> output_args;
-  [[no_unique_address]] std::tuple<Args&&...> input_args;
+  [[no_unique_address]] std::tuple<Args&&...> input_args; // TODO - remove signature& from this tuple
   [[no_unique_address]] F f;
 
   struct awaiter_t {
@@ -559,7 +559,10 @@ struct cancellable_promise : base_promise<std::suspend_never, std::suspend_never
   template<typename,typename,typename,typename>
   friend struct base_promise;
   // clang-format on
+ protected:
   std::stop_token my_stop_token;
+
+ private:
   two_way_bound done;
 
  public:
@@ -616,7 +619,7 @@ struct cancellable_coroutine {
   // ctor/owning
 
   cancellable_coroutine() noexcept = default;
-  cancellable_coroutine(handle_type handle) noexcept : my_handle(handle), my_stop_source() {
+  cancellable_coroutine(handle_type handle) : my_handle(handle), my_stop_source() {
     handle.promise().my_stop_token = my_stop_source.get_token();  // share state with coroutine
   }
 

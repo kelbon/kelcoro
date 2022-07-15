@@ -1,25 +1,33 @@
 cmake_minimum_required(VERSION 3.21)
-project(kelcoro)
+project(kelcoro LANGUAGES CXX)
 
-option(ENABLE_TESTS "Enable tests or not" OFF)
+include(CTest)
+
+file(GLOB headers "${CMAKE_CURRENT_SOURCE_DIR}/headers/*.hpp" CMAKE_CONFIGURE_DEPENDS)
+add_library(kelcorolib INTERFACE ${headers})
+
+target_include_directories(kelcorolib INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/headers)
 
 file(GLOB modules "${CMAKE_CURRENT_SOURCE_DIR}/include/*.ixx" CMAKE_CONFIGURE_DEPENDS)
 file(GLOB utility "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp" CMAKE_CONFIGURE_DEPENDS)
-if(ENABLE_TESTS)
-    file(GLOB tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.hpp"
+if(BUILD_TESTING)
+    file(GLOB tests_ "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.hpp"
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/main.cpp CMAKE_CONFIGURE_DEPENDS)
-endif() # else ${tests} is empty
+endif() # else ${tests_} is empty
 
-add_executable(kelcoro ${tests} ${modules} ${utility})
+add_executable(kelcoro ${tests_} ${modules} ${utility})
 target_include_directories(kelcoro PUBLIC ../include)
 
-if (MSVC)
-    target_compile_options(kelcoro PUBLIC /std:c++latest)
-else()
-    message("\nNow (17.11.2021) its works only for msvc with /std:c++latest (NOT C++20 flag), Waiting for C++20 support from other compilers\n")
-endif()
+set_target_properties(kelcorolib kelcoro PROPERTIES
+LINKER_LANGUAGE CXX
+CMAKE_CXX_STANDARD_REQUIRED ON
+)
+target_compile_features(kelcoro PUBLIC cxx_std_23)
+target_compile_features(kelcorolib INTERFACE cxx_std_23)
+
 source_group(Modules FILES ${modules})
-if (ENABLE_TESTS)
-    source_group(Tests FILES ${tests})
+if (BUILD_TESTING)
+    source_group(Tests FILES ${tests_})
+    add_subdirectory(tests)
 endif()
 source_group(Utility FILES ${utility})
