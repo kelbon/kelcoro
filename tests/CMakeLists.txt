@@ -6,7 +6,7 @@ set_target_properties(kelcorotest PROPERTIES
 	CMAKE_CXX_EXTENSIONS OFF
 	LINKER_LANGUAGE CXX
 	CMAKE_CXX_STANDARD_REQUIRED ON
-	CMAKE_CXX_STANDARD 20
+	CXX_STANDARD 20
 )
 
 add_test(NAME test_kelcorotest COMMAND kelcorotest)

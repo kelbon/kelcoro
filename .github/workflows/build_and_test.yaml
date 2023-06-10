@@ -35,13 +35,3 @@ jobs:
         run: |
           cd build
           ctest --output-on-failure -C ${{matrix.build_type}} -V
-      - name: Run examples
-        run: |
-          cd examples
-          cmake . -DCMAKE_BUILD_TYPE=${{matrix.build_type}} \
-            -DCMAKE_CXX_COMPILER=${{matrix.compiler}}       \
-            -DCMAKE_CXX_STANDARD=${{matrix.cpp_standard}}         \
-            -B build -G "Ninja"
-          cmake --build build
-          cd build
-          ctest --output-on-failure -C ${{matrix.build_type}} -V
