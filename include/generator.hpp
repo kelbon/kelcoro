@@ -30,6 +30,13 @@ struct generator_promise : memory_block<Alloc> {
   static constexpr void return_void() noexcept {
   }
 
+  auto await_transform(get_handle_t) const noexcept {
+    return return_handle_t<generator_promise>{};
+  }
+  template <typename T>
+  decltype(auto) await_transform(T&& v) const noexcept {
+    return build_awaiter(std::forward<T>(v));
+  }
   // yield things
  private:
   struct save_value_before_resume_t {

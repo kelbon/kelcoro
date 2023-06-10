@@ -10,7 +10,7 @@ enum class state : uint8_t { not_ready, almost_ready, ready, consumer_dead };
 
 template <typename Result, typename Alloc>
 struct async_task_promise : memory_block<Alloc>, return_block<Result> {
-  std::atomic<state> task_state;
+  std::atomic<state> task_state = state::not_ready;
 
   static constexpr std::suspend_never initial_suspend() noexcept {
     return {};
@@ -21,23 +21,34 @@ struct async_task_promise : memory_block<Alloc>, return_block<Result> {
   [[noreturn]] void unhandled_exception() const noexcept {
     std::terminate();
   }
+  auto await_transform(get_handle_t) const noexcept {
+    return return_handle_t<async_task_promise>{};
+  }
+  // TODO think about this boiler plait(may be into common CRTP wrapper coroutine_promise<CRTP>)
+  template <typename T>
+  decltype(auto) await_transform(T&& v) const noexcept {
+    return build_awaiter(std::forward<T>(v));
+  }
+
+ private:
+  struct destroy_if_consumer_dead_t {
+    bool is_consumer_dead;
+    std::atomic<state>& task_state;
+
+    bool await_ready() const noexcept {
+      return is_consumer_dead;
+    }
+    void await_suspend(std::coroutine_handle<void> handle) const noexcept {
+      task_state.exchange(state::ready, std::memory_order::acq_rel);
+      task_state.notify_one();
+    }
+    void await_resume() const noexcept {
+    }
+  };
+
+ public:
   auto final_suspend() noexcept {
     const auto state_before = task_state.exchange(state::almost_ready, std::memory_order::acq_rel);
-
-    struct destroy_if_consumer_dead_t {
-      bool is_consumer_dead;
-      std::atomic<state>& task_state;
-
-      bool await_ready() const noexcept {
-        return is_consumer_dead;
-      }
-      void await_suspend(std::coroutine_handle<void> handle) const noexcept {
-        task_state.exchange(state::ready, std::memory_order::acq_rel);
-        task_state.notify_one();
-      }
-      void await_resume() const noexcept {
-      }
-    };
     return destroy_if_consumer_dead_t{state_before == state::consumer_dead, task_state};
   }
 };
@@ -72,8 +83,10 @@ struct async_task {
     }
   }
   // postcondition - handle_ == nullptr
-  Result get() && requires(!std::is_void_v<Result>) {
-    assert(handle_ != nullptr); // must never happens, second get
+  Result get() &&
+        requires(!std::is_void_v<Result>)
+  {
+    assert(handle_ != nullptr);  // must never happens, second get
     wait();
     scope_exit clear([&] { handle_ = nullptr; });
 
@@ -82,7 +95,7 @@ struct async_task {
     handle_.destroy();
     return result;
   }
-  
+
   // return true if value was already getted, otherwise false
   bool empty() const noexcept {
     return handle_ == nullptr;
@@ -99,7 +112,9 @@ struct async_task {
         [[fallthrough]];
       case state::ready:
         handle_.destroy();
-        break;
+        return;
+      default:
+        KELCORO_UNREACHABLE;
     }
     // otherwise frame destroys itself because consumer is dead
   }

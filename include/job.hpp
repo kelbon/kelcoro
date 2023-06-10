@@ -17,6 +17,13 @@ struct job_promise : memory_block<Alloc>, return_block<void> {
   }
   static constexpr void return_void() noexcept {
   }
+  auto await_transform(get_handle_t) const noexcept {
+    return return_handle_t<job_promise>{};
+  }
+  template <typename T>
+  decltype(auto) await_transform(T&& v) const noexcept {
+    return build_awaiter(std::forward<T>(v));
+  }
   [[noreturn]] void unhandled_exception() const noexcept {
     std::terminate();
   }

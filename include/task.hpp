@@ -20,6 +20,13 @@ struct task_promise : memory_block<Alloc>, return_block<Result> {
     // who_waits always setted because task not started or co_awaited
     return transfer_control_to{who_waits};
   }
+  auto await_transform(get_handle_t) const noexcept {
+    return return_handle_t<task_promise>{};
+  }
+  template <typename T>
+  decltype(auto) await_transform(T&& v) const noexcept {
+    return build_awaiter(std::forward<T>(v));
+  }
 };
 
 // single value generator that returns a value with a co_return. Can be sent on executor(have operator())
@@ -55,24 +62,28 @@ struct task {
   [[nodiscard]] handle_type release() noexcept {
     return std::exchange(handle_, nullptr);
   }
-  constexpr auto operator co_await() noexcept {
-    struct remember_waiter_and_start_task_t {
-      handle_type task_handle;
 
-      bool await_ready() const noexcept {
-        assert(task_handle != nullptr && !task_handle.done());
-        return false;
-      }
-      std::coroutine_handle<void> await_suspend(std::coroutine_handle<void> handle) const noexcept {
-        task_handle.promise().who_waits = handle;
-        // symmetric transfer control to task
-        return task_handle;
-      }
-      [[nodiscard]] result_type await_resume() {
-        if constexpr (!std::is_void_v<result_type>)
-          return task_handle.promise().result();
-      }
-    };
+ private:
+  struct remember_waiter_and_start_task_t {
+    handle_type task_handle;
+
+    bool await_ready() const noexcept {
+      assert(task_handle != nullptr && !task_handle.done());
+      return false;
+    }
+    std::coroutine_handle<void> await_suspend(std::coroutine_handle<void> handle) const noexcept {
+      task_handle.promise().who_waits = handle;
+      // symmetric transfer control to task
+      return task_handle;
+    }
+    [[nodiscard]] result_type await_resume() {
+      if constexpr (!std::is_void_v<result_type>)
+        return task_handle.promise().result();
+    }
+  };
+
+ public:
+  constexpr auto operator co_await() noexcept {
     return remember_waiter_and_start_task_t{handle_};
   }
 };

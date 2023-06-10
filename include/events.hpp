@@ -6,14 +6,13 @@
 
 #include "job.hpp"
 
-#define NEED_CO_AWAIT [[nodiscard("forget co_await?")]]
-
 namespace dd {
 
 template <typename T>
-concept singly_linked_node = !std::is_const_v<T> && requires(T value) {
-  { &T::next } -> std::same_as<T * T::*>;  // 'next' is a field with type T*
-};
+concept singly_linked_node = !
+std::is_const_v<T>&& requires(T value) {
+                       { &T::next } -> std::same_as<T * T::*>;  // 'next' is a field with type T*
+                     };
 
 template <singly_linked_node T>
 struct nonowner_lockfree_stack {
@@ -40,15 +39,6 @@ struct nonowner_lockfree_stack {
   [[nodiscard]] T* try_pop_all() noexcept {
     return top_.exchange(nullptr, acq_rel);
   }
-  // can block thread until getting
-  [[nodiscard]] T* pop_all() noexcept {
-    T* result = try_pop_all();
-    while (result == nullptr) {
-      top_.wait(nullptr);
-      result = try_pop_all();
-    }
-    return result;
-  }
   // other_top must be a top of other stack ( for example from try_pop_all() )
   void push_stack(T* other_top) noexcept {
     if (other_top == nullptr)
@@ -60,27 +50,20 @@ struct nonowner_lockfree_stack {
     while (!top_.compare_exchange_weak(last->next, other_top, acq_rel, acquire)) {
     }
   }
-
-  // not need to release any resources, its not mine!
-  // if any, then coroutine will be not resumed, its memory leak
-  ~nonowner_lockfree_stack() {
-    assert(top_.load(relaxed) == nullptr);
-  }
 };
 
 struct nullstruct {};
 
-// customization point object, specialize it if you want to transfer arguments into event
-
 // PRECONDITIONS :
 // if coroutine subscribes(by co_await event<Name>), then:
-// coroutine will be suspended until event_t resume it
+// coroutine will be suspended until event resumes it
 // coroutine guaratees that its not .done()
 // executor's method .execute() MUST NEVER throw exception after resuming executed task(if its not task's
 // exception)(or checking .done is UB)
 // Input must be default constructible, copy constructible and noexcept movable
+// TODO with mutex and every event handled
 template <typename Input>
-struct event_t {
+struct event {
   using input_type = std::conditional_t<std::is_void_v<Input>, nullstruct, Input>;
 
   static_assert(std::is_nothrow_move_constructible_v<input_type> &&
@@ -91,12 +74,12 @@ struct event_t {
   // make it part of event-based stack of awaiters
   // accepts and returns required arguments for event
   struct awaiter_t {
-    event_t* event_;
+    event* event_;
     std::coroutine_handle<void> handle;
     awaiter_t* next = nullptr;  // im a part of awaiters stack!
-    [[no_unqiue_address]] input_type input;
+    [[no_unique_address]] input_type input;
 
-    bool await_ready() const noexcept {
+    static bool await_ready() noexcept {
       return false;
     }
     void await_suspend(std::coroutine_handle<void> handle_) noexcept {
@@ -105,10 +88,8 @@ struct event_t {
     }
     // resumed only after initializing input
     [[nodiscard]] input_type await_resume() noexcept {
-      if constexpr (std::is_void_v<input_type>)
-        return;
-      else
-        return input;
+      if constexpr (!std::is_void_v<input_type>)
+        return std::move(input);
     }
   };
 
@@ -119,9 +100,9 @@ struct event_t {
   nonowner_lockfree_stack<awaiter_t> subscribers;
 
  public:
-  event_t() noexcept = default;
-  event_t(event_t&&) = delete;
-  void operator=(event_t&&) = delete;
+  event() noexcept = default;
+  event(event&&) = delete;
+  void operator=(event&&) = delete;
 
   // event source functional
 
@@ -188,14 +169,14 @@ struct event_t {
     return true;
   }
 
-  // subscribe for not coroutines
+  // subscribe for non coroutines
 
   // callback invoked once and then dissapears
   template <typename F>
   void set_callback(F&& f) {
-    [](event_t& event_, std::remove_reference_t<F> f_) -> job {
+    [](event& event_, std::remove_reference_t<F> f_) -> job {
       if constexpr (std::is_void_v<Input>) {
-        co_await event_;
+        (void)(co_await event_);
         f_();
       } else {
         auto&& input = co_await event_;
@@ -214,17 +195,17 @@ struct event_t {
 // default interaction point between recipients and sources of events
 
 template <typename Input, typename Tag = void>
-inline constinit event_t<Input> event{};
+inline constinit event<Input> event_v{};
 
 template <typename... Inputs>
-NEED_CO_AWAIT constexpr auto when_all(event_t<Inputs>&... events) {
+KELCORO_CO_AWAIT_REQUIRED constexpr auto when_all(event<Inputs>&... events) {
   static_assert(sizeof...(Inputs) < 256);
 
   // always default constructible and noexcept movable because of event_t guarantees
-  using storage_t = std::tuple<typename event_t<Inputs>::input_type...>;
+  using storage_t = std::tuple<typename event<Inputs>::input_type...>;
   struct subscribe_all_last_resumes_main_t {
     uint8_t count;
-    std::tuple<event_t<Inputs>&...> events_;
+    std::tuple<event<Inputs>&...> events_;
     [[no_unique_address]] storage_t input;
 
     bool await_ready() const noexcept {
@@ -235,7 +216,7 @@ NEED_CO_AWAIT constexpr auto when_all(event_t<Inputs>&... events) {
                                      std::type_identity<Input>, std::integral_constant<size_t, EventIndex>) {
         if constexpr (std::is_void_v<Input>) {
           return [this, handle] {
-              // count_ declared here and not in [ ] of lambda because of MSVC BUG
+            // count_ declared here and not in [ ] of lambda because of MSVC BUG
             auto count_ = std::atomic_ref(this->count);
             if (count_.fetch_add(1, std::memory_order::acq_rel) == sizeof...(Inputs) - 1)
               handle.resume();
@@ -266,13 +247,13 @@ NEED_CO_AWAIT constexpr auto when_all(event_t<Inputs>&... events) {
 }
 
 template <typename... Inputs>
-NEED_CO_AWAIT constexpr auto when_any(event_t<Inputs>&... events) {
+KELCORO_CO_AWAIT_REQUIRED constexpr auto when_any(event<Inputs>&... events) {
   static_assert(sizeof...(Inputs) < 256 && sizeof...(Inputs) >= 2);
 
   struct subscribe_all_first_resumes_main_t {
-      // no monostate because default constructible always
-    std::tuple<event_t<Inputs>&...> events_;
-    [[no_unique_address]] std::variant<typename event_t<Inputs>::input_type...> input;
+    // no monostate because default constructible always
+    std::tuple<event<Inputs>&...> events_;
+    [[no_unique_address]] std::variant<typename event<Inputs>::input_type...> input;
 
     bool await_ready() const noexcept {
       return false;
@@ -286,7 +267,7 @@ NEED_CO_AWAIT constexpr auto when_any(event_t<Inputs>&... events) {
           return [this, count_ptr, handle]() {
             auto value = count_ptr->fetch_add(1, std::memory_order::acq_rel);
             if (value == 0) {
-              this->input.emplace<EventIndex>(nullstruct{});
+              this->input.template emplace<EventIndex>(nullstruct{});
               handle.resume();
             }
           };
@@ -294,8 +275,8 @@ NEED_CO_AWAIT constexpr auto when_any(event_t<Inputs>&... events) {
           return [this, count_ptr, handle](Input input_) {
             auto value = count_ptr->fetch_add(1, std::memory_order::acq_rel);
             if (value == 0) {
-              this->input.emplace<EventIndex>(std::move(input_));
-              // move ctor for input type always noexcept(static assert in event_t)
+              this->input.template emplace<EventIndex>(std::move(input_));
+              // move ctor for input type always noexcept(static assert in 'event')
               handle.resume();
             }
           };
@@ -309,7 +290,7 @@ NEED_CO_AWAIT constexpr auto when_any(event_t<Inputs>&... events) {
       (std::index_sequence_for<Inputs...>{});
     }
     // always returns variant with information what happens(index) and input
-    // always noexcept because of event_t invariants
+    // always noexcept because of 'event' invariants
     [[nodiscard]] auto await_resume() noexcept {
       return std::move(input);
     }
@@ -317,4 +298,4 @@ NEED_CO_AWAIT constexpr auto when_any(event_t<Inputs>&... events) {
   return subscribe_all_first_resumes_main_t{{events...}};
 }
 
-}
+}  // namespace dd

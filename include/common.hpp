@@ -7,19 +7,31 @@
 #include <cassert>
 #include <thread>
 
+#define KELCORO_CO_AWAIT_REQUIRED [[nodiscard("forget co_await?")]]
+#ifdef __clang__
+#define KELCORO_LIFETIMEBOUND [[clang::lifetimebound]]
+#else
+#define KELCORO_LIFETIMEBOUND
+#endif
+#if defined(__GNUC__) || defined(__clang__)
+#define KELCORO_UNREACHABLE __builtin_unreachable()
+#elif defined(_MSC_VER)
+#define KELCORO_UNREACHABLE __assume(false)
+#else
+#define KELCORO_UNREACHABLE (void)0
+#endif
+
+// TODO undef
+
 namespace dd {
 
 // CONCEPTS about co_await operator
 
 template <typename T>
-concept has_member_co_await = requires(T (*value)()) {
-  value().operator co_await();
-};
+concept has_member_co_await = requires(T (*value)()) { value().operator co_await(); };
 
 template <typename T>
-concept has_global_co_await = requires(T (*value)()) {
-  operator co_await(value());
-};
+concept has_global_co_await = requires(T (*value)()) { operator co_await(value()); };
 
 template <typename T>
 concept ambigious_co_await_lookup = has_global_co_await<T> && has_member_co_await<T>;
@@ -28,14 +40,14 @@ concept ambigious_co_await_lookup = has_global_co_await<T> && has_member_co_awai
 
 template <typename T>
 concept co_awaiter = requires(T value) {
-  { value.await_ready() } -> std::same_as<bool>;
-  // cant check await_suspend here because:
-  // case: value.await_suspend(coroutine_handle<>{}) - may be non convertible to concrete T in signature
-  // of await_suspend
-  // case: value.await_suspend(nullptr) - may be template signature, compilation error(cant deduct type)
-  // another case - signature with requires, impossible to know how to call it
-  value.await_resume();
-};
+                       { value.await_ready() } -> std::same_as<bool>;
+                       // cant check await_suspend here because:
+                       // case: value.await_suspend(coroutine_handle<>{}) - may be non convertible to concrete
+                       // T in signature of await_suspend case: value.await_suspend(nullptr) - may be template
+                       // signature, compilation error(cant deduct type) another case - signature with
+                       // requires, impossible to know how to call it
+                       value.await_resume();
+                     };
 
 // CONCEPT co_awaitable
 
@@ -60,8 +72,10 @@ struct memory_block {
       return frame_ptr;
     }
   }
-  static void* operator new(std::size_t frame_size) requires(std::default_initializable<Alloc>) {
-    return operator new (frame_size, std::allocator_arg, Alloc{});
+  static void* operator new(std::size_t frame_size)
+    requires(std::default_initializable<Alloc>)
+  {
+    return operator new(frame_size, std::allocator_arg, Alloc{});
   }
 
   static void operator delete(void* ptr, std::size_t frame_size) noexcept {
@@ -114,26 +128,19 @@ struct [[nodiscard("co_await it!")]] transfer_control_to {
   }
 };
 
-template <std::invocable F>
+template <std::invocable<> F>
 struct [[nodiscard("Dont forget to name it!")]] scope_exit {
- private:
-  F todo;
+  [[no_unique_address]] F todo;
 
- public:
-  scope_exit(F todo) noexcept(std::is_nothrow_move_constructible_v<F>) : todo(std::move(todo)) {
+  scope_exit(F todo) : todo(std::move(todo)) {
   }
-  scope_exit(scope_exit &&) = delete;
-  void operator=(scope_exit&&) = delete;
-
-  ~scope_exit() noexcept(std::is_nothrow_invocable_v<F&>) {
+  constexpr ~scope_exit() noexcept(std::is_nothrow_invocable_v<F&>) {
     todo();
   }
 };
 
 template <typename T>
-concept executor = requires(T& value) {
-  value.execute([] {});
-};
+concept executor = requires(T& value) { value.execute([] {}); };
 
 // DEFAULT EXECUTORS
 
@@ -158,52 +165,67 @@ struct new_thread_executor {
 };
 
 template <executor T>
-struct [[nodiscard("co_await it!")]] jump_on {
-  [[no_unique_address]] std::remove_reference_t<T> exe_;  // can be reference too
+struct KELCORO_CO_AWAIT_REQUIRED jump_on {
+ private:
+  using stored_type = std::conditional_t<(std::is_empty_v<T> && std::is_default_constructible_v<T>), T,
+                                         std::add_pointer_t<T>>;
+  [[no_unique_address]] stored_type exe_;
 
+  constexpr void store(T& e) {
+    if constexpr (std::is_pointer_v<stored_type>)
+      exe_ = std::addressof(e);
+  }
+
+ public:
+  constexpr jump_on(T& e KELCORO_LIFETIMEBOUND) noexcept {
+    store(e);
+  }
+  constexpr jump_on(T&& e KELCORO_LIFETIMEBOUND) noexcept {
+    store(e);
+  }
   constexpr bool await_ready() const noexcept {
     return false;
   }
   constexpr void await_suspend(std::coroutine_handle<void> handle) const {
-    exe_.execute(handle);
+    if constexpr (std::is_pointer_v<stored_type>)
+      exe_->execute(handle);
+    else
+      exe_.execute(handle);
   }
   constexpr void await_resume() const noexcept {
   }
 };
 
-template <typename T>
-jump_on(T&&) -> jump_on<T&&>;
-
-struct get_handle_t {
+template <typename Promise>
+struct return_handle_t {
  private:
-  std::coroutine_handle<void> handle_;
+  std::coroutine_handle<Promise> handle_;
 
-  // auto x = this_coro::handle must be a compile error,
-  // because need co_await
-  get_handle_t(const get_handle_t&) = default;
+  return_handle_t(return_handle_t&&) = delete;
+
  public:
-  get_handle_t() = default;
-  bool await_ready() const noexcept {
+  return_handle_t() = default;
+
+  static bool await_ready() noexcept {
     return false;
   }
-  bool await_suspend(std::coroutine_handle<void> handle) noexcept {
+  bool await_suspend(std::coroutine_handle<Promise> handle) noexcept {
     handle_ = handle;
     return false;
   }
   std::coroutine_handle<void> await_resume() const noexcept {
     return handle_;
   }
-
-  get_handle_t operator co_await() const noexcept {
-    return *this;
-  }
 };
+
+struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {};
 
 namespace this_coro {
 
+// provides access to inner handle of coroutine
 constexpr inline get_handle_t handle = {};
-
-}
+// TODO? context?
+}  // namespace this_coro
 
 // imitating compiler behaviour for co_await expression mutation into awaiter(without await_transform)
 // very usefull if you have await_transform and for all other types you need default behavior

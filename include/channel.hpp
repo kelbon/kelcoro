@@ -35,7 +35,13 @@ struct channel_promise : memory_block<Alloc> {
       return who_waits;
     }
   };
-
+  auto await_transform(get_handle_t) const noexcept {
+    return return_handle_t<channel_promise>{};
+  }
+  template <typename T>
+  decltype(auto) await_transform(T&& v) const noexcept {
+    return build_awaiter(std::forward<T>(v));
+  }
   // allow yielding
 
   auto yield_value(yield_type& lvalue) noexcept {
@@ -86,25 +92,29 @@ struct channel {
     if (handle_) [[likely]]
       handle_.destroy();
   }
-  auto operator co_await() noexcept {
-    struct remember_owner_transfer_control_to {
-      handle_type stream_handle;
 
-      bool await_ready() const noexcept {
-        assert(stream_handle != nullptr && !stream_handle.done());
-        return false;
-      }
-      std::coroutine_handle<void> await_suspend(std::coroutine_handle<void> owner) noexcept {
-        stream_handle.promise().current_owner = owner;
-        return stream_handle;
-      }
-      [[nodiscard]] value_type* await_resume() const noexcept {
-        if (!stream_handle.done()) [[likely]]
-          return stream_handle.promise().current_result;
-        else
-          return nullptr;
-      }
-    };
+ private:
+  struct remember_owner_transfer_control_to {
+    handle_type stream_handle;
+
+    bool await_ready() const noexcept {
+      assert(stream_handle != nullptr && !stream_handle.done());
+      return false;
+    }
+    std::coroutine_handle<void> await_suspend(std::coroutine_handle<void> owner) noexcept {
+      stream_handle.promise().current_owner = owner;
+      return stream_handle;
+    }
+    [[nodiscard]] value_type* await_resume() const noexcept {
+      if (!stream_handle.done()) [[likely]]
+        return stream_handle.promise().current_result;
+      else
+        return nullptr;
+    }
+  };
+
+ public:
+  auto operator co_await() noexcept {
     return remember_owner_transfer_control_to{handle_};
   }
 };
