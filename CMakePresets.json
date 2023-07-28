@@ -1,0 +1,13 @@
+{
+    "version": 5,
+    "configurePresets": [
+      {
+        "name": "default",
+        "generator": "Ninja",
+        "binaryDir": "${sourceDir}/build",
+        "cacheVariables": {
+            "CMAKE_EXPORT_COMPILE_COMMANDS": "1"
+        }
+      }
+    ]
+}

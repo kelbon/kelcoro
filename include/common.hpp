@@ -59,6 +59,7 @@ concept co_awaitable = has_member_co_await<T> || has_global_co_await<T> || co_aw
 // TODO support trailing allocator convention
 template <typename Alloc>
 struct memory_block {
+  // TODO support coroutine traits <Alloc> 
   // leading allocator convention
   template <typename... Args>
   static void* operator new(std::size_t frame_size, std::allocator_arg_t, Alloc resource, Args&&...) {
@@ -124,7 +125,7 @@ struct [[nodiscard("co_await it!")]] transfer_control_to {
   std::coroutine_handle<void> await_suspend(std::coroutine_handle<void>) noexcept {
     return who_waits;  // symmetric transfer here
   }
-  void await_resume() const noexcept {
+  static constexpr void await_resume() noexcept {
   }
 };
 

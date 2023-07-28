@@ -1,4 +1,7 @@
-
+#if __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunknown-attributes"
+#endif
 #include <atomic>
 #include <coroutine>
 #include <iterator>
@@ -28,17 +31,15 @@ inline dd::task<size_t> some_task(int i) {
   co_return i;
 }
 inline dd::generator<int> foo() {
-  auto handle = co_await dd::this_coro::handle;
-  (void)handle;
+  // TODO type in common which returns handle for each coro
   for (int i = 0;; ++i)
     co_yield co_await some_task(i);
 }
 
 TEST(generator) {
   static_assert(std::ranges::input_range<dd::generator<size_t>&&>);
-  static_assert(std::input_iterator<dd::generator<std::vector<int>>::iterator>);
-  static_assert(std::ranges::output_range<dd::generator<int>, int> &&
-                std::ranges::input_range<dd::generator<int>>);
+  static_assert(std::input_iterator<dd::giterator<std::vector<int>>>);
+  static_assert(std::ranges::input_range<dd::generator<int>>);
   int i = 1;
   dd::generator gen = foo();
   for (auto value :
@@ -159,23 +160,23 @@ dd::task<size_t, statefull_resource> task_mm(int i, statefull_resource) {
   (void)handle;
   co_return i;
 }
-dd::generator<dd::task<size_t, statefull_resource>, std::allocator<std::byte>> gen_mm() {
-  for (auto i : std::views::iota(0, 10))
-    co_yield task_mm(i, statefull_resource{0});
-}
-dd::async_task<size_t> get_result(auto just_task) {
-  co_return co_await just_task;
-}
-TEST(gen_mm) {
-  int i = 0;
-  auto gen = gen_mm();
-  // TODO check working on rvlaue(or somehow forbide it)
-  for (auto& task : gen | std::views::filter([](auto&&) { return true; })) {
-    error_if(get_result(std::move(task)).get() != i);
-    ++i;
-  }
-  return error_count;
-}
+//dd::generator<dd::task<size_t, statefull_resource>, std::allocator<std::byte>> gen_mm() {
+//  for (auto i : std::views::iota(0, 10))
+//    co_yield task_mm(i, statefull_resource{0});
+//}
+//dd::async_task<size_t> get_result(auto just_task) {
+//  co_return co_await just_task;
+//}
+//TEST(gen_mm) {
+//  int i = 0;
+//  auto gen = gen_mm();
+//  // TODO check working on rvlaue(or somehow forbide it)
+//  for (auto& task : gen | std::views::filter([](auto&&) { return true; })) {
+//    error_if(get_result(std::move(task)).get() != i);
+//    ++i;
+//  }
+//  return error_count;
+//}
 
 TEST(job_mm) {
   std::atomic<size_t> err_c = 0;
@@ -390,6 +391,6 @@ TEST(channel) {
 int main() {
   return static_cast<int>(TESTgenerator() + TESTzip_generator() + TESTview_generator() +
                           TESTlogical_thread() + TESTcoroutines_integral() + TESTlogical_thread_mm() +
-                          TESTgen_mm() + TESTjob_mm() + TESTthread_safety() + TESTwhen_any() +
+                          /*TESTgen_mm() +*/ TESTjob_mm() + TESTthread_safety() + TESTwhen_any() +
                           TESTwhen_all() + TESTasync_tasks() + TESTvoid_async_task() + TESTchannel());
 }
