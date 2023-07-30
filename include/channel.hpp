@@ -4,8 +4,8 @@
 
 namespace dd {
 
-template <typename Yield, typename Alloc>
-struct channel_promise : memory_block<Alloc> {
+template <typename Yield>
+struct channel_promise : memory_block {
   using yield_type = Yield;
 
   yield_type* current_result = nullptr;
@@ -16,7 +16,7 @@ struct channel_promise : memory_block<Alloc> {
     return {};
   }
   auto get_return_object() {
-    return std::coroutine_handle<channel_promise<Yield, Alloc>>::from_promise(*this);
+    return std::coroutine_handle<channel_promise<Yield>>::from_promise(*this);
   }
   static constexpr void return_void() noexcept {
   }
@@ -35,13 +35,6 @@ struct channel_promise : memory_block<Alloc> {
       return who_waits;
     }
   };
-  auto await_transform(get_handle_t) const noexcept {
-    return return_handle_t<channel_promise>{};
-  }
-  template <typename T>
-  decltype(auto) await_transform(T&& v) const noexcept {
-    return build_awaiter(std::forward<T>(v));
-  }
   // allow yielding
 
   auto yield_value(yield_type& lvalue) noexcept {
@@ -52,17 +45,17 @@ struct channel_promise : memory_block<Alloc> {
     // Same logic works also for task<T>...
     return transfer_control_to{current_owner};
   }
-
+// TODO get rvalue ref as in generator
   template <typename T>
   auto yield_value(T&& value) noexcept(std::is_nothrow_constructible_v<yield_type, T&&>) {
     return create_value_and_transfer_control_to{{current_owner}, yield_type{std::forward<T>(value)}};
   }
 };
 
-template <typename Yield, typename Alloc = std::allocator<std::byte>>
+template <typename Yield>
 struct channel {
   using value_type = Yield;
-  using promise_type = channel_promise<Yield, Alloc>;
+  using promise_type = channel_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;
 
  protected:

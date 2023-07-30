@@ -13,6 +13,7 @@
 #include <thread>
 #include <vector>
 #include <functional>
+#include <iostream>
 
 #include "async_task.hpp"
 #include "channel.hpp"
@@ -23,7 +24,7 @@
 #include "events.hpp"
 
 #define error_if(Cond) error_count += static_cast<bool>((Cond))
-#define TEST(NAME) size_t TEST##NAME(size_t error_count = 0)
+#define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
 
 inline dd::task<size_t> some_task(int i) {
   auto handle = co_await dd::this_coro::handle;
@@ -77,7 +78,8 @@ inline dd::generator<const int> view_generator() {
   int x = 1;
   int y = 2;
   while (x < 100) {
-    co_yield ++x;
+    ++x;
+    co_yield x;
     co_yield y;
   }
 }
@@ -89,9 +91,8 @@ TEST(view_generator) {
   error_if(addresses.size() != 2);
   return error_count;
 }
-template <typename MemoryResource>
-inline dd::logical_thread_mm<MemoryResource> multithread(std::allocator_arg_t, MemoryResource,
-                                                     std::atomic<int32_t>& value) {
+
+inline dd::logical_thread multithread(std::atomic<int32_t>& value) {
   auto handle = co_await dd::this_coro::handle;
   (void)handle;
   auto token = co_await dd::this_coro::stop_token;
@@ -100,11 +101,12 @@ inline dd::logical_thread_mm<MemoryResource> multithread(std::allocator_arg_t, M
   for (auto i : std::views::iota(0, 100))
     ++value, (void)i;
 }
-template <typename MemoryResource = std::allocator<std::byte>>
-inline void moo(std::atomic<int32_t>& value) {
-  std::vector<dd::logical_thread_mm<MemoryResource>> workers;
+
+inline void moo(std::atomic<int32_t>& value, std::pmr::memory_resource* m = std::pmr::new_delete_resource()) {
+  std::vector<dd::logical_thread> workers;
+  dd::with_resource r{m}; // TODO macro
   for (int i = 0; i < 10; ++i)
-    workers.emplace_back(multithread<MemoryResource>(std::allocator_arg, MemoryResource{}, value));
+    workers.emplace_back(multithread(value));
   stop(workers);  // more effective then just dctors for all
 }
 TEST(logical_thread) {
@@ -134,32 +136,36 @@ TEST(coroutines_integral) {
   return error_count;
 }
 
-struct statefull_resource {
+struct statefull_resource : std::pmr::memory_resource {
   size_t sz = 0;
   // sizeof of this thing affects frame size with 2 multiplier bcs its saved in frame + saved for coroutine
-  void* allocate(size_t size) {
+  void* do_allocate(size_t size, size_t) override {
     sz = size;
     return ::operator new(size);
   }
-  void deallocate(void* ptr, size_t size) noexcept {
+  void do_deallocate(void* ptr, size_t size, size_t) noexcept override {
     if (sz != size)  // cant throw here(std::terminate)
-      std::terminate();
-    ::operator delete(ptr, size);
+      (std::cerr << "incorrect size"), std::exit(-111);
+    ::operator delete(ptr);
+  }
+  bool do_is_equal(const memory_resource& _That) const noexcept override {
+    return true;
   }
 };
 
 TEST(logical_thread_mm) {
   std::atomic<int32_t> i;
-  moo<statefull_resource>(i);
+  statefull_resource r;
+  moo(i, &r);
   error_if(i != 1000);  // 10 coroutines * 100 increments
   return error_count;
 }
 
-dd::task<size_t, statefull_resource> task_mm(int i, statefull_resource) {
-  auto handle = co_await dd::this_coro::handle;
-  (void)handle;
-  co_return i;
-}
+//dd::task<size_t> task_mm(int i) {
+//  auto handle = co_await dd::this_coro::handle;
+//  (void)handle;
+//  co_return i;
+//}
 //dd::generator<dd::task<size_t, statefull_resource>, std::allocator<std::byte>> gen_mm() {
 //  for (auto i : std::views::iota(0, 10))
 //    co_yield task_mm(i, statefull_resource{0});
@@ -180,8 +186,7 @@ dd::task<size_t, statefull_resource> task_mm(int i, statefull_resource) {
 
 TEST(job_mm) {
   std::atomic<size_t> err_c = 0;
-  auto job_creator = [&](std::atomic<int32_t>& value,
-                        std::pmr::memory_resource*) -> dd::job_mm<std::pmr::polymorphic_allocator<std::byte>> {
+  auto job_creator = [&](std::atomic<int32_t>& value) -> dd::job {
     auto th_id = std::this_thread::get_id();
     co_await dd::jump_on(dd::new_thread_executor{});
     if (th_id == std::this_thread::get_id())
@@ -191,8 +196,9 @@ TEST(job_mm) {
       value.notify_one();
   };
   std::atomic<int32_t> flag = 0;
+  dd::with_resource r{std::pmr::new_delete_resource()};
   for (auto i : std::views::iota(0, 10))
-    job_creator(flag, std::pmr::new_delete_resource()), (void)i;
+    job_creator(flag), (void)i;
   while (flag.load(std::memory_order::acquire) != 10)
     flag.wait(flag.load(std::memory_order::acquire));
   error_if(flag != 10);

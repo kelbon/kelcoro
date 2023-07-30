@@ -6,6 +6,7 @@
 #include <coroutine>
 #include <cassert>
 #include <thread>
+#include <memory_resource>
 
 #define KELCORO_CO_AWAIT_REQUIRED [[nodiscard("forget co_await?")]]
 #ifdef __clang__
@@ -56,40 +57,42 @@ concept co_awaitable = has_member_co_await<T> || has_global_co_await<T> || co_aw
 
 // Just 'teaches' promises of every coroutine how to allocate memory
 
-// TODO support trailing allocator convention
-template <typename Alloc>
-struct memory_block {
-  // TODO support coroutine traits <Alloc> 
-  // leading allocator convention
-  template <typename... Args>
-  static void* operator new(std::size_t frame_size, std::allocator_arg_t, Alloc resource, Args&&...) {
-    // check for default here, because need to create it by default in operator delete
-    if constexpr (std::is_empty_v<Alloc> && std::default_initializable<Alloc>) {
-      return resource.allocate(frame_size);
-    } else {
-      // Fuck alignment!(really)
-      std::byte* frame_ptr = reinterpret_cast<std::byte*>(resource.allocate(frame_size + sizeof(Alloc)));
-      std::construct_at(reinterpret_cast<Alloc*>(frame_ptr + frame_size), std::move(resource));
-      return frame_ptr;
-    }
+// TODO 'done' coroutine handle (always .done(), 'resume()' prooduces undefined behavior)
+namespace noexport {
+
+// caches value (just because its C-non-inline-call...)
+static std::pmr::memory_resource* const new_delete_resource = std::pmr::new_delete_resource();
+
+// used to pass argument to promise operator new, say 'ty' to standard writers,
+// i want separate coroutine logic from how it allocates frame
+inline thread_local std::pmr::memory_resource* co_memory_resource = new_delete_resource;
+
+}  // namespace noexport
+
+// passes 'implicit' argument to function 'new' function, SHALL BE followed by coroutine creation
+struct [[nodiscard("name it!")]] with_resource {
+  with_resource(std::pmr::memory_resource* m) noexcept {
+    noexport::co_memory_resource = m;
   }
-  static void* operator new(std::size_t frame_size)
-    requires(std::default_initializable<Alloc>)
-  {
-    return operator new(frame_size, std::allocator_arg, Alloc{});
+  ~with_resource() {
+    noexport::co_memory_resource = noexport::new_delete_resource;
+  }
+};
+// TODO concept memory resource + type erase?... I even dont need 'is equal'
+struct memory_block {
+  static void* operator new(std::size_t frame_size) {
+    auto* r = noexport::co_memory_resource;
+    auto* p = (std::byte*)r->allocate(frame_size + sizeof(void*), __STDCPP_DEFAULT_NEW_ALIGNMENT__);
+    std::byte* alloc_ptr = p + frame_size;
+    std::memcpy(alloc_ptr, &r, sizeof(void*));
+    return p;
   }
 
   static void operator delete(void* ptr, std::size_t frame_size) noexcept {
-    auto* p = reinterpret_cast<std::byte*>(ptr);
-    if constexpr (std::is_empty_v<Alloc> && std::default_initializable<Alloc>) {
-      Alloc{}.deallocate(p, frame_size);
-    } else {  // Fuck aligment again
-      auto* resource_on_frame = reinterpret_cast<Alloc*>(p + frame_size);
-      // move it from frame, because its in memory which it will deallocate
-      auto resource = std::move(*resource_on_frame);
-      std::destroy_at(resource_on_frame);
-      resource.deallocate(p, frame_size + sizeof(Alloc));
-    }
+    auto* alloc_ptr = (std::byte*)ptr + frame_size;
+    std::pmr::memory_resource* m;
+    std::memcpy(&m, alloc_ptr, sizeof(void*));
+    m->deallocate(ptr, frame_size + sizeof(void*), __STDCPP_DEFAULT_NEW_ALIGNMENT__);
   }
 };
 
@@ -100,10 +103,11 @@ struct return_block {
   using result_type = T;
   // possibly can be replaced with some buffer
   std::optional<result_type> storage = std::nullopt;
-
+  // TODO by reference (только в task, т.к. надо final awaiter suspend)
   constexpr void return_value(T value) noexcept(std::is_nothrow_move_constructible_v<T>) {
     storage.emplace(std::move(value));
   }
+  // TODO by reference
   constexpr T result() noexcept(noexcept(*std::move(storage))) {
     return *std::move(storage);
   }
@@ -129,6 +133,7 @@ struct [[nodiscard("co_await it!")]] transfer_control_to {
   }
 };
 
+// TODO normal scope guards + 'with_resource(R)' macro
 template <std::invocable<> F>
 struct [[nodiscard("Dont forget to name it!")]] scope_exit {
   [[no_unique_address]] F todo;
@@ -197,29 +202,27 @@ struct KELCORO_CO_AWAIT_REQUIRED jump_on {
   }
 };
 
-template <typename Promise>
-struct return_handle_t {
+struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
  private:
-  std::coroutine_handle<Promise> handle_;
+  struct return_handle {
+    std::coroutine_handle<> handle_;
 
-  return_handle_t(return_handle_t&&) = delete;
-
+    static constexpr bool await_ready() noexcept {
+      return false;
+    }
+    bool await_suspend(std::coroutine_handle<> handle) noexcept {
+      handle_ = handle;
+      return false;
+    }
+    std::coroutine_handle<void> await_resume() const noexcept {
+      return handle_;
+    }
+  };
  public:
-  return_handle_t() = default;
-
-  static bool await_ready() noexcept {
-    return false;
-  }
-  bool await_suspend(std::coroutine_handle<Promise> handle) noexcept {
-    handle_ = handle;
-    return false;
-  }
-  std::coroutine_handle<void> await_resume() const noexcept {
-    return handle_;
+  return_handle operator co_await() const noexcept {
+    return return_handle{};
   }
 };
-
-struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {};
 
 namespace this_coro {
 
@@ -240,5 +243,45 @@ constexpr decltype(auto) build_awaiter(T&& value) {
   else if constexpr (has_member_co_await<T&&>)
     return std::forward<T>(value).operator co_await();
 }
+
+struct always_done_coroutine_promise : memory_block {
+  static constexpr std::suspend_never initial_suspend() noexcept {
+    return {};
+  }
+  auto get_return_object() {
+    return std::coroutine_handle<always_done_coroutine_promise>::from_promise(*this);
+  }
+  [[noreturn]] static void unhandled_exception() noexcept {
+    assert(false); // must be unreachable
+    std::abort();
+  }
+  static constexpr void return_void() noexcept {}
+  static constexpr std::suspend_always final_suspend() noexcept {
+    return {};
+  }
+};
+
+using always_done_coroutine_handle = std::coroutine_handle<always_done_coroutine_promise>;
+
+}  // namespace dd
+
+namespace std {
+
+template<typename... Args>
+struct coroutine_traits<::dd::always_done_coroutine_handle, Args...> {
+  using promise_type = ::dd::always_done_coroutine_promise;
+};
+
+}
+
+namespace dd::noexport {
+// ? TODO memory allocation ?
+static inline const auto always_done_coro = []() -> always_done_coroutine_handle { co_return; }();
+
+}  // namespace dd::noexport
+
+namespace dd {
+
+inline always_done_coroutine_handle always_done_coroutine() noexcept { return noexport::always_done_coro; }
 
 }  // namespace dd

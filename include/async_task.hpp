@@ -8,26 +8,18 @@ namespace dd {
 
 enum class state : uint8_t { not_ready, almost_ready, ready, consumer_dead };
 
-template <typename Result, typename Alloc>
-struct async_task_promise : memory_block<Alloc>, return_block<Result> {
+template <typename Result>
+struct async_task_promise : memory_block, return_block<Result> {
   std::atomic<state> task_state = state::not_ready;
 
   static constexpr std::suspend_never initial_suspend() noexcept {
     return {};
   }
   auto get_return_object() {
-    return std::coroutine_handle<async_task_promise<Result, Alloc>>::from_promise(*this);
+    return std::coroutine_handle<async_task_promise<Result>>::from_promise(*this);
   }
   [[noreturn]] void unhandled_exception() const noexcept {
     std::terminate();
-  }
-  auto await_transform(get_handle_t) const noexcept {
-    return return_handle_t<async_task_promise>{};
-  }
-  // TODO think about this boiler plait(may be into common CRTP wrapper coroutine_promise<CRTP>)
-  template <typename T>
-  decltype(auto) await_transform(T&& v) const noexcept {
-    return build_awaiter(std::forward<T>(v));
   }
 
  private:
@@ -53,10 +45,10 @@ struct async_task_promise : memory_block<Alloc>, return_block<Result> {
   }
 };
 
-template <typename Result, typename Alloc = std::allocator<std::byte>>
+template <typename Result>
 struct async_task {
  public:
-  using promise_type = async_task_promise<Result, Alloc>;
+  using promise_type = async_task_promise<Result>;
   using handle_type = std::coroutine_handle<promise_type>;
 
  private:
