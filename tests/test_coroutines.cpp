@@ -39,7 +39,7 @@ inline dd::generator<int> foo() {
 
 TEST(generator) {
   static_assert(std::ranges::input_range<dd::generator<size_t>&&>);
-  static_assert(std::input_iterator<dd::giterator<std::vector<int>>>);
+  static_assert(std::input_iterator<dd::generator_iterator<std::vector<int>>>);
   static_assert(std::ranges::input_range<dd::generator<int>>);
   int i = 1;
   dd::generator gen = foo();

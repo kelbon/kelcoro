@@ -2,11 +2,32 @@
     "version": 5,
     "configurePresets": [
       {
+        "name": "debug_dev",
+        "generator": "Ninja",
+        "binaryDir": "${sourceDir}/build_debug",
+        "cacheVariables": {
+            "CMAKE_EXPORT_COMPILE_COMMANDS": "1",
+            "CMAKE_BUILD_TYPE": "Debug",
+            "KELCORO_ENABLE_TESTING": "ON"
+        }
+      },
+      {
+        "name": "release_dev",
+        "generator": "Ninja",
+        "binaryDir": "${sourceDir}/build_release",
+        "cacheVariables": {
+            "CMAKE_EXPORT_COMPILE_COMMANDS": "1",
+            "CMAKE_BUILD_TYPE": "Release",
+            "KELCORO_ENABLE_TESTING": "ON"
+        }
+      },
+      {
         "name": "default",
         "generator": "Ninja",
         "binaryDir": "${sourceDir}/build",
         "cacheVariables": {
-            "CMAKE_EXPORT_COMPILE_COMMANDS": "1"
+            "CMAKE_EXPORT_COMPILE_COMMANDS": "1",
+            "CMAKE_BUILD_TYPE": "Release"
         }
       }
     ]
