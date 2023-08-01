@@ -43,8 +43,7 @@ TEST(generator) {
   static_assert(std::ranges::input_range<dd::generator<int>>);
   int i = 1;
   dd::generator gen = foo();
-  for (auto value :
-       gen | ::std::views::take(100) | std::views::filter([](auto v) { return v % 2; })) {
+  for (auto value : gen | ::std::views::take(100) | std::views::filter([](auto v) { return v % 2; })) {
     error_if(value != i);
     i += 2;
   }
@@ -104,9 +103,11 @@ inline dd::logical_thread multithread(std::atomic<int32_t>& value) {
 
 inline void moo(std::atomic<int32_t>& value, std::pmr::memory_resource* m = std::pmr::new_delete_resource()) {
   std::vector<dd::logical_thread> workers;
-  dd::with_resource r{m}; // TODO macro
-  for (int i = 0; i < 10; ++i)
-    workers.emplace_back(multithread(value));
+  {
+    auto _ = dd::with_resource(*m);
+    for (int i = 0; i < 10; ++i)
+      workers.emplace_back(multithread(value));
+  }
   stop(workers);  // more effective then just dctors for all
 }
 TEST(logical_thread) {
@@ -161,28 +162,28 @@ TEST(logical_thread_mm) {
   return error_count;
 }
 
-//dd::task<size_t> task_mm(int i) {
-//  auto handle = co_await dd::this_coro::handle;
-//  (void)handle;
-//  co_return i;
-//}
-//dd::generator<dd::task<size_t, statefull_resource>, std::allocator<std::byte>> gen_mm() {
-//  for (auto i : std::views::iota(0, 10))
-//    co_yield task_mm(i, statefull_resource{0});
-//}
-//dd::async_task<size_t> get_result(auto just_task) {
-//  co_return co_await just_task;
-//}
-//TEST(gen_mm) {
-//  int i = 0;
-//  auto gen = gen_mm();
-//  // TODO check working on rvlaue(or somehow forbide it)
-//  for (auto& task : gen | std::views::filter([](auto&&) { return true; })) {
-//    error_if(get_result(std::move(task)).get() != i);
-//    ++i;
-//  }
-//  return error_count;
-//}
+dd::task<size_t> task_mm(int i) {
+  auto handle = co_await dd::this_coro::handle;
+  (void)handle;
+  co_return i;
+}
+dd::generator<dd::task<size_t>> gen_mm() {
+  for (auto i : std::views::iota(0, 10))
+    co_yield task_mm(i);
+}
+dd::async_task<size_t> get_result(auto just_task) {
+  co_return co_await just_task;
+}
+TEST(gen_mm) {
+  int i = 0;
+  auto gen = gen_mm();
+  // TODO check working on rvlaue(or somehow forbide it)
+  for (auto& task : gen | std::views::filter([](auto&&) { return true; })) {
+    error_if(get_result(std::move(task)).get() != i);
+    ++i;
+  }
+  return error_count;
+}
 
 TEST(job_mm) {
   std::atomic<size_t> err_c = 0;
@@ -196,9 +197,11 @@ TEST(job_mm) {
       value.notify_one();
   };
   std::atomic<int32_t> flag = 0;
-  dd::with_resource r{std::pmr::new_delete_resource()};
-  for (auto i : std::views::iota(0, 10))
-    job_creator(flag), (void)i;
+  {
+    auto _ = dd::with_resource(*std::pmr::new_delete_resource());
+    for (auto i : std::views::iota(0, 10))
+      job_creator(flag), (void)i;
+  }
   while (flag.load(std::memory_order::acquire) != 10)
     flag.wait(flag.load(std::memory_order::acquire));
   error_if(flag != 10);
@@ -306,8 +309,8 @@ TEST(when_any) {
   anyx.wait();
   stop(_1, _2, _3, _4);
   one.notify_all(dd::this_thread_executor{});
-  two.notify_all(dd::this_thread_executor {}, 5);
-  three.notify_all(dd::this_thread_executor {}, std::vector<std::string>(3, "hello world"));
+  two.notify_all(dd::this_thread_executor{}, 5);
+  three.notify_all(dd::this_thread_executor{}, std::vector<std::string>(3, "hello world"));
   four.notify_all(dd::this_thread_executor{});
   error_if(count != 100000);
   return error_count;
@@ -397,6 +400,6 @@ TEST(channel) {
 int main() {
   return static_cast<int>(TESTgenerator() + TESTzip_generator() + TESTview_generator() +
                           TESTlogical_thread() + TESTcoroutines_integral() + TESTlogical_thread_mm() +
-                          /*TESTgen_mm() +*/ TESTjob_mm() + TESTthread_safety() + TESTwhen_any() +
+                          TESTgen_mm() + TESTjob_mm() + TESTthread_safety() + TESTwhen_any() +
                           TESTwhen_all() + TESTasync_tasks() + TESTvoid_async_task() + TESTchannel());
 }

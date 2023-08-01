@@ -5,7 +5,7 @@
 namespace dd {
 
 template <typename Yield>
-struct channel_promise : memory_block {
+struct channel_promise : enable_memory_resource_support {
   using yield_type = Yield;
 
   yield_type* current_result = nullptr;
@@ -45,7 +45,7 @@ struct channel_promise : memory_block {
     // Same logic works also for task<T>...
     return transfer_control_to{current_owner};
   }
-// TODO get rvalue ref as in generator
+  // TODO get rvalue ref as in generator
   template <typename T>
   auto yield_value(T&& value) noexcept(std::is_nothrow_constructible_v<yield_type, T&&>) {
     return create_value_and_transfer_control_to{{current_owner}, yield_type{std::forward<T>(value)}};

@@ -22,6 +22,14 @@
 #define KELCORO_UNREACHABLE (void)0
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#define KELCORO_ALWAYS_INLINE __attribute__((always_inline)) inline
+#elif defined(_MSC_VER)
+#define KELCORO_ALWAYS_INLINE __forceinline
+#else
+#define KELCORO_ALWAYS_INLINE inline
+#endif
+
 // TODO undef
 
 namespace dd {
@@ -55,9 +63,6 @@ concept co_awaiter = requires(T value) {
 template <typename T>
 concept co_awaitable = has_member_co_await<T> || has_global_co_await<T> || co_awaiter<T>;
 
-// Just 'teaches' promises of every coroutine how to allocate memory
-
-// TODO 'done' coroutine handle (always .done(), 'resume()' prooduces undefined behavior)
 namespace noexport {
 
 // caches value (just because its C-non-inline-call...)
@@ -69,17 +74,39 @@ inline thread_local std::pmr::memory_resource* co_memory_resource = new_delete_r
 
 }  // namespace noexport
 
-// passes 'implicit' argument to function 'new' function, SHALL BE followed by coroutine creation
-struct [[nodiscard("name it!")]] with_resource {
-  with_resource(std::pmr::memory_resource* m) noexcept {
-    noexport::co_memory_resource = m;
+// passes 'implicit' argument to all coroutines allocatinon on this thread until object dies
+// usage:
+//    foo_t local = dd::with_resource{r}, create_coro(), foo();
+// OR
+//    dd::with_resource{r}, [&] { ... }();
+// OR
+//    dd::with_resource name{r};
+//    ... code with coroutines ...
+struct [[nodiscard]] with_resource {
+ private:
+  std::pmr::memory_resource* old;
+
+ public:
+  explicit with_resource(std::pmr::memory_resource& m) noexcept
+      : old(std::exchange(noexport::co_memory_resource, &m)) {
+    [[assume(old != nullptr)]];
   }
+  with_resource(with_resource&&) = delete;
+  void operator=(with_resource&&) = delete;
+
   ~with_resource() {
-    noexport::co_memory_resource = noexport::new_delete_resource;
+    noexport::co_memory_resource = old;
   }
 };
-// TODO concept memory resource + type erase?... I even dont need 'is equal'
-struct memory_block {
+
+// TODO
+// // basically free list with customizable max blocks
+// // must be good because coroutines have same sizes,
+// // its easy to reuse memory for them
+// struct co_memory_resource { ... };
+// inheritor(coroutine promise) recieves allocation(std::pmr::memory_resource) support
+// usage: see with_resource(R)
+struct enable_memory_resource_support {
   static void* operator new(std::size_t frame_size) {
     auto* r = noexport::co_memory_resource;
     auto* p = (std::byte*)r->allocate(frame_size + sizeof(void*), __STDCPP_DEFAULT_NEW_ALIGNMENT__);
@@ -97,17 +124,15 @@ struct memory_block {
 };
 
 // 'teaches' promise to return
-
 template <typename T>
 struct return_block {
   using result_type = T;
   // possibly can be replaced with some buffer
   std::optional<result_type> storage = std::nullopt;
-  // TODO by reference (только в task, т.к. надо final awaiter suspend)
+
   constexpr void return_value(T value) noexcept(std::is_nothrow_move_constructible_v<T>) {
     storage.emplace(std::move(value));
   }
-  // TODO by reference
   constexpr T result() noexcept(noexcept(*std::move(storage))) {
     return *std::move(storage);
   }
@@ -133,7 +158,7 @@ struct [[nodiscard("co_await it!")]] transfer_control_to {
   }
 };
 
-// TODO normal scope guards + 'with_resource(R)' macro
+// TODO normal scope guards
 template <std::invocable<> F>
 struct [[nodiscard("Dont forget to name it!")]] scope_exit {
   [[no_unique_address]] F todo;
@@ -218,6 +243,7 @@ struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
       return handle_;
     }
   };
+
  public:
   return_handle operator co_await() const noexcept {
     return return_handle{};
@@ -228,7 +254,13 @@ namespace this_coro {
 
 // provides access to inner handle of coroutine
 constexpr inline get_handle_t handle = {};
-// TODO? context?
+
+// returns last resource which was setted on this thread by 'with_resource'
+// guaranteed to be alive only in coroutine for which it was setted
+inline std::pmr::memory_resource& current_memory_resource() noexcept {
+  return *noexport::co_memory_resource;
+}
+
 }  // namespace this_coro
 
 // imitating compiler behaviour for co_await expression mutation into awaiter(without await_transform)
@@ -244,7 +276,7 @@ constexpr decltype(auto) build_awaiter(T&& value) {
     return std::forward<T>(value).operator co_await();
 }
 
-struct always_done_coroutine_promise : memory_block {
+struct always_done_coroutine_promise : enable_memory_resource_support {
   static constexpr std::suspend_never initial_suspend() noexcept {
     return {};
   }
@@ -252,10 +284,11 @@ struct always_done_coroutine_promise : memory_block {
     return std::coroutine_handle<always_done_coroutine_promise>::from_promise(*this);
   }
   [[noreturn]] static void unhandled_exception() noexcept {
-    assert(false); // must be unreachable
+    assert(false);  // must be unreachable
     std::abort();
   }
-  static constexpr void return_void() noexcept {}
+  static constexpr void return_void() noexcept {
+  }
   static constexpr std::suspend_always final_suspend() noexcept {
     return {};
   }
@@ -267,21 +300,25 @@ using always_done_coroutine_handle = std::coroutine_handle<always_done_coroutine
 
 namespace std {
 
-template<typename... Args>
+template <typename... Args>
 struct coroutine_traits<::dd::always_done_coroutine_handle, Args...> {
   using promise_type = ::dd::always_done_coroutine_promise;
 };
 
-}
+}  // namespace std
 
 namespace dd::noexport {
-// ? TODO memory allocation ?
+
 static inline const auto always_done_coro = []() -> always_done_coroutine_handle { co_return; }();
 
 }  // namespace dd::noexport
 
 namespace dd {
 
-inline always_done_coroutine_handle always_done_coroutine() noexcept { return noexport::always_done_coro; }
+// caller must only use .done() and cast to coroutine_handle<void>
+// resume on returned value produces undefined behavior
+inline always_done_coroutine_handle always_done_coroutine() noexcept {
+  return noexport::always_done_coro;
+}
 
 }  // namespace dd

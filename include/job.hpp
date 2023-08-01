@@ -4,7 +4,7 @@
 
 namespace dd {
 
-struct job_promise : memory_block, return_block<void> {
+struct job_promise : enable_memory_resource_support, return_block<void> {
   static constexpr std::suspend_never initial_suspend() noexcept {
     return {};
   }

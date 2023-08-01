@@ -5,7 +5,7 @@
 namespace dd {
 
 template <typename Result>
-struct task_promise : memory_block, return_block<Result> {
+struct task_promise : enable_memory_resource_support, return_block<Result> {
   std::coroutine_handle<void> who_waits;
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};

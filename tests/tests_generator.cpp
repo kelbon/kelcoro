@@ -16,7 +16,7 @@
 #define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
 
 static bool flip() {
-  static std::mt19937 rng = [] {
+  static thread_local std::mt19937 rng = [] {
     auto seed = std::random_device{}();
     std::clog << "SEED: " << seed << std::endl;
     return std::mt19937{seed};
@@ -56,11 +56,12 @@ TEST(reuse) {
 }
 
 static dd::generator<int> g2() {
-    co_yield dd::elements_of(std::move([]()->dd::generator<int> { co_return; }()));
+  co_yield dd::elements_of(std::move([]() -> dd::generator<int> { co_return; }()));
 }
 TEST(empty_recursive) {
-    for (int x : g2()) error_if(true);
-    return error_count;
+  for (int x : g2())
+    error_if(true);
+  return error_count;
 }
 
 static dd::generator<int> g3(int i) {
@@ -75,7 +76,7 @@ TEST(recursive) {
     vec.push_back(i);
   error_if((vec != std::vector{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}));
   error_if(!g.empty());
-  for(int i : g)
+  for (int i : g)
     error_if(true);
   return error_count;
 }
@@ -90,6 +91,8 @@ dd::generator<int> g4(int& i) {
   co_yield dd::elements_of(std::vector(15, -1));
   for (int x = i; i < x + 15; ++i)
     co_yield i;
+  // make sure it behaves as empty range
+  co_yield dd::elements_of(dd::generator<int>{});
   if (i < 300) {
     co_yield dd::elements_of(g4(i));
   }
@@ -114,7 +117,7 @@ TEST(reuse_recursive) {
 }
 
 dd::generator<std::string> str_g(std::string s) {
-  while(s.size() < 10) {
+  while (s.size() < 10) {
     co_yield s;
     s.push_back('A');
   }
@@ -123,14 +126,45 @@ dd::generator<std::string> str_g(std::string s) {
 }
 
 TEST(string_generator) {
-std::string check;
-for(std::string& s : str_g(std::string{})) {
-  error_if(s != check);
-  check.push_back('A');
-}
-return error_count;
+  std::string check;
+  for (std::string& s : str_g(std::string{})) {
+    error_if(s != check);
+    check.push_back('A');
+  }
+  return error_count;
 }
 
+dd::generator<bool> g_b() {
+  co_yield dd::elements_of(std::vector<bool>{true, true, false, false, true});
+}
+inline std::coroutine_handle h = nullptr;
+TEST(nontrivial_references) {
+  std::vector<bool> v;
+  for (bool b : g_b())
+    v.push_back(b);
+  error_if((v != std::vector<bool>{true, true, false, false, true}));
+  return error_count;
+}
+
+struct log_resource : std::pmr::memory_resource {
+  // sizeof of this thing affects frame size with 2 multiplier bcs its saved in frame + saved for coroutine
+  void* do_allocate(size_t size, size_t a) override {
+    std::cout << "requested bytes:" << size << '\n';
+    return ::operator new(size, std::align_val_t{a});
+  }
+  void do_deallocate(void* ptr, size_t size, size_t a) noexcept override {
+    ::operator delete(ptr, std::align_val_t{a});
+  }
+  bool do_is_equal(const memory_resource&) const noexcept override {
+    return true;
+  }
+};
+
 int main() {
-  return TESTempty() + TESTreuse() + TESTempty_recursive() + TESTrecursive() + TESTreuse_recursive() + TESTstring_generator();
+  (void)flip();  // initalize random
+  log_resource r;
+  dd::with_resource _(r);
+  dd::scope_exit e = [&] { std::flush(std::cout); };
+  return TESTempty() + TESTreuse() + TESTempty_recursive() + TESTrecursive() + TESTreuse_recursive() +
+         TESTstring_generator() + TESTnontrivial_references();
 }

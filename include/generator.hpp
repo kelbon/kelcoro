@@ -1,10 +1,8 @@
 #pragma once
 
-#include <coroutine>
 #include <iterator>
 #include <memory>
 #include <utility>
-#include <ranges>
 
 #include "common.hpp"
 
@@ -15,12 +13,22 @@
 
 namespace dd {
 
-template <typename>
-struct elements_of_t;
+template <typename R>
+struct elements_of {
+  [[no_unique_address]] R rng;
 
-// TODO think about size
+#if __cpp_aggregate_paren_init < 201902L
+  // may be clang will never support aggregate () initialization...
+  constexpr elements_of(std::type_identity_t<R> rng) noexcept : rng(static_cast<R&&>(rng)) {
+  }
+#endif
+};
+template <typename R>
+elements_of(R&&) -> elements_of<R&&>;
+
 template <typename Yield>
-struct generator_promise {
+struct generator_promise : enable_memory_resource_support {
+  static_assert(!std::is_reference_v<Yield>);
   // invariant: root != nullptr
   generator_promise* root = this;
   // invariant: never nullptr, initialized when generator created
@@ -36,6 +44,7 @@ struct generator_promise {
   auto get_return_object() noexcept {
     return std::coroutine_handle<generator_promise>::from_promise(*this);
   }
+
  private:
   struct hold_value_until_resume {
     Yield value;
@@ -46,8 +55,34 @@ struct generator_promise {
     void await_suspend(std::coroutine_handle<generator_promise> handle) noexcept {
       handle.promise().root->current_result = std::addressof(value);
     }
-    static constexpr void await_resume() noexcept {}
+    static constexpr void await_resume() noexcept {
+    }
   };
+
+  struct attach_leaf {
+    // precondition: leaf != nullptr
+    std::coroutine_handle<generator_promise> leaf;
+
+    bool await_ready() const noexcept {
+      [[assume(leaf != nullptr)]];
+      return leaf.done();
+    }
+    void await_suspend(std::coroutine_handle<generator_promise> owner) const noexcept {
+      generator_promise& leaf_p = leaf.promise();
+      generator_promise& root = *owner.promise().root;
+      leaf_p.root = &root;
+      leaf_p.owner = owner;
+      root.current_worker = leaf;
+      root.current_result = leaf_p.current_result;  // first value was created by leaf
+    }
+    static constexpr void await_resume() noexcept {
+    }
+    ~attach_leaf() {
+      // make sure compiler, that its destroyed here (end of yield expression)
+      leaf.destroy();
+    }
+  };
+
  public:
   std::suspend_always yield_value(Yield& lvalue) noexcept {
     root->current_result = std::addressof(lvalue);
@@ -57,13 +92,15 @@ struct generator_promise {
     root->current_result = std::addressof(lvalue);
     return {};
   }
-  hold_value_until_resume yield_value(const Yield& clvalue) noexcept(std::is_nothrow_copy_constructible_v<Yield>)
-    requires (!std::is_const_v<Yield>)
+  hold_value_until_resume yield_value(const Yield& clvalue) noexcept(
+      std::is_nothrow_copy_constructible_v<Yield>)
+    requires(!std::is_const_v<Yield>)
   {
     return hold_value_until_resume{Yield(clvalue)};
   }
   // attaches leaf-generator
-  auto yield_value(elements_of_t<Yield>&&) noexcept;
+  template <typename R>
+  attach_leaf yield_value(elements_of<R>) noexcept;
 
   static constexpr std::suspend_never initial_suspend() noexcept {
     return {};
@@ -115,7 +152,7 @@ struct generator_iterator {
   using difference_type = ptrdiff_t;
 
   bool operator==(std::default_sentinel_t) const noexcept {
-    assert(handle != nullptr); // invariant
+    assert(erased_handle != nullptr);  // invariant
     return erased_handle.done();
   }
   // * may be invoked > 1 times,
@@ -138,22 +175,19 @@ template <typename Yield>
 struct generator {
   using iterator = generator_iterator<Yield>;
   using handle_type = std::coroutine_handle<generator_promise<Yield>>;
+
  private:
   handle_type handle = nullptr;
 
-  template<typename>
-  friend struct attach_leaf;
  public:
-  static_assert(!std::is_reference_v<Yield>);
-
   using value_type = Yield;
   using promise_type = generator_promise<Yield>;
+
   constexpr generator() noexcept = default;
   // precondition : you dont use this constructor, its only for compiler
   constexpr generator(handle_type handle) noexcept : handle(handle) {
     assert(handle.address() != nullptr && "only compiler must use this constructor");
-    const void* p = handle.address();
-    [[assume(p != nullptr)]];
+    [[assume(handle != nullptr)]];
   }
   constexpr generator(generator&& other) noexcept : handle(std::exchange(other.handle, nullptr)) {
   }
@@ -179,53 +213,36 @@ struct generator {
   bool empty() const noexcept {
     return !handle || handle.done();
   }
-};
-
-// implementation detail
-template<typename Yield>
-struct attach_leaf {
-  generator<Yield>& leaf;
-
-  bool await_ready() const noexcept {
-    return leaf.empty();
+  // postcondition: handle == nullptr
+  // after this method its caller responsibility to correctly destroy 'handle'
+  [[nodiscard]] handle_type release() noexcept {
+    return std::exchange(handle, nullptr);
   }
-  void await_suspend(std::coroutine_handle<generator_promise<Yield>> owner) const noexcept {
-    auto& leaf_p = leaf.handle.promise();
-    generator_promise<Yield>* root = owner.promise().root;
-    leaf_p.root = root;
-    leaf_p.owner = owner;
-    root->current_worker = leaf.handle;
-    root->current_result = leaf_p.current_result;  // first value was created by leaf
+};
+
+template <typename Yield>
+template <typename R>
+typename generator_promise<Yield>::attach_leaf generator_promise<Yield>::yield_value(
+    elements_of<R> e) noexcept {
+  if constexpr (std::is_same_v<std::remove_cvref_t<R>, generator<Yield>>) {
+    std::coroutine_handle h = e.rng.release();
+    // handle case when default constructed generator yielded,
+    // (it must always behave as empty range)
+    if (!h) [[unlikely]]
+      return attach_leaf{[]() -> generator<Yield> { co_return; }().release()};
+    return attach_leaf{h};
+  } else {
+    auto make_gen = [](auto& r) -> generator<Yield> {
+      for (auto&& x : r) {
+        using val_t = std::remove_reference_t<decltype(x)>;
+        if constexpr (std::is_same_v<val_t, Yield>)
+          co_yield x;
+        else
+          co_yield Yield(x);
+      }
+    };
+    return attach_leaf{make_gen(e.rng).release()};
   }
-  static constexpr void await_resume() noexcept {}
-};
-
-template <typename Yield>
-auto generator_promise<Yield>::yield_value(elements_of_t<Yield>&& e) noexcept {
-  return attach_leaf<Yield>{e.g};
-}
-
-template <typename Yield>
-struct elements_of_t {
-  generator<Yield> g;
-};
-template <typename T>
-elements_of_t(generator<T>) -> elements_of_t<T>;
-
-template <std::ranges::range R>
-[[nodiscard]] auto elements_of(R&& r [[clang::lifetimebound]]) {
-  // takes reference to 'r' and its not a error, because it must be used
-  // in yield expression co_yield dd::elements_of(rng{}); - 'rng' outlives created generator
-  auto make_gen = [](R&& r) -> generator<std::ranges::range_value_t<R>> { // hmm, reference_t?..
-    for (auto&& x : r)
-      co_yield x;
-  };
-  return elements_of_t{make_gen(std::forward<R>(r))};
-}
-
-template <typename Yield>
-[[nodiscard("co yield it")]] constexpr elements_of_t<Yield> elements_of(generator<Yield> g) noexcept {
-  return elements_of_t{std::move(g)};
 }
 
 }  // namespace dd

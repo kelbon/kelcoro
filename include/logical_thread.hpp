@@ -57,7 +57,7 @@ constexpr inline get_stop_token_t stop_token = {};
 
 }  // namespace this_coro
 
-struct logical_thread_promise : memory_block {
+struct logical_thread_promise : enable_memory_resource_support {
   std::atomic_bool stop_requested_ = false;
   two_way_bound stopped;
 
