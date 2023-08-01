@@ -29,10 +29,12 @@ elements_of(R&&) -> elements_of<R&&>;
 template <typename Yield>
 struct generator_promise : enable_memory_resource_support {
   static_assert(!std::is_reference_v<Yield>);
+  using handle_type = std::coroutine_handle<generator_promise>;
+
   // invariant: root != nullptr
   generator_promise* root = this;
   // invariant: never nullptr, initialized when generator created
-  Yield* current_result;
+  Yield* current_result = nullptr;
   std::coroutine_handle<> current_worker = get_return_object();
   std::coroutine_handle<> owner = std::noop_coroutine();
 
@@ -42,7 +44,7 @@ struct generator_promise : enable_memory_resource_support {
   void operator=(generator_promise&&) = delete;
 
   auto get_return_object() noexcept {
-    return std::coroutine_handle<generator_promise>::from_promise(*this);
+    return handle_type::from_promise(*this);
   }
 
  private:
@@ -52,7 +54,7 @@ struct generator_promise : enable_memory_resource_support {
     static constexpr bool await_ready() noexcept {
       return false;
     }
-    void await_suspend(std::coroutine_handle<generator_promise> handle) noexcept {
+    void await_suspend(handle_type handle) noexcept {
       handle.promise().root->current_result = std::addressof(value);
     }
     static constexpr void await_resume() noexcept {
@@ -61,18 +63,38 @@ struct generator_promise : enable_memory_resource_support {
 
   struct attach_leaf {
     // precondition: leaf != nullptr
-    std::coroutine_handle<generator_promise> leaf;
+    handle_type leaf;
 
     bool await_ready() const noexcept {
       [[assume(leaf != nullptr)]];
       return leaf.done();
     }
-    void await_suspend(std::coroutine_handle<generator_promise> owner) const noexcept {
+
+   private:
+    void handle_already_recursive_generator(generator_promise& root) const noexcept {
+      // attached leaf already has some leaves and 'root' for them.
+      // may be reached ONLY if co_yield elements_of
+      // is before producing first value
+
+      // invariant: one is reachable from other, they are in same 'stack'
+      for (handle_type lowest = handle_type::from_address(leaf.promise().current_worker.address());
+           leaf.address() != lowest.address();
+           lowest = handle_type::from_address(lowest.promise().owner.address())) {
+        lowest.promise().root = &root;
+      }
+    }
+
+   public:
+    void await_suspend(handle_type owner) const noexcept {
       generator_promise& leaf_p = leaf.promise();
       generator_promise& root = *owner.promise().root;
+      if (leaf_p.current_worker.address() != leaf.address()) [[unlikely]] {
+        [[assume(owner.promise().current_result == nullptr)]];
+        handle_already_recursive_generator(root);
+      }
       leaf_p.root = &root;
       leaf_p.owner = owner;
-      root.current_worker = leaf;
+      root.current_worker = leaf_p.current_worker;
       root.current_result = leaf_p.current_result;  // first value was created by leaf
     }
     static constexpr void await_resume() noexcept {
@@ -89,8 +111,7 @@ struct generator_promise : enable_memory_resource_support {
     return {};
   }
   std::suspend_always yield_value(Yield&& lvalue) noexcept {
-    root->current_result = std::addressof(lvalue);
-    return {};
+    return yield_value(static_cast<Yield&>(lvalue));
   }
   hold_value_until_resume yield_value(const Yield& clvalue) noexcept(
       std::is_nothrow_copy_constructible_v<Yield>)
@@ -107,6 +128,7 @@ struct generator_promise : enable_memory_resource_support {
   }
   transfer_control_to final_suspend() const noexcept {
     root->current_worker = owner;
+    // i dont have value here now, so i ask 'owner' to create it
     return transfer_control_to{owner};  // noop coro if done
   }
   static constexpr void return_void() noexcept {
@@ -171,6 +193,10 @@ struct generator_iterator {
   }
 };
 
+// * recusrive (co_yield dd::elements_of(rng))
+// * default constructed generator is an empty range
+// * suspend which is not co_yield may produce undefined behavior,
+//   this means co_await expression must never suspend generator
 template <typename Yield>
 struct generator {
   using iterator = generator_iterator<Yield>;
@@ -183,12 +209,14 @@ struct generator {
   using value_type = Yield;
   using promise_type = generator_promise<Yield>;
 
+  // postcondition: empty(), for loop produces 0 values
   constexpr generator() noexcept = default;
   // precondition : you dont use this constructor, its only for compiler
   constexpr generator(handle_type handle) noexcept : handle(handle) {
     assert(handle.address() != nullptr && "only compiler must use this constructor");
     [[assume(handle != nullptr)]];
   }
+  // postcondition: other.empty()
   constexpr generator(generator&& other) noexcept : handle(std::exchange(other.handle, nullptr)) {
   }
   constexpr generator& operator=(generator&& other) noexcept {

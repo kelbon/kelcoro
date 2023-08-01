@@ -64,17 +64,28 @@ TEST(empty_recursive) {
   return error_count;
 }
 
-static dd::generator<int> g3(int i) {
-  co_yield i;
-  if (i != 10)
-    co_yield dd::elements_of(g3(i + 1));
+static dd::generator<int> g10(int i) {
+  if (i < 10)
+    co_yield dd::elements_of(g10(i + 1));
 }
+TEST(empty_recursive2) {
+  for (int& x : g10(0))
+    error_if(true);
+  return error_count;
+}
+
+static dd::generator<int> g3(int i) {
+  if (i < 10)
+    co_yield dd::elements_of(g3(i + 1));
+  co_yield i;
+}
+
 TEST(recursive) {
   std::vector<int> vec;
   auto g = g3(0);
   for (int i : g)
     vec.push_back(i);
-  error_if((vec != std::vector{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}));
+  error_if((vec != std::vector{10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0}));
   error_if(!g.empty());
   for (int i : g)
     error_if(true);
@@ -166,5 +177,5 @@ int main() {
   dd::with_resource _(r);
   dd::scope_exit e = [&] { std::flush(std::cout); };
   return TESTempty() + TESTreuse() + TESTempty_recursive() + TESTrecursive() + TESTreuse_recursive() +
-         TESTstring_generator() + TESTnontrivial_references();
+         TESTstring_generator() + TESTnontrivial_references() + TESTempty_recursive2();
 }
