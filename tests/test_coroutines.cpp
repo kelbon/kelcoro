@@ -26,15 +26,12 @@
 #define error_if(Cond) error_count += static_cast<bool>((Cond))
 #define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
 
-inline dd::task<size_t> some_task(int i) {
-  auto handle = co_await dd::this_coro::handle;
-  (void)handle;
-  co_return i;
+inline size_t some_task(int i) {
+  return i;
 }
 inline dd::generator<int> foo() {
-  // TODO type in common which returns handle for each coro
   for (int i = 0;; ++i)
-    co_yield co_await some_task(i);
+    co_yield some_task(i);
 }
 
 TEST(generator) {
@@ -63,31 +60,6 @@ TEST(zip_generator) {
   for (auto [a, b, c] : zip(vec, sz, std::string_view(sz))) {
     error_if(a != 20);
   }
-  return error_count;
-}
-
-// x and y are shown, not yields away. Any lvalue in kel::generator will be yielded like this,
-// rvalues will be transformed into generator::value_type and stored until generator resumes
-// this solves several problems:
-//		better perfomance(no copy) / move
-//		making yield_value always noexcept for lvalues(important for coroutines)
-//		yielding an references
-//		interesting applications on consumer side
-inline dd::generator<const int> view_generator() {
-  int x = 1;
-  int y = 2;
-  while (x < 100) {
-    ++x;
-    co_yield x;
-    co_yield y;
-  }
-}
-
-TEST(view_generator) {
-  std::set<const int*> addresses;
-  for (auto& i : view_generator())
-    addresses.emplace(&i);
-  error_if(addresses.size() != 2);
   return error_count;
 }
 
@@ -178,7 +150,7 @@ TEST(gen_mm) {
   int i = 0;
   auto gen = gen_mm();
   // TODO check working on rvlaue(or somehow forbide it)
-  for (auto& task : gen | std::views::filter([](auto&&) { return true; })) {
+  for (auto task : gen | std::views::filter([](auto&&) { return true; })) {
     error_if(get_result(std::move(task)).get() != i);
     ++i;
   }
@@ -383,7 +355,8 @@ dd::channel<std::tuple<int, double, float>> creator() {
 dd::async_task<void> channel_tester() {
   auto my_stream = creator();
   int i = 0;
-  while (auto* v = co_await my_stream) {
+  // TODO save next
+  while (auto* v = co_await my_stream.next()) {
     auto tpl = std::tuple{i, static_cast<double>(i), static_cast<float>(i)};
     if (*v != tpl)
       throw false;
@@ -398,8 +371,8 @@ TEST(channel) {
 }
 
 int main() {
-  return static_cast<int>(TESTgenerator() + TESTzip_generator() + TESTview_generator() +
-                          TESTlogical_thread() + TESTcoroutines_integral() + TESTlogical_thread_mm() +
-                          TESTgen_mm() + TESTjob_mm() + TESTthread_safety() + TESTwhen_any() +
-                          TESTwhen_all() + TESTasync_tasks() + TESTvoid_async_task() + TESTchannel());
+  return static_cast<int>(TESTgenerator() + TESTzip_generator() + TESTlogical_thread() +
+                          TESTcoroutines_integral() + TESTlogical_thread_mm() + TESTgen_mm() + TESTjob_mm() +
+                          TESTthread_safety() + TESTwhen_any() + TESTwhen_all() + TESTasync_tasks() +
+                          TESTvoid_async_task() + TESTchannel());
 }

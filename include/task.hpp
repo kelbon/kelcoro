@@ -22,7 +22,7 @@ struct task_promise : enable_memory_resource_support, return_block<Result> {
   }
 };
 
-// single value generator that returns a value with a co_return. Can be sent on executor(have operator())
+// single value generator that returns a value with a co_return
 template <typename Result>
 struct task {
   using result_type = Result;
@@ -76,6 +76,7 @@ struct task {
   };
 
  public:
+  // TODO inline awaiter methods
   constexpr auto operator co_await() noexcept {
     return remember_waiter_and_start_task_t{handle_};
   }

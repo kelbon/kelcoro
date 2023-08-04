@@ -30,6 +30,20 @@
 #define KELCORO_ALWAYS_INLINE inline
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#define KELCORO_PURE __attribute__((pure))
+#else
+#define KELCORO_PURE
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#define KELCORO_ASSUME(condition) __builtin_assume(condition)
+#elif defined(_MSC_VER)
+#define KELCORO_ASSUME(condition) __assume(condition)
+#else
+#define KELCORO_ASSUME(condition)
+#endif
+
 // TODO undef
 
 namespace dd {
@@ -89,7 +103,7 @@ struct [[nodiscard]] with_resource {
  public:
   explicit with_resource(std::pmr::memory_resource& m) noexcept
       : old(std::exchange(noexport::co_memory_resource, &m)) {
-    [[assume(old != nullptr)]];
+    KELCORO_ASSUME(old != nullptr);
   }
   with_resource(with_resource&&) = delete;
   void operator=(with_resource&&) = delete;
@@ -314,11 +328,37 @@ static inline const auto always_done_coro = []() -> always_done_coroutine_handle
 }  // namespace dd::noexport
 
 namespace dd {
+// TODO тип для обмена сообщениями между каналом/генератором и потребителем
+// что то типа упаковки над указателем, желательно ещё НЕ назвать его socket
+// мб connection<T> + send/recieve сообщений
+// или просто send/reseive обёртки на lvalue ссылкой... Тоже неплохо, а в генераторе
+// сделать например перегрузку yield
+// важно то, что это не должно зависеть от возвращаемого типа генератора/канала!
+// хм, recieve должен на вход генератор чтоли получать... И иметь оператор co_await для канала
+// recieve(gen) co_await recieve(channel)
 
 // caller must only use .done() and cast to coroutine_handle<void>
 // resume on returned value produces undefined behavior
 inline always_done_coroutine_handle always_done_coroutine() noexcept {
   return noexport::always_done_coro;
+}
+
+template <typename R>
+struct elements_of {
+  [[no_unique_address]] R rng;
+
+#if __cpp_aggregate_paren_init < 201902L
+  // may be clang will never support aggregate () initialization...
+  constexpr elements_of(std::type_identity_t<R> rng) noexcept : rng(static_cast<R&&>(rng)) {
+  }
+#endif
+};
+template <typename R>
+elements_of(R&&) -> elements_of<R&&>;
+
+KELCORO_ALWAYS_INLINE void assume_not_null(std::coroutine_handle<> h) noexcept {
+  void* addr = h.address();
+  KELCORO_ASSUME(addr != nullptr);
 }
 
 }  // namespace dd
