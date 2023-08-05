@@ -12,8 +12,12 @@
 #endif
 
 namespace dd {
+
+template <typename>
+struct generator;
+
 // TODO usage .begin as output iterator hmm что то типа .out хммм
-// TODO sent(x) yield overload
+// TODO send(x) yield overload
 template <typename Yield>
 struct generator_promise : enable_memory_resource_support {
   static_assert(!std::is_reference_v<Yield>);
@@ -22,7 +26,7 @@ struct generator_promise : enable_memory_resource_support {
   // invariant: root != nullptr
   generator_promise* root = this;
   // invariant: never nullptr, initialized in first co_yield
-  Yield* current_result;
+  Yield* current_result = nullptr;
   std::coroutine_handle<> current_worker = get_return_object();
   std::coroutine_handle<> owner = std::noop_coroutine();
 
@@ -56,12 +60,10 @@ struct generator_promise : enable_memory_resource_support {
   };
 
   struct attach_leaf {
-    // precondition: leaf != nullptr
-    handle_type leaf;
+    const handle_type leaf;
 
     bool await_ready() const noexcept {
-      assume_not_null(leaf);
-      return leaf.done();
+      return !leaf || leaf.done();
     }
 
    private:
@@ -79,28 +81,27 @@ struct generator_promise : enable_memory_resource_support {
     }
 
    public:
-    void await_suspend(handle_type owner) const noexcept {
+    std::coroutine_handle<> await_suspend(handle_type owner) const noexcept {
       generator_promise& leaf_p = leaf.promise();
       generator_promise& root = *owner.promise().root;
-      // TODO сделать так чтобы это было только в final suspend?
       if (leaf_p.current_worker != leaf) [[unlikely]]
         set_root_for_each_leaf_subleaf(root);
       leaf_p.root = &root;
       leaf_p.owner = owner;
       root.current_worker = leaf_p.current_worker;
-      root.current_result = leaf_p.current_result;  // first value was created by leaf
+      return root.current_worker;
     }
     static constexpr void await_resume() noexcept {
     }
     ~attach_leaf() {
-      // make sure compiler, that its destroyed here (end of yield expression)
-      leaf.destroy();
+      if (leaf)
+        leaf.destroy();
     }
   };
 
  public:
-  std::suspend_always yield_value(Yield&& lvalue) noexcept {
-    root->current_result = std::addressof(lvalue);
+  std::suspend_always yield_value(Yield&& rvalue) noexcept {
+    root->current_result = std::addressof(rvalue);
     return {};
   }
   hold_value_until_resume yield_value(const Yield& clvalue) noexcept(
@@ -111,29 +112,44 @@ struct generator_promise : enable_memory_resource_support {
   }
   // attaches leaf-generator
   template <typename R>
-  attach_leaf yield_value(elements_of<R>) noexcept;
+  attach_leaf yield_value(elements_of<R> e) noexcept {
+    if constexpr (std::is_same_v<std::remove_cvref_t<R>, generator<Yield>>) {
+      return attach_leaf{e.rng.release()};
+    } else {
+      auto make_gen = [](auto& r) -> generator<Yield> {
+        for (auto&& x : r) {
+          using val_t = std::remove_reference_t<decltype(x)>;
+          if constexpr (std::is_same_v<val_t, Yield>)
+            co_yield x;
+          else
+            co_yield Yield(x);
+        }
+      };
+      handle_type h = make_gen(e.rng).release();
+      assume_not_null(h);
+      return attach_leaf{h};
+    }
+  }
 
-  static constexpr std::suspend_never initial_suspend() noexcept {
+  static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
   transfer_control_to final_suspend() const noexcept {
     root->current_worker = owner;
-    // i dont have value here now, so i ask 'owner' to create it
+    root->current_result = nullptr;
     return transfer_control_to{owner};  // noop coro if done
   }
   static constexpr void return_void() noexcept {
   }
   [[noreturn]] static void unhandled_exception() {
+    // TODO ? может ли быть неконсистентное состояние?..
     throw;
   }
 
   // interface for iterator, used only on top-level generator
-
-  bool done() noexcept {
-    return get_return_object().done();
-  }
   void produce_next() {
-    assert(root == this && !done());
+    assume(root == this);
+    assume(!get_return_object().done());
     current_worker.resume();
   }
 };
@@ -156,7 +172,7 @@ struct generator_iterator {
   }
   // precondition: h != nullptr
   generator_iterator(std::coroutine_handle<generator_promise<Yield>> h) noexcept : handle(h) {
-    assert(h != nullptr);
+    assume_not_null(h);
   }
 
   using iterator_category = std::input_iterator_tag;
@@ -205,9 +221,11 @@ struct generator {
  public:
   // postcondition: empty(), 'for' loop produces 0 values
   constexpr generator() noexcept = default;
-  // precondition: 'handle' != nullptr
+  // precondition: 'handle' != nullptr && !handle.done()
+  // TODO must be unusable for invariant, that generator created from non-started non null handle
   constexpr generator(handle_type handle) noexcept : handle(handle) {
     assume_not_null(handle);
+    assume(!handle.done());
   }
   // postcondition: other.empty()
   constexpr generator(generator&& other) noexcept : handle(std::exchange(other.handle, nullptr)) {
@@ -238,42 +256,28 @@ struct generator {
   constexpr explicit operator bool() const noexcept {
     return !empty();
   }
-  // TODO hmm, я повторяю одно и то же число в начале при реюзе
+
   // * if .empty(), then begin() == end()
-  iterator begin() const noexcept [[clang::lifetimebound]] {
-    if (!handle) [[unlikely]]
+  // produces next value(often first)
+  iterator begin() KELCORO_LIFETIMEBOUND {
+    if (empty()) [[unlikely]]
       return iterator{};
-    return iterator(handle);
+    iterator result(handle);
+    ++result;
+    return result;
   }
   static constexpr std::default_sentinel_t end() noexcept {
     return std::default_sentinel;
   }
-};
 
-template <typename Yield>
-template <typename R>
-typename generator_promise<Yield>::attach_leaf generator_promise<Yield>::yield_value(
-    elements_of<R> e) noexcept {
-  if constexpr (std::is_same_v<std::remove_cvref_t<R>, generator<Yield>>) {
-    std::coroutine_handle h = e.rng.release();
-    // handle case when default constructed generator yielded,
-    // (it must always behave as empty range)
-    if (!h) [[unlikely]]
-      return attach_leaf{[]() -> generator<Yield> { co_return; }().release()};
-    return attach_leaf{h};
-  } else {
-    auto make_gen = [](auto& r) -> generator<Yield> {
-      for (auto&& x : r) {
-        using val_t = std::remove_reference_t<decltype(x)>;
-        if constexpr (std::is_same_v<val_t, Yield>)
-          co_yield x;
-        else
-          co_yield Yield(x);
-      }
-    };
-    return attach_leaf{make_gen(e.rng).release()};
+  Yield* next() noexcept {
+    if (empty())
+      return nullptr;
+    auto& p = handle.promise();
+    p.produce_next();
+    return p.current_result;
   }
-}
+};
 
 }  // namespace dd
 

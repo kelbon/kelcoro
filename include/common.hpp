@@ -356,9 +356,13 @@ struct elements_of {
 template <typename R>
 elements_of(R&&) -> elements_of<R&&>;
 
+KELCORO_ALWAYS_INLINE void assume(bool b) noexcept {
+  assert(b);
+  KELCORO_ASSUME(b);
+}
+
 KELCORO_ALWAYS_INLINE void assume_not_null(std::coroutine_handle<> h) noexcept {
-  void* addr = h.address();
-  KELCORO_ASSUME(addr != nullptr);
+  assume(h.address() != nullptr);
 }
 
 }  // namespace dd

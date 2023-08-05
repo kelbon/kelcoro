@@ -16,6 +16,7 @@ namespace dd {
 // TODO для таски и канала добавить возможность запустить их синхронно, но это явно unsafe.. Хотя это
 // эквивалентно просто резуму хендла
 
+// TODO exception into consumer?
 template <typename>
 struct channel;
 
@@ -29,11 +30,11 @@ struct channel_promise : enable_memory_resource_support {
     friend channel_promise;
     friend channel<Yield>;
 
-    Yield* current_result = nullptr;
-    std::coroutine_handle<> handle = nullptr;
-    handle_type top = nullptr;
+    Yield* current_result;
+    std::coroutine_handle<> handle;
+    handle_type top;
 
-    constexpr consumer_t(handle_type top) noexcept : top(top) {
+    constexpr consumer_t(handle_type top) noexcept : current_result(nullptr), handle(nullptr), top(top) {
       assume_not_null(top);
     }
 
@@ -46,14 +47,8 @@ struct channel_promise : enable_memory_resource_support {
       top.promise().consumer = this;
       return top.promise().current_worker;
     }
-    // TODO return proxy with * operator bool etc? для одинакового интерфейса с генератором... И возможно
-    // исключений
     [[nodiscard]] Yield* await_resume() const noexcept {
       return current_result;
-    }
-
-    constexpr bool ended_with_exception() const noexcept {
-      return !!top.promise().exception;
     }
   };
   // invariant: if running, then consumer != nullptr, setted when channel co_awaited
@@ -107,8 +102,7 @@ struct channel_promise : enable_memory_resource_support {
    public:
     std::coroutine_handle<> await_suspend(handle_type owner) const noexcept {
       channel_promise& leaf_p = leaf.promise();
-      channel_promise& owner_p = owner.promise();
-      consumer_t& consumer = *owner_p.consumer;
+      consumer_t& consumer = *owner.promise().consumer;
       leaf_p.consumer = &consumer;
       leaf_p.owner = owner;
       consumer.top.promise().current_worker = leaf_p.current_worker;
@@ -125,8 +119,8 @@ struct channel_promise : enable_memory_resource_support {
   };
 
  public:
-  transfer_control_to yield_value(Yield&& lvalue) noexcept {
-    consumer->current_result = std::addressof(lvalue);
+  transfer_control_to yield_value(Yield&& rvalue) noexcept {
+    consumer->current_result = std::addressof(rvalue);
     return transfer_control_to{consumer->handle};
   }
   hold_value_until_resume yield_value(const Yield& clvalue) noexcept(
@@ -143,10 +137,10 @@ struct channel_promise : enable_memory_resource_support {
       static_assert(![] {});
     if constexpr (std::is_same_v<typename rng_t::value_type, Yield>) {
       handle_type h = e.rng.release();
-      if (h)
-        return attach_leaf{h};
-      else  // TODO empty generator/channel smth like...
-        return attach_leaf{[]() -> channel<Yield> { co_return; }().release()};
+      if (!h)
+        h = []() -> channel<Yield> { co_return; }().release();
+      assume_not_null(h);
+      return attach_leaf{h};
     } else {
       auto make_channel = [](auto& r) -> channel<Yield> {
         auto next = r.next();
@@ -168,8 +162,8 @@ struct channel_promise : enable_memory_resource_support {
     if (owner) {
       owner.promise().consumer = consumer;
       return transfer_control_to{owner};
-    } else
-      return transfer_control_to{consumer->handle};
+    }
+    return transfer_control_to{consumer->handle};
   }
   static constexpr void return_void() noexcept {
   }
@@ -244,7 +238,7 @@ struct channel {
   // analogue for 'begin' of ranges
   // usage:
   //  while(auto* x = co_await channel.next())
-  [[nodiscard("co_await it")]] auto next() & noexcept KELCORO_LIFETIMEBOUND {
+  [[nodiscard]] auto next() & noexcept KELCORO_LIFETIMEBOUND {
     if (!handle) [[unlikely]]
       *this = []() -> channel<Yield> { co_return; }();
     assume_not_null(handle);
