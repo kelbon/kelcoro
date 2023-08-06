@@ -12,7 +12,7 @@
 #endif
 
 namespace dd {
-
+// TODO generator must be consumer
 template <typename>
 struct generator;
 
@@ -28,7 +28,8 @@ struct generator_promise : enable_memory_resource_support {
   // invariant: never nullptr, initialized in first co_yield
   Yield* current_result = nullptr;
   std::coroutine_handle<> current_worker = get_return_object();
-  std::coroutine_handle<> owner = std::noop_coroutine();
+  // nullptr means top-level
+  handle_type owner = nullptr;
 
   generator_promise() = default;
 
@@ -66,26 +67,9 @@ struct generator_promise : enable_memory_resource_support {
       return !leaf || leaf.done();
     }
 
-   private:
-    void set_root_for_each_leaf_subleaf(generator_promise& root) const noexcept {
-      // attached leaf already has some leaves and it is 'root' for them.
-      // may be reached ONLY if co_yield elements_of
-      // is before producing first value
-
-      // invariant: 'leaf' is reachable from 'lowest', they are in same 'stack'
-      handle_type lowest = handle_type::from_address(leaf.promise().current_worker.address());
-      while (leaf != lowest) {
-        lowest.promise().root = &root;
-        lowest = handle_type::from_address(lowest.promise().owner.address());
-      }
-    }
-
-   public:
     std::coroutine_handle<> await_suspend(handle_type owner) const noexcept {
       generator_promise& leaf_p = leaf.promise();
       generator_promise& root = *owner.promise().root;
-      if (leaf_p.current_worker != leaf) [[unlikely]]
-        set_root_for_each_leaf_subleaf(root);
       leaf_p.root = &root;
       leaf_p.owner = owner;
       root.current_worker = leaf_p.current_worker;
@@ -104,10 +88,12 @@ struct generator_promise : enable_memory_resource_support {
     root->current_result = std::addressof(rvalue);
     return {};
   }
+  std::suspend_always yield_value(by_ref<Yield> r) noexcept {
+    root->current_result = std::addressof(r.value);
+    return {};
+  }
   hold_value_until_resume yield_value(const Yield& clvalue) noexcept(
       std::is_nothrow_copy_constructible_v<Yield>) {
-    // this overload accepts Yield& too, because if i accept lvalue by ref and on
-    // call site move out value it will be visible(move_iterator will possbly break code)
     return hold_value_until_resume{Yield(clvalue)};
   }
   // attaches leaf-generator
@@ -137,12 +123,15 @@ struct generator_promise : enable_memory_resource_support {
   transfer_control_to final_suspend() const noexcept {
     root->current_worker = owner;
     root->current_result = nullptr;
-    return transfer_control_to{owner};  // noop coro if done
+    if (owner) {
+      owner.promise().root = root;
+      return transfer_control_to{owner};
+    }
+    return transfer_control_to{std::noop_coroutine()};
   }
   static constexpr void return_void() noexcept {
   }
   [[noreturn]] static void unhandled_exception() {
-    // TODO ? может ли быть неконсистентное состояние?..
     throw;
   }
 
@@ -193,7 +182,7 @@ struct generator_iterator {
     return static_cast<reference>(*handle.promise().current_result);
   }
   // * after invoking references to value from operator* are invalidated
-  generator_iterator& operator++() {
+  generator_iterator& operator++() KELCORO_LIFETIMEBOUND {
     assert(!handle.done());
     handle.promise().produce_next();
     return *this;
@@ -222,7 +211,6 @@ struct generator {
   // postcondition: empty(), 'for' loop produces 0 values
   constexpr generator() noexcept = default;
   // precondition: 'handle' != nullptr && !handle.done()
-  // TODO must be unusable for invariant, that generator created from non-started non null handle
   constexpr generator(handle_type handle) noexcept : handle(handle) {
     assume_not_null(handle);
     assume(!handle.done());

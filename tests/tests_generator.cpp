@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <numeric>
 #include <iostream>
+#include <ranges>
 
 #define error_if(Cond) error_count += static_cast<bool>((Cond))
 #define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
@@ -325,8 +326,77 @@ TEST(nontrivial_references) {
   return error_count;
 }
 
-// TODO test with ranges/views and move iterator
-// TODO тесты с исключениями
+TEST(ranges_recursive) {
+  int i = 0;
+  dd::generator g = g4<dd::generator>(i);
+  std::vector<int> v;
+  for (int x : g | std::views::filter([](int i) { return i >= 0; }))
+    v.push_back(x);
+  std::vector<int> check(300);
+  std::iota(begin(check), end(check), 0);
+  error_if(check != v);
+  return error_count;
+}
+TEST(ranges_base2) {
+  std::vector<int> vec;
+  auto g = base_case<dd::generator>();
+  for (int i : g | std::views::transform([](int&& i) { return i * 2; }) |
+                   std::views::filter([](int i) { return i >= 0; }))
+    vec.push_back(i);
+  std::vector check(100, 0);
+  std::iota(begin(check), end(check), 0);
+  for (int& x : check)
+    x *= 2;
+  error_if(vec != check);
+  return error_count;
+}
+CHAN_OR_GEN
+G<int> byrefg(size_t& error_count) {
+  int i = 0;
+  RANDOM_CONTROL_FLOW;
+  for (int j = 0; j < 100; ++j) {
+    error_if(i != j);
+    RANDOM_CONTROL_FLOW;
+    co_yield dd::by_ref{i};
+  }
+  RANDOM_CONTROL_FLOW;
+}
+TEST(byref_generator) {
+  for (int&& i : byrefg<dd::generator>(error_count))
+    ++i;
+  return error_count;
+}
+CHANNEL_TEST(byref_channel) {
+  dd::channel c = byrefg<dd::channel>(error_count);
+  while (int* i = co_await c.next())
+    ++*i;
+  co_return error_count;
+}
+CO_TEST(byref_channel);
+
+dd::channel<int> null_terminated_ints() {
+  std::vector vec(10, 1);
+  for (int i : vec)
+    co_yield i;
+  co_yield dd::nothing;
+  for (int i : vec)
+    co_yield i;
+  co_yield dd::nothing;
+  for (int i : vec)
+    co_yield i;
+}
+CHANNEL_TEST(null_terminated_channel) {
+  auto c = null_terminated_ints();
+  for (int i = 0; i < 3; ++i) {
+    std::vector<int> vec;
+    while (int* i = co_await c.next())
+      vec.push_back(*i);
+    error_if(vec != std::vector(10, 1));
+  }
+  co_return error_count;
+}
+CO_TEST(null_terminated_channel);
+
 struct log_resource : std::pmr::memory_resource {
   size_t allocated = 0;
   // sizeof of this thing affects frame size with 2 multiplier bcs its saved in frame + saved for coroutine
@@ -384,5 +454,10 @@ int main() {
   RUN(string_generator);
   RUN(nontrivial_references);
   RUN(empty_recursive2);
+  RUN(ranges_recursive);
+  RUN(ranges_base2);
+  RUN(byref_generator);
+  RUN(byref_channel);
+  RUN(null_terminated_channel);
   return ec;
 }

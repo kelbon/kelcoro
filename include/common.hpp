@@ -290,7 +290,18 @@ constexpr decltype(auto) build_awaiter(T&& value) {
     return std::forward<T>(value).operator co_await();
 }
 
-struct always_done_coroutine_promise : enable_memory_resource_support {
+struct always_done_coroutine_promise {
+  static void* operator new(std::size_t frame_size) {
+    assert(frame_size < 128 && "hack dont works(");
+    // there are only one always done coroutine.
+    // Its always without state, only compiler-inner things
+    alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__) static char hack[128];
+    return hack;
+  }
+
+  static void operator delete(void* ptr, std::size_t frame_size) noexcept {
+    // noop
+  }
   static constexpr std::suspend_never initial_suspend() noexcept {
     return {};
   }
@@ -337,8 +348,10 @@ namespace dd {
 // хм, recieve должен на вход генератор чтоли получать... И иметь оператор co_await для канала
 // recieve(gen) co_await recieve(channel)
 
-// caller must only use .done() and cast to coroutine_handle<void>
-// resume on returned value produces undefined behavior
+// returns handle for which
+// .done() == true
+// .destroy() is noop
+// .resume() produces undefined behavior
 inline always_done_coroutine_handle always_done_coroutine() noexcept {
   return noexport::always_done_coro;
 }
@@ -364,5 +377,20 @@ KELCORO_ALWAYS_INLINE void assume(bool b) noexcept {
 KELCORO_ALWAYS_INLINE void assume_not_null(std::coroutine_handle<> h) noexcept {
   assume(h.address() != nullptr);
 }
+
+// tag for yielding from generator/channel by reference.
+// This means, if 'value' will be changed by caller it will be
+// observable from coroutine
+// example:
+// int i = 0;
+// co_yield ref{i};
+// ..here i may be != 0, if caller changed it
+template <typename Yield>
+struct by_ref {
+  Yield& value;
+};
+
+template <typename Yield>
+by_ref(Yield&) -> by_ref<Yield>;
 
 }  // namespace dd
