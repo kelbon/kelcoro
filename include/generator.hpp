@@ -17,7 +17,7 @@ template <typename>
 struct generator;
 
 // TODO usage .begin as output iterator hmm что то типа .out хммм
-// TODO send(x) yield overload
+
 template <typename Yield>
 struct generator_promise : enable_memory_resource_support {
   static_assert(!std::is_reference_v<Yield>);
@@ -61,14 +61,16 @@ struct generator_promise : enable_memory_resource_support {
   };
 
   struct attach_leaf {
-    const handle_type leaf;
+    // precondition: leaf != nullptr
+    std::coroutine_handle<> leaf;
 
     bool await_ready() const noexcept {
-      return !leaf || leaf.done();
+      assume_not_null(leaf);
+      return leaf.done();
     }
 
     std::coroutine_handle<> await_suspend(handle_type owner) const noexcept {
-      generator_promise& leaf_p = leaf.promise();
+      generator_promise& leaf_p = handle_type::from_address(leaf.address()).promise();
       generator_promise& root = *owner.promise().root;
       leaf_p.root = &root;
       leaf_p.owner = owner;
@@ -78,8 +80,7 @@ struct generator_promise : enable_memory_resource_support {
     static constexpr void await_resume() noexcept {
     }
     ~attach_leaf() {
-      if (leaf)
-        leaf.destroy();
+      leaf.destroy();
     }
   };
 
@@ -111,7 +112,7 @@ struct generator_promise : enable_memory_resource_support {
             co_yield Yield(x);
         }
       };
-      handle_type h = make_gen(e.rng).release();
+      auto h = make_gen(e.rng).release();
       assume_not_null(h);
       return attach_leaf{h};
     }
@@ -146,21 +147,18 @@ struct generator_promise : enable_memory_resource_support {
 template <typename Yield>
 struct generator_iterator {
  private:
-  // but.. why?
-  // Its required for guarantee that default constructed generator is an empty range
-  // so i store erased handle when iterator is default constructed and 'handle' otherwise
-  // P.S. i know about formal UB here
-  union {
-    // invariants: always != nullptr, if !erased_handle.done(), then 'handle' stored
-    std::coroutine_handle<> erased_handle;
-    std::coroutine_handle<generator_promise<Yield>> handle;
-  };
+  using handle_type = std::coroutine_handle<generator_promise<Yield>>;
+  // invariant: != nullptr
+  std::coroutine_handle<> _handle = always_done_coroutine();
+
+  handle_type handle() const noexcept {
+    return handle_type::from_address(_handle.address());
+  }
 
  public:
-  generator_iterator() noexcept : erased_handle(always_done_coroutine()) {
-  }
+  generator_iterator() noexcept = default;
   // precondition: h != nullptr
-  generator_iterator(std::coroutine_handle<generator_promise<Yield>> h) noexcept : handle(h) {
+  generator_iterator(std::coroutine_handle<> h) noexcept : _handle(h) {
     assume_not_null(h);
   }
 
@@ -171,20 +169,17 @@ struct generator_iterator {
   using difference_type = ptrdiff_t;
 
   bool operator==(std::default_sentinel_t) const noexcept {
-    assert(erased_handle != nullptr);  // invariant
-    return erased_handle.done();
+    return _handle.done();
   }
-  // * may be invoked > 1 times, but be carefull with moving out
+  // * returns rvalue ref
   reference operator*() const noexcept {
-    assert(!handle.done());
-    // returns && because yield guarantees that generator will not observe changes
-    // and i want effective for(std::string s : generator)
-    return static_cast<reference>(*handle.promise().current_result);
+    assert(*this != std::default_sentinel);
+    return static_cast<reference>(*handle().promise().current_result);
   }
   // * after invoking references to value from operator* are invalidated
   generator_iterator& operator++() KELCORO_LIFETIMEBOUND {
-    assert(!handle.done());
-    handle.promise().produce_next();
+    assert(*this != std::default_sentinel);
+    handle().promise().produce_next();
     return *this;
   }
   void operator++(int) {
@@ -205,18 +200,18 @@ struct generator {
   using iterator = generator_iterator<Yield>;
 
  private:
-  handle_type handle = nullptr;
+  // invariant: != nullptr
+  std::coroutine_handle<> handle = always_done_coroutine();
 
  public:
   // postcondition: empty(), 'for' loop produces 0 values
   constexpr generator() noexcept = default;
-  // precondition: 'handle' != nullptr && !handle.done()
+  // precondition: 'handle' != nullptr
   constexpr generator(handle_type handle) noexcept : handle(handle) {
     assume_not_null(handle);
-    assume(!handle.done());
   }
   // postcondition: other.empty()
-  constexpr generator(generator&& other) noexcept : handle(std::exchange(other.handle, nullptr)) {
+  constexpr generator(generator&& other) noexcept : handle(other.release()) {
   }
   constexpr generator& operator=(generator&& other) noexcept {
     std::swap(handle, other.handle);
@@ -224,13 +219,12 @@ struct generator {
   }
   // postcondition: .empty()
   // after this method its caller responsibility to correctly destroy 'handle'
-  [[nodiscard]] constexpr handle_type release() noexcept {
-    return std::exchange(handle, nullptr);
+  [[nodiscard]] constexpr std::coroutine_handle<> release() noexcept {
+    return std::exchange(handle, always_done_coroutine());
   }
   // postcondition: .empty()
   constexpr void clear() noexcept {
-    if (handle)
-      release().destroy();
+    release().destroy();
   }
   constexpr ~generator() {
     clear();
@@ -239,7 +233,7 @@ struct generator {
   // observers
 
   constexpr bool empty() const noexcept {
-    return !handle || handle.done();
+    return handle.done();
   }
   constexpr explicit operator bool() const noexcept {
     return !empty();
@@ -248,10 +242,9 @@ struct generator {
   // * if .empty(), then begin() == end()
   // produces next value(often first)
   iterator begin() KELCORO_LIFETIMEBOUND {
-    if (empty()) [[unlikely]]
-      return iterator{};
     iterator result(handle);
-    ++result;
+    if (!empty()) [[likely]]
+      ++result;
     return result;
   }
   static constexpr std::default_sentinel_t end() noexcept {

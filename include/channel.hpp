@@ -95,7 +95,6 @@ struct channel_promise : enable_memory_resource_support {
       return leaf.done();
     }
 
-   public:
     std::coroutine_handle<> await_suspend(handle_type owner) const noexcept {
       channel_promise& leaf_p = handle_type::from_address(leaf.address()).promise();
       consumer_t& consumer = *owner.promise().consumer;
@@ -181,6 +180,7 @@ struct channel {
   using value_type = Yield;
 
  private:
+  // invariant: != nullptr
   std::coroutine_handle<> handle = always_done_coroutine();
 
  public:
@@ -191,7 +191,7 @@ struct channel {
     assume_not_null(handle);
   }
 
-  constexpr channel(channel&& other) noexcept : handle(std::exchange(other.handle, nullptr)) {
+  constexpr channel(channel&& other) noexcept : handle(other.release()) {
   }
   constexpr channel& operator=(channel&& other) noexcept {
     std::swap(handle, other.handle);

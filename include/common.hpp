@@ -291,15 +291,17 @@ constexpr decltype(auto) build_awaiter(T&& value) {
 }
 
 struct always_done_coroutine_promise {
+  static auto& addr() {
+    constinit static char* a = nullptr;
+    return a;
+  }
   static void* operator new(std::size_t frame_size) {
-    assert(frame_size < 128 && "hack dont works(");
-    // there are only one always done coroutine.
-    // Its always without state, only compiler-inner things
-    alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__) static char hack[128];
-    return hack;
+    // will be deleted by single always_done_coroutine instance
+    addr() = new char[frame_size];
+    return addr();
   }
 
-  static void operator delete(void* ptr, std::size_t frame_size) noexcept {
+  static void operator delete(void*, std::size_t) noexcept {
     // noop
   }
   static constexpr std::suspend_never initial_suspend() noexcept {
@@ -334,26 +336,26 @@ struct coroutine_traits<::dd::always_done_coroutine_handle, Args...> {
 
 namespace dd::noexport {
 
-static inline const auto always_done_coro = []() -> always_done_coroutine_handle { co_return; }();
+struct always_done_coro_holder {
+  always_done_coroutine_handle handle;
+
+  ~always_done_coro_holder() {
+    delete[] always_done_coroutine_promise::addr();
+  }
+};
+static inline const always_done_coro_holder always_done_coro{
+    []() -> always_done_coroutine_handle { co_return; }()};
 
 }  // namespace dd::noexport
 
 namespace dd {
-// TODO тип для обмена сообщениями между каналом/генератором и потребителем
-// что то типа упаковки над указателем, желательно ещё НЕ назвать его socket
-// мб connection<T> + send/recieve сообщений
-// или просто send/reseive обёртки на lvalue ссылкой... Тоже неплохо, а в генераторе
-// сделать например перегрузку yield
-// важно то, что это не должно зависеть от возвращаемого типа генератора/канала!
-// хм, recieve должен на вход генератор чтоли получать... И иметь оператор co_await для канала
-// recieve(gen) co_await recieve(channel)
 
 // returns handle for which
 // .done() == true
 // .destroy() is noop
 // .resume() produces undefined behavior
 inline always_done_coroutine_handle always_done_coroutine() noexcept {
-  return noexport::always_done_coro;
+  return noexport::always_done_coro.handle;
 }
 
 template <typename R>
