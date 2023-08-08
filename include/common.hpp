@@ -291,18 +291,19 @@ constexpr decltype(auto) build_awaiter(T&& value) {
 }
 
 struct always_done_coroutine_promise {
-  static auto& addr() {
-    constinit static char* a = nullptr;
-    return a;
-  }
   static void* operator new(std::size_t frame_size) {
-    // will be deleted by single always_done_coroutine instance
-    addr() = new char[frame_size];
-    return addr();
+    // worst part - i have  no guarantees about frame size, even when compiler exactly knows
+    // how much it will allocoate (if he will)
+    alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__) static char bytes[50];
+    if (frame_size <= 50)
+      return bytes;
+    // this memory can not be deallocated in dctor of global object,
+    // because i have no guarantee, that this memory even will be allocated.
+    // so its memory leak. Ok
+    return new char[frame_size];
   }
 
   static void operator delete(void*, std::size_t) noexcept {
-    // noop
   }
   static constexpr std::suspend_never initial_suspend() noexcept {
     return {};
@@ -336,14 +337,7 @@ struct coroutine_traits<::dd::always_done_coroutine_handle, Args...> {
 
 namespace dd::noexport {
 
-struct always_done_coro_holder {
-  always_done_coroutine_handle handle;
-
-  ~always_done_coro_holder() {
-    delete[] always_done_coroutine_promise::addr();
-  }
-};
-static inline const always_done_coro_holder always_done_coro{
+static inline const always_done_coroutine_handle always_done_coro{
     []() -> always_done_coroutine_handle { co_return; }()};
 
 }  // namespace dd::noexport
@@ -355,7 +349,7 @@ namespace dd {
 // .destroy() is noop
 // .resume() produces undefined behavior
 inline always_done_coroutine_handle always_done_coroutine() noexcept {
-  return noexport::always_done_coro.handle;
+  return noexport::always_done_coro;
 }
 
 template <typename R>

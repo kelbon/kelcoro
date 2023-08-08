@@ -44,6 +44,7 @@ TEST(empty) {
 }
 CHAN_OR_GEN
 G<int> base_case() {
+  (void)co_await dd::this_coro::handle;
   for (int i = 0; i < 100; ++i) {
     RANDOM_CONTROL_FLOW;
     co_yield i;
@@ -396,7 +397,10 @@ CHANNEL_TEST(null_terminated_channel) {
   co_return error_count;
 }
 CO_TEST(null_terminated_channel);
-
+// TODO tests когда начал генерировать, приостановился, скинул все остальные элементы как elements_of
+// и для генератора и для канала
+// TODO тесты с исключениями(бросок из рекурсии) и обработку исключений всё таки
+// TODO генератор и канал должны использовать один и тот же промис абсолютно
 struct log_resource : std::pmr::memory_resource {
   size_t allocated = 0;
   // sizeof of this thing affects frame size with 2 multiplier bcs its saved in frame + saved for coroutine

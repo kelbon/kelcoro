@@ -25,10 +25,9 @@ struct generator_promise : enable_memory_resource_support {
 
   // invariant: root != nullptr
   generator_promise* root = this;
-  // invariant: never nullptr, initialized in first co_yield
   Yield* current_result = nullptr;
-  std::coroutine_handle<> current_worker = get_return_object();
-  // nullptr means top-level
+  handle_type current_worker = get_return_object();
+  // nullptr means top-level TODO better?
   handle_type owner = nullptr;
 
   generator_promise() = default;
@@ -42,7 +41,7 @@ struct generator_promise : enable_memory_resource_support {
   // there are no correct things which you can do with co_await
   // in generator
   void await_transform(auto&&) = delete;
-  auto await_trasform(get_handle_t) const noexcept {
+  auto await_transform(get_handle_t) noexcept {
     return this_coro::handle.operator co_await();
   }
 
@@ -72,10 +71,10 @@ struct generator_promise : enable_memory_resource_support {
     std::coroutine_handle<> await_suspend(handle_type owner) const noexcept {
       generator_promise& leaf_p = handle_type::from_address(leaf.address()).promise();
       generator_promise& root = *owner.promise().root;
-      leaf_p.root = &root;
+      leaf_p.current_worker.promise().root = &root;
       leaf_p.owner = owner;
       root.current_worker = leaf_p.current_worker;
-      return root.current_worker;
+      return leaf_p.current_worker;
     }
     static constexpr void await_resume() noexcept {
     }
@@ -112,7 +111,7 @@ struct generator_promise : enable_memory_resource_support {
             co_yield Yield(x);
         }
       };
-      auto h = make_gen(e.rng).release();
+      auto h = make_gen(e.rng).release();  // TODO better
       assume_not_null(h);
       return attach_leaf{h};
     }
@@ -122,9 +121,8 @@ struct generator_promise : enable_memory_resource_support {
     return {};
   }
   transfer_control_to final_suspend() const noexcept {
-    root->current_worker = owner;
-    root->current_result = nullptr;
     if (owner) {
+      root->current_worker = owner;
       owner.promise().root = root;
       return transfer_control_to{owner};
     }
@@ -206,7 +204,7 @@ struct generator {
  public:
   // postcondition: empty(), 'for' loop produces 0 values
   constexpr generator() noexcept = default;
-  // precondition: 'handle' != nullptr
+  // precondition: 'handle' != nullptr, handle does not have other owners
   constexpr generator(handle_type handle) noexcept : handle(handle) {
     assume_not_null(handle);
   }

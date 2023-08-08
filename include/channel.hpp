@@ -6,9 +6,6 @@ namespace dd {
 
 // logic and behavior is very similar to generator, but its async(may suspend before co_yield)
 
-// TODO создать generator просто одним ифом в channel, это же одно и то же. Различие в обработке исключений,
-// запрете co_await и наличии итератора(т.к. существует гарантия, что синхронно)
-
 template <typename>
 struct channel;
 
@@ -24,15 +21,13 @@ template <typename Yield>
 struct channel_promise : enable_memory_resource_support {
   static_assert(!std::is_reference_v<Yield>);
   using handle_type = std::coroutine_handle<channel_promise>;
-
+  // TODO remove(make it iterator)
   struct consumer_t {
    private:
     friend channel_promise;
     friend channel<Yield>;
 
-    Yield* current_result = nullptr;
-    std::coroutine_handle<> handle;
-    std::coroutine_handle<> _top;  // maybe always done coro or handle_type
+    std::coroutine_handle<> _top;  // may be always done coro or handle_type
 
     constexpr consumer_t(std::coroutine_handle<> top) noexcept : _top(top) {
       assume_not_null(top);
@@ -46,20 +41,25 @@ struct channel_promise : enable_memory_resource_support {
       return _top.done();
     }
     std::coroutine_handle<void> await_suspend(std::coroutine_handle<void> consumer) noexcept {
-      handle = consumer;
-      auto& p = top().promise();
-      p.consumer = this;
-      return p.current_worker;
+      auto& root = top().promise();
+      // root.owner = consumer;
+      root.consumer = consumer;
+      return root.current_worker;
     }
     [[nodiscard]] Yield* await_resume() const noexcept {
-      return current_result;
+      if (_top.done())
+        return nullptr;  // TODO hmm
+      return top().promise().current_result;
     }
   };
-  // invariant: if running, then consumer != nullptr, setted when channel co_awaited
-  consumer_t* consumer;
+  // invariant: root != nullptr
+  channel_promise* root = this;
+  Yield* current_result = nullptr;
   handle_type current_worker = get_return_object();
-  // nullptr means top-level
-  handle_type owner = nullptr;
+  // invariant: never nullptr, stores owner for leafs and consumer for top-level channel
+  // TODO for generator do same transformation
+  handle_type owner;
+  std::coroutine_handle<> consumer = nullptr;  // TODO совместить с owner
 
   channel_promise() = default;
 
@@ -77,10 +77,11 @@ struct channel_promise : enable_memory_resource_support {
     static constexpr bool await_ready() noexcept {
       return false;
     }
-    std::coroutine_handle<> await_suspend(handle_type current_leaf) noexcept {
-      consumer_t& c = *current_leaf.promise().consumer;
-      c.current_result = std::addressof(value);
-      return c.handle;
+    std::coroutine_handle<> await_suspend(handle_type handle) noexcept {
+      channel_promise& root = *handle.promise().root;
+      root.current_result = std::addressof(value);
+      // return root.owner;
+      return root.consumer;
     }
     static constexpr void await_resume() noexcept {
     }
@@ -97,43 +98,45 @@ struct channel_promise : enable_memory_resource_support {
 
     std::coroutine_handle<> await_suspend(handle_type owner) const noexcept {
       channel_promise& leaf_p = handle_type::from_address(leaf.address()).promise();
-      consumer_t& consumer = *owner.promise().consumer;
-      leaf_p.consumer = &consumer;
+      channel_promise& root = *owner.promise().root;
+      leaf_p.current_worker.promise().root = &root;
       leaf_p.owner = owner;
-      consumer.top().promise().current_worker = leaf_p.current_worker;
+      leaf_p.current_worker.promise().consumer = owner.promise().consumer;  //
+      root.current_worker = leaf_p.current_worker;
       return leaf_p.current_worker;
     }
     constexpr void await_resume() const {
     }
     ~attach_leaf() {
-      // make sure compiler, that its destroyed here (end of yield expression)
       leaf.destroy();
     }
   };
 
  public:
   transfer_control_to yield_value(Yield&& rvalue) noexcept {
-    consumer->current_result = std::addressof(rvalue);
-    return transfer_control_to{consumer->handle};
+    root->current_result = std::addressof(rvalue);
+    // return transfer_control_to{root->owner};
+    return transfer_control_to{root->consumer};
   }
   hold_value_until_resume yield_value(const Yield& clvalue) noexcept(
       std::is_nothrow_copy_constructible_v<Yield>) {
     return hold_value_until_resume{Yield(clvalue)};
   }
   transfer_control_to yield_value(nothing_t) noexcept {
-    consumer->current_result = nullptr;
-    return transfer_control_to{consumer->handle};
+    root->current_result = nullptr;
+    // return transfer_control_to{root->owner};
+    return transfer_control_to{root->consumer};
   }
   transfer_control_to yield_value(by_ref<Yield> r) noexcept {
-    consumer->current_result = std::addressof(r.value);
-    return transfer_control_to{consumer->handle};
+    root->current_result = std::addressof(r.value);
+    // return transfer_control_to{root->owner};
+    return transfer_control_to{root->consumer};
   }
   // attaches leaf channel
-  // TODO think about generator-leaf
   // postcondition: e.rng.empty()
   template <typename X>
   attach_leaf yield_value(elements_of<X> e) noexcept {
-    using rng_t = std::decay_t<X>;
+    using rng_t = std::remove_cvref_t<X>;
     if constexpr (!std::is_same_v<rng_t, channel<Yield>>)
       static_assert(![] {});
     if constexpr (std::is_same_v<typename rng_t::value_type, Yield>) {
@@ -142,7 +145,7 @@ struct channel_promise : enable_memory_resource_support {
       auto make_channel = [](auto& r) -> channel<Yield> {
         auto next = r.next();
         while (auto* x = co_await next)
-          co_yield Yield(*x);
+          co_yield Yield(std::move(*x));
       };
       return attach_leaf{make_channel(e.rng).release()};
     }
@@ -151,15 +154,22 @@ struct channel_promise : enable_memory_resource_support {
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
+  // transfer_control_to final_suspend() noexcept {
+  //   if (&current_worker.promise() == this) {  // top-level
+  //     current_result = nullptr;
+  //   } else {
+  //     root->current_worker = handle_type::from_address(owner.address());
+  //     handle_type::from_address(owner.address()).promise().root = root;
+  //   }
+  //   return transfer_control_to{owner};
+  // }
   transfer_control_to final_suspend() const noexcept {
-    consumer->top().promise().current_worker = owner;
-    consumer->current_result = nullptr;  // may be im last
-    // i dont have value here now, so i ask 'owner' to create it
     if (owner) {
-      owner.promise().consumer = consumer;
+      root->current_worker = owner;
+      owner.promise().root = root;
       return transfer_control_to{owner};
     }
-    return transfer_control_to{consumer->handle};
+    return transfer_control_to{consumer};
   }
   static constexpr void return_void() noexcept {
   }
@@ -186,7 +196,7 @@ struct channel {
  public:
   // postcondition: empty()
   constexpr channel() noexcept = default;
-  // precondition: 'handle' != nullptr
+  // precondition: 'handle' != nullptr, handle does not have other owners
   constexpr channel(handle_type handle) noexcept : handle(handle) {
     assume_not_null(handle);
   }
@@ -221,8 +231,10 @@ struct channel {
     return !empty();
   }
 
+  // co_await on result will return pointer to
+  // next value(or nullptr if dd::nothing yielded or .empty())
   // usage:
-  //  while(auto* x = co_await channel.next()) TODO doc
+  //  while(auto* x = co_await channel.next())
   [[nodiscard]] auto next() & noexcept KELCORO_LIFETIMEBOUND {
     assume_not_null(handle);
     return typename promise_type::consumer_t(handle);
