@@ -16,7 +16,9 @@ struct nothing_t {
 // for example you can produce 'null terminated' sequences of values with this
 // or create an empty but never done channel
 constexpr inline nothing_t nothing{};
-
+// TODO реально было лучше, нужно откатится до состояния с консумером и обработать исключения тоже,
+// возможно через ifdef типа если отключены искючения, то пошло оно нахуй(можно узнать как проверить что
+// исключения отрублены)
 template <typename Yield>
 struct channel_promise : enable_memory_resource_support {
   static_assert(!std::is_reference_v<Yield>);
@@ -42,8 +44,7 @@ struct channel_promise : enable_memory_resource_support {
     }
     std::coroutine_handle<void> await_suspend(std::coroutine_handle<void> consumer) noexcept {
       auto& root = top().promise();
-      // root.owner = consumer;
-      root.consumer = consumer;
+      root.owner = consumer;
       return root.current_worker;
     }
     [[nodiscard]] Yield* await_resume() const noexcept {
@@ -57,9 +58,12 @@ struct channel_promise : enable_memory_resource_support {
   Yield* current_result = nullptr;
   handle_type current_worker = get_return_object();
   // invariant: never nullptr, stores owner for leafs and consumer for top-level channel
-  // TODO for generator do same transformation
-  handle_type owner;
-  std::coroutine_handle<> consumer = nullptr;  // TODO совместить с owner
+  std::coroutine_handle<> owner;
+
+  handle_type owner_() const noexcept {
+    assert(root != this);
+    return handle_type::from_address(owner.address());
+  }
 
   channel_promise() = default;
 
@@ -80,8 +84,7 @@ struct channel_promise : enable_memory_resource_support {
     std::coroutine_handle<> await_suspend(handle_type handle) noexcept {
       channel_promise& root = *handle.promise().root;
       root.current_result = std::addressof(value);
-      // return root.owner;
-      return root.consumer;
+      return root.owner;
     }
     static constexpr void await_resume() noexcept {
     }
@@ -101,7 +104,6 @@ struct channel_promise : enable_memory_resource_support {
       channel_promise& root = *owner.promise().root;
       leaf_p.current_worker.promise().root = &root;
       leaf_p.owner = owner;
-      leaf_p.current_worker.promise().consumer = owner.promise().consumer;  //
       root.current_worker = leaf_p.current_worker;
       return leaf_p.current_worker;
     }
@@ -115,8 +117,7 @@ struct channel_promise : enable_memory_resource_support {
  public:
   transfer_control_to yield_value(Yield&& rvalue) noexcept {
     root->current_result = std::addressof(rvalue);
-    // return transfer_control_to{root->owner};
-    return transfer_control_to{root->consumer};
+    return transfer_control_to{root->owner};
   }
   hold_value_until_resume yield_value(const Yield& clvalue) noexcept(
       std::is_nothrow_copy_constructible_v<Yield>) {
@@ -124,13 +125,11 @@ struct channel_promise : enable_memory_resource_support {
   }
   transfer_control_to yield_value(nothing_t) noexcept {
     root->current_result = nullptr;
-    // return transfer_control_to{root->owner};
-    return transfer_control_to{root->consumer};
+    return transfer_control_to{root->owner};
   }
   transfer_control_to yield_value(by_ref<Yield> r) noexcept {
     root->current_result = std::addressof(r.value);
-    // return transfer_control_to{root->owner};
-    return transfer_control_to{root->consumer};
+    return transfer_control_to{root->owner};
   }
   // attaches leaf channel
   // postcondition: e.rng.empty()
@@ -154,31 +153,17 @@ struct channel_promise : enable_memory_resource_support {
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
-  // transfer_control_to final_suspend() noexcept {
-  //   if (&current_worker.promise() == this) {  // top-level
-  //     current_result = nullptr;
-  //   } else {
-  //     root->current_worker = handle_type::from_address(owner.address());
-  //     handle_type::from_address(owner.address()).promise().root = root;
-  //   }
-  //   return transfer_control_to{owner};
-  // }
   transfer_control_to final_suspend() const noexcept {
-    if (owner) {
-      root->current_worker = owner;
-      owner.promise().root = root;
-      return transfer_control_to{owner};
+    if (root != this) {
+      root->current_worker = owner_();
+      root->current_worker.promise().root = root;
     }
-    return transfer_control_to{consumer};
+    return transfer_control_to{owner};
   }
   static constexpr void return_void() noexcept {
   }
   [[noreturn]] static void unhandled_exception() noexcept {
     std::terminate();
-  }
-
-  bool done() noexcept {
-    return get_return_object().done();
   }
 };
 
@@ -215,8 +200,7 @@ struct channel {
   }
   // postcondition: .empty()
   constexpr void clear() noexcept {
-    if (handle)
-      release().destroy();
+    release().destroy();
   }
   constexpr ~channel() {
     clear();

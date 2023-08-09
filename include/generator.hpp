@@ -12,6 +12,13 @@
 #endif
 
 namespace dd {
+// TODO на сверх грязных хаках сделать
+// чтобы await transform был запрещён в генераторе
+// и чтобы все реализации юзали одну и ту же
+// реализацию channel_promive<void>
+// а сверху неё пара перегрузок yield(для интерфейса
+// кастов банально) + запреты await transform
+
 // TODO generator must be consumer
 template <typename>
 struct generator;
@@ -27,8 +34,13 @@ struct generator_promise : enable_memory_resource_support {
   generator_promise* root = this;
   Yield* current_result = nullptr;
   handle_type current_worker = get_return_object();
-  // nullptr means top-level TODO better?
-  handle_type owner = nullptr;
+  // invariant: never nullptr, stores owner for leafs and std::noop_coroutine() for top-level generator
+  std::coroutine_handle<> owner = std::noop_coroutine();
+
+  handle_type owner_() const noexcept {
+    assert(root != this);
+    return handle_type::from_address(owner.address());
+  }
 
   generator_promise() = default;
 
@@ -121,12 +133,11 @@ struct generator_promise : enable_memory_resource_support {
     return {};
   }
   transfer_control_to final_suspend() const noexcept {
-    if (owner) {
-      root->current_worker = owner;
-      owner.promise().root = root;
-      return transfer_control_to{owner};
+    if (root != this) {
+      root->current_worker = owner_();
+      root->current_worker.promise().root = root;
     }
-    return transfer_control_to{std::noop_coroutine()};
+    return transfer_control_to{owner};
   }
   static constexpr void return_void() noexcept {
   }
