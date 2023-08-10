@@ -7,7 +7,7 @@
 #include <cassert>
 #include <thread>
 #include <memory_resource>
-
+// TODO перенести всякую муть в utility связанную с тредами, опшнлами и тд
 #define KELCORO_CO_AWAIT_REQUIRED [[nodiscard("forget co_await?")]]
 #ifdef __clang__
 #define KELCORO_LIFETIMEBOUND [[clang::lifetimebound]]
@@ -389,7 +389,12 @@ struct by_ref {
 template <typename Yield>
 by_ref(Yield&) -> by_ref<Yield>;
 
+// TODO name handle union
 // never nullptr, stores always_done_coroutine_handle or std::coroutine_handle<Promise>
+// TODO attributes like pure/const/flatten/cold/hot etc
+// реально, если забить на мсвц, то можно писать аттрибуты просто через gnu::x и их поймёт кланг тоже...
+// TODO убрать макросы тогда нахрен
+// TODO проверить комбинацию cold + flatten на unhandled_exception!
 template <typename Promise>
 struct coroutine_handle {
  private:
@@ -411,12 +416,10 @@ struct coroutine_handle {
 
   std::coroutine_handle<Promise> get() const noexcept {
     assert(_h != nullptr);
-    assert(!_h.done());
     return std::coroutine_handle<Promise>::from_address(_h.address());
   }
   // precondition: not always_done_coroutine stored
   Promise& promise() const noexcept {
-    assert(_h != always_done_coroutine());  // TODO rm
     return std::coroutine_handle<Promise>::from_address(_h.address()).promise();
   }
   static coroutine_handle from_promise(Promise& p) {
@@ -446,7 +449,6 @@ struct coroutine_handle {
   // can be safely used more then 1 time, noop if no coro attached
   void destroy() {
     _h.destroy();
-    _h = always_done_coroutine();
   }
   operator std::coroutine_handle<>() const noexcept {
     return _h;
@@ -458,5 +460,13 @@ struct not_movable {
   not_movable(not_movable&&) = delete;
   void operator=(not_movable&&) = delete;
 };
+
+struct terminator_t {
+  explicit terminator_t() = default;
+};
+// may be yielded from channel to produce nullptr on caller side without ending an channel.
+// for example you can produce 'null terminated' sequences of values with this
+// or create an empty but never done channel
+constexpr inline terminator_t terminator{};
 
 }  // namespace dd

@@ -34,12 +34,13 @@ static bool flip() {
   }();
   return std::bernoulli_distribution(0.5)(rng);
 }
+
+static_assert(std::input_iterator<dd::generator_iterator<int>>);
 TEST(empty) {
   dd::generator<int> g;
   error_if(!g.empty());
   for (auto x : g)
     error_if(true);
-  dd::generator_iterator<int> it{};
   return error_count;
 }
 CHAN_OR_GEN
@@ -88,7 +89,6 @@ CHANNEL_TEST(empty_channel) {
   dd::channel<int> g;
   error_if(!g.empty());
   co_foreach(auto&& x, g) error_if(true);
-  dd::generator_iterator<int> it{};
   co_return error_count;
 }
 CO_TEST(empty_channel);
@@ -369,10 +369,10 @@ dd::channel<int> null_terminated_ints() {
   std::vector vec(10, 1);
   for (int i : vec)
     co_yield i;
-  co_yield dd::nothing;
+  co_yield dd::terminator;
   for (int i : vec)
     co_yield i;
-  co_yield dd::nothing;
+  co_yield dd::terminator;
   for (int i : vec)
     co_yield i;
 }
@@ -386,8 +386,10 @@ CHANNEL_TEST(null_terminated_channel) {
   co_return error_count;
 }
 CO_TEST(null_terminated_channel);
+// TODO tests with terminator in channel + exceptions etc
 // TODO tests когда начал генерировать, приостановился, скинул все остальные элементы как elements_of
 // и для генератора и для канала
+// TODO test с бросанием пустого инпут ренжа из генератора, например istream_view<int> какое-то
 // TODO тесты с исключениями(бросок из рекурсии) и обработку исключений всё таки
 // TODO генератор и канал должны использовать один и тот же промис абсолютно
 // TODO бросить канал сам из себя, взяв хендл и создав канал внутри канала
