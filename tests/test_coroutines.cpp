@@ -355,10 +355,9 @@ dd::channel<std::tuple<int, double, float>> creator() {
 dd::async_task<void> channel_tester() {
   auto my_stream = creator();
   int i = 0;
-  // TODO save next
-  while (auto* v = co_await my_stream.next()) {
+  co_foreach(auto&& v, my_stream) {
     auto tpl = std::tuple{i, static_cast<double>(i), static_cast<float>(i)};
-    if (*v != tpl)
+    if (v != tpl)
       throw false;
     ++i;
   }

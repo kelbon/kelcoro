@@ -389,4 +389,74 @@ struct by_ref {
 template <typename Yield>
 by_ref(Yield&) -> by_ref<Yield>;
 
+// never nullptr, stores always_done_coroutine_handle or std::coroutine_handle<Promise>
+template <typename Promise>
+struct coroutine_handle {
+ private:
+  // invariant _h != nullptr
+  std::coroutine_handle<> _h = always_done_coroutine();
+
+ public:
+  coroutine_handle() = default;
+  coroutine_handle(always_done_coroutine_handle h) noexcept : _h(h) {
+    assert(_h != nullptr);
+  }
+  coroutine_handle(std::coroutine_handle<Promise> h) noexcept : _h(h) {
+    assert(_h != nullptr);
+  }
+  coroutine_handle(coroutine_handle&) = default;
+  coroutine_handle(coroutine_handle&&) = default;
+  coroutine_handle& operator=(const coroutine_handle&) = default;
+  coroutine_handle& operator=(coroutine_handle&&) = default;
+
+  std::coroutine_handle<Promise> get() const noexcept {
+    assert(_h != nullptr);
+    assert(!_h.done());
+    return std::coroutine_handle<Promise>::from_address(_h.address());
+  }
+  // precondition: not always_done_coroutine stored
+  Promise& promise() const noexcept {
+    assert(_h != always_done_coroutine());  // TODO rm
+    return std::coroutine_handle<Promise>::from_address(_h.address()).promise();
+  }
+  static coroutine_handle from_promise(Promise& p) {
+    coroutine_handle h;
+    h._h = std::coroutine_handle<Promise>::from_promise(p);
+    return h;
+  }
+  // postcondition returned != nullptr
+  constexpr void* address() const noexcept {
+    void* p = _h.address();
+    KELCORO_ASSUME(p != nullptr);
+    return p;
+  }
+  static constexpr coroutine_handle from_address(void* addr) {
+    coroutine_handle h;
+    h._h = std::coroutine_handle<Promise>::from_address(addr);
+    return h;
+  }
+
+  bool done() const noexcept {
+    return _h.done();
+  }
+  void resume() const {
+    assert(!done());
+    _h.resume();
+  }
+  // can be safely used more then 1 time, noop if no coro attached
+  void destroy() {
+    _h.destroy();
+    _h = always_done_coroutine();
+  }
+  operator std::coroutine_handle<>() const noexcept {
+    return _h;
+  }
+};
+
+struct not_movable {
+  constexpr not_movable() noexcept = default;
+  not_movable(not_movable&&) = delete;
+  void operator=(not_movable&&) = delete;
+};
+
 }  // namespace dd

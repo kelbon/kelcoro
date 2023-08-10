@@ -24,7 +24,9 @@ template <typename>
 struct generator;
 
 // TODO usage .begin as output iterator hmm что то типа .out хммм
-
+// TODO вытащить также как с каналом current_result куда то? возможно так я подключу одно к другому
+// TODO!! ему всё что нужно это current_result! То есть вместо Yield* я ставлю Yield** и всё должно работать
+// + добавить также как в канале методы в одном месте описывающие всё поведение
 template <typename Yield>
 struct generator_promise : enable_memory_resource_support {
   static_assert(!std::is_reference_v<Yield>);
@@ -158,6 +160,7 @@ struct generator_iterator {
  private:
   using handle_type = std::coroutine_handle<generator_promise<Yield>>;
   // invariant: != nullptr
+  // TODO my handle
   std::coroutine_handle<> _handle = always_done_coroutine();
 
   handle_type handle() const noexcept {

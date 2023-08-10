@@ -76,9 +76,8 @@ TEST(base2) {
 CHANNEL_TEST(base_channel) {
   int j = 0;
   auto c = base_case<dd::channel>();
-  auto next = c.next();
-  while (int* i = co_await next) {
-    error_if(j != *i);
+  co_foreach(int i, c) {
+    error_if(j != i);
     ++j;
   }
   co_return error_count;
@@ -88,8 +87,7 @@ CO_TEST(base_channel);
 CHANNEL_TEST(empty_channel) {
   dd::channel<int> g;
   error_if(!g.empty());
-  while (auto* x = co_await g.next())
-    error_if(true);
+  co_foreach(auto&& x, g) error_if(true);
   dd::generator_iterator<int> it{};
   co_return error_count;
 }
@@ -127,8 +125,8 @@ CHANNEL_TEST(reuse_channel) {
   dd::channel g = g1<dd::channel>();
   std::vector<int> v;
   while (!g.empty()) {
-    while (int* x = co_await g.next()) {
-      v.push_back(*x);
+    co_foreach(int x, g) {
+      v.push_back(x);
       if (flip())
         break;
     }
@@ -154,8 +152,7 @@ TEST(empty_recursive) {
 
 CHANNEL_TEST(empty_recursive_channel) {
   dd::channel c = g2<dd::channel>();
-  while (int* x = co_await c.next())
-    error_if(true);
+  co_foreach(int&& _, c) error_if(true);
   co_return error_count;
 }
 CO_TEST(empty_recursive_channel);
@@ -175,10 +172,7 @@ TEST(empty_recursive2) {
 }
 
 CHANNEL_TEST(empty_recursive2_channel) {
-  auto c = g10<dd::channel>(0);
-  auto next = c.next();
-  while (int* x = co_await next)
-    error_if(true);
+  co_foreach(int x, g10<dd::channel>(0)) error_if(true);
   co_return error_count;
 }
 CO_TEST(empty_recursive2_channel);
@@ -209,12 +203,10 @@ TEST(recursive) {
 CHANNEL_TEST(recursive_channel) {
   std::vector<int> vec;
   auto g = g3<dd::channel>(0);
-  while (int* i = co_await g.next())
-    vec.push_back(*i);
+  co_foreach(int i, g) vec.push_back(i);
   error_if((vec != std::vector{10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0}));
   error_if(!g.empty());
-  while (int* i = co_await g.next())
-    error_if(true);
+  co_foreach(int i, g) error_if(true);
   co_return error_count;
 }
 CO_TEST(recursive_channel);
@@ -283,8 +275,8 @@ CHANNEL_TEST(reuse_recursive_channel) {
   dd::channel g = g4<dd::channel>(i);
   std::vector<int> v;
   while (!g.empty()) {
-    while (int* x = co_await g.next()) {
-      v.push_back(*x);
+    co_foreach(int x, g) {
+      v.push_back(x);
       if (flip())
         break;
     }
@@ -368,9 +360,7 @@ TEST(byref_generator) {
   return error_count;
 }
 CHANNEL_TEST(byref_channel) {
-  dd::channel c = byrefg<dd::channel>(error_count);
-  while (int* i = co_await c.next())
-    ++*i;
+  co_foreach(int&& i, byrefg<dd::channel>(error_count))++ i;
   co_return error_count;
 }
 CO_TEST(byref_channel);
@@ -390,8 +380,7 @@ CHANNEL_TEST(null_terminated_channel) {
   auto c = null_terminated_ints();
   for (int i = 0; i < 3; ++i) {
     std::vector<int> vec;
-    while (int* i = co_await c.next())
-      vec.push_back(*i);
+    co_foreach(int i, c) vec.push_back(i);
     error_if(vec != std::vector(10, 1));
   }
   co_return error_count;
@@ -401,6 +390,7 @@ CO_TEST(null_terminated_channel);
 // и для генератора и для канала
 // TODO тесты с исключениями(бросок из рекурсии) и обработку исключений всё таки
 // TODO генератор и канал должны использовать один и тот же промис абсолютно
+// TODO бросить канал сам из себя, взяв хендл и создав канал внутри канала
 struct log_resource : std::pmr::memory_resource {
   size_t allocated = 0;
   // sizeof of this thing affects frame size with 2 multiplier bcs its saved in frame + saved for coroutine
