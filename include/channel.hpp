@@ -3,22 +3,18 @@
 #include "common.hpp"
 
 namespace dd {
-
+// TODO one header for generator and channel
 // logic and behavior is very similar to generator, but its async(may suspend before co_yield)
 
-template <typename>
-struct channel;
-template <typename>
-struct channel_iterator;
-
-template <typename Yield>
+template <returnable Yield>
 struct channel_promise : enable_memory_resource_support, not_movable {
-  static_assert(!std::is_reference_v<Yield>);
   using handle_type = std::coroutine_handle<channel_promise>;
 
  private:
   friend channel<Yield>;
   friend channel_iterator<Yield>;
+  friend noexport::attach_leaf<channel<Yield>>;
+  friend noexport::hold_value_until_resume<Yield>;
 
   // invariant: root != nullptr
   channel_promise* root = this;
@@ -48,66 +44,26 @@ struct channel_promise : enable_memory_resource_support, not_movable {
   void set_exception(std::exception_ptr e) const noexcept {
     exception() = e;
   }
+  [[gnu::pure]] handle_type self_handle() noexcept {
+    return handle_type::from_promise(*this);
+  }
 
  public:
   constexpr channel_promise() noexcept {
   }
 
-  [[gnu::pure]] handle_type self_handle() noexcept {
-    return handle_type::from_promise(*this);
-  }
   channel<Yield> get_return_object() noexcept {
     return channel(self_handle());
   }
 
- private:
-  // TODO reuse in generator
-  struct hold_value_until_resume {
-    Yield value;
-
-    static constexpr bool await_ready() noexcept {
-      return false;
-    }
-    std::coroutine_handle<> await_suspend(handle_type handle) noexcept {
-      handle.promise().set_result(std::addressof(value));
-      return handle.promise().consumer_handle();
-    }
-    static constexpr void await_resume() noexcept {
-    }
-  };
-
-  struct attach_leaf {
-    channel<Yield> leaf;
-
-    bool await_ready() const noexcept {
-      return leaf.empty();
-    }
-
-    std::coroutine_handle<> await_suspend(handle_type owner) const noexcept {
-      assert(owner != leaf.top);
-      channel_promise& leaf_p = leaf.top.promise();
-      channel_promise& root_p = *owner.promise().root;
-      leaf_p.current_worker.promise().root = &root_p;
-      leaf_p._owner = owner;
-      root_p.current_worker = leaf_p.current_worker;
-      return leaf_p.current_worker;
-    }
-    static constexpr void await_resume() noexcept {
-    }
-  };
-
- public:
   transfer_control_to yield_value(Yield&& rvalue) noexcept {
     set_result(std::addressof(rvalue));
     return transfer_control_to{consumer_handle()};
   }
-  hold_value_until_resume yield_value(const Yield& clvalue) noexcept(
+
+  noexport::hold_value_until_resume<Yield> yield_value(const Yield& clvalue) noexcept(
       std::is_nothrow_copy_constructible_v<Yield>) {
-    return hold_value_until_resume{Yield(clvalue)};
-  }
-  transfer_control_to yield_value(terminator_t) noexcept {
-    set_result(nullptr);
-    return transfer_control_to{consumer_handle()};
+    return noexport::hold_value_until_resume<Yield>{Yield(clvalue)};
   }
   transfer_control_to yield_value(by_ref<Yield> r) noexcept {
     set_result(std::addressof(r.value));
@@ -115,21 +71,8 @@ struct channel_promise : enable_memory_resource_support, not_movable {
   }
 
   template <typename X>
-  attach_leaf yield_value(elements_of<X> e) noexcept {
-    using rng_t = std::remove_cvref_t<X>;
-    // TODO for all other ranges too
-    if constexpr (!std::is_same_v<rng_t, channel<Yield>>)
-      static_assert(![] {});
-    if constexpr (std::is_same_v<typename rng_t::value_type, Yield>) {
-      return attach_leaf{std::move(e.rng)};
-    } else {
-      auto make_channel = [](auto& r) -> channel<Yield> {
-        auto next = r.next();
-        while (auto* x = co_await next)
-          co_yield Yield(std::move(*x));
-      };
-      return attach_leaf{make_channel(e.rng)};
-    }
+  noexport::attach_leaf<channel<Yield>> yield_value(elements_of<X> e) noexcept {
+    return noexport::elements_extractor<Yield, ::dd::channel>::extract(std::move(e));
   }
 
   static constexpr std::suspend_always initial_suspend() noexcept {
@@ -166,7 +109,7 @@ struct channel_promise : enable_memory_resource_support, not_movable {
 };
 
 // its pseudo iterator, requires co_awaits etc
-template <typename Yield>
+template <returnable Yield>
 struct channel_iterator : not_movable {
  private:
   channel<Yield>& chan;
@@ -176,7 +119,7 @@ struct channel_iterator : not_movable {
   }
 
  public:
-  using reference = std::conditional_t<std::is_const_v<Yield>, Yield&, Yield&&>;
+  using reference = Yield&&;
 
   // return true if they are attached to same 'channel' object
   constexpr bool equivalent(const channel_iterator& other) const noexcept {
@@ -211,7 +154,7 @@ struct channel_iterator : not_movable {
 // or use manually
 //   for(auto it = co_await chan.begin(); it != chan.end(); co_await ++it)
 //       auto&& v = *it;
-template <typename Yield>
+template <returnable Yield>
 struct channel {
   using promise_type = channel_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;
@@ -220,7 +163,9 @@ struct channel {
  private:
   friend channel_promise<Yield>;
   friend channel_iterator<Yield>;
-  // invariant: == nullptr when generated last value.
+  friend noexport::attach_leaf<channel<Yield>>;
+
+  // invariant: == nullptr when top.done()
   // Its important for exception handling and better == end(not call .done())
   // initialized when first value created(on in final suspend)
   Yield* current_result = nullptr;
@@ -290,6 +235,12 @@ struct channel {
   // postcondition: exception marked as handled
   [[nodiscard]] std::exception_ptr take_exception() noexcept {
     return std::exchange(exception, nullptr);
+  }
+
+  bool operator==(const channel& other) const noexcept {
+    if (empty())
+      return other.empty();
+    return this == &other;
   }
 
  private:

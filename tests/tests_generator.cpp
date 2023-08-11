@@ -14,6 +14,7 @@
 #include <numeric>
 #include <iostream>
 #include <ranges>
+#include <unordered_set>
 
 #define error_if(Cond) error_count += static_cast<bool>((Cond))
 #define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
@@ -365,27 +366,6 @@ CHANNEL_TEST(byref_channel) {
 }
 CO_TEST(byref_channel);
 
-dd::channel<int> null_terminated_ints() {
-  std::vector vec(10, 1);
-  for (int i : vec)
-    co_yield i;
-  co_yield dd::terminator;
-  for (int i : vec)
-    co_yield i;
-  co_yield dd::terminator;
-  for (int i : vec)
-    co_yield i;
-}
-CHANNEL_TEST(null_terminated_channel) {
-  auto c = null_terminated_ints();
-  for (int i = 0; i < 3; ++i) {
-    std::vector<int> vec;
-    co_foreach(int i, c) vec.push_back(i);
-    error_if(vec != std::vector(10, 1));
-  }
-  co_return error_count;
-}
-CO_TEST(null_terminated_channel);
 // TODO tests with terminator in channel + exceptions etc
 // TODO tests когда начал генерировать, приостановился, скинул все остальные элементы как elements_of
 // и для генератора и для канала
@@ -454,6 +434,5 @@ int main() {
   RUN(ranges_base2);
   RUN(byref_generator);
   RUN(byref_channel);
-  RUN(null_terminated_channel);
   return ec;
 }

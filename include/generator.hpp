@@ -13,18 +13,18 @@
 
 namespace dd {
 
-template <typename>
-struct generator;
-
 // TODO usage .begin as output iterator hmm что то типа .out хммм
 
-template <typename Yield>
-struct generator_promise : enable_memory_resource_support {
-  static_assert(!std::is_reference_v<Yield>);
+template <returnable Yield>
+struct generator_promise : enable_memory_resource_support, not_movable {
   using handle_type = std::coroutine_handle<generator_promise>;
 
  private:
   friend generator<Yield>;
+  friend generator_iterator<Yield>;
+  friend noexport::attach_leaf<generator<Yield>>;
+  friend noexport::hold_value_until_resume<Yield>;
+
   // invariant: root != nullptr
   generator_promise* root = this;
   handle_type current_worker = self_handle();
@@ -40,74 +40,30 @@ struct generator_promise : enable_memory_resource_support {
   void set_result(Yield* v) const noexcept {
     *root->_current_result_ptr = v;
   }
+  [[gnu::pure]] handle_type self_handle() noexcept {
+    return handle_type::from_promise(*this);
+  }
 
  public:
   constexpr generator_promise() noexcept {
   }
 
-  generator_promise(generator_promise&&) = delete;
-  void operator=(generator_promise&&) = delete;
-
-  [[gnu::pure]] handle_type self_handle() noexcept {
-    return handle_type::from_promise(*this);
-  }
   generator<Yield> get_return_object() noexcept {
     return generator(self_handle());
   }
-  // there are no correct things which you can do with co_await
-  // in generator
+  // there are no correct things which you can do with co_await in generator
   void await_transform(auto&&) = delete;
   auto await_transform(get_handle_t) noexcept {
     return this_coro::handle.operator co_await();
   }
-
- private:
-  // TODO reuse in channel
-  struct hold_value_until_resume {
-    Yield value;
-
-    static constexpr bool await_ready() noexcept {
-      return false;
-    }
-    void await_suspend(handle_type handle) noexcept {
-      handle.promise().set_result(std::addressof(value));
-    }
-    static constexpr void await_resume() noexcept {
-    }
-  };
-
-  struct attach_leaf {
-    generator<Yield> leaf;
-
-    bool await_ready() const noexcept {
-      return leaf.empty();
-    }
-
-    std::coroutine_handle<> await_suspend(handle_type owner) const noexcept {
-      assert(owner != leaf.top);
-      generator_promise& leaf_p = leaf.top.promise();
-      generator_promise& root_p = *owner.promise().root;
-      leaf_p.current_worker.promise().root = &root_p;
-      leaf_p._owner = owner;
-      root_p.current_worker = leaf_p.current_worker;
-      return leaf_p.current_worker;
-    }
-    static constexpr void await_resume() noexcept {
-    }
-  };
-
- public:
+  // TODO await get info
   std::suspend_always yield_value(Yield&& rvalue) noexcept {
     set_result(std::addressof(rvalue));
     return {};
   }
-  hold_value_until_resume yield_value(const Yield& clvalue) noexcept(
+  noexport::hold_value_until_resume<Yield> yield_value(const Yield& clvalue) noexcept(
       std::is_nothrow_copy_constructible_v<Yield>) {
-    return hold_value_until_resume{Yield(clvalue)};
-  }
-  std::suspend_always yield_value(terminator_t) noexcept {
-    set_result(nullptr);
-    return {};
+    return noexport::hold_value_until_resume<Yield>{Yield(clvalue)};
   }
   std::suspend_always yield_value(by_ref<Yield> r) noexcept {
     set_result(std::addressof(r.value));
@@ -116,21 +72,8 @@ struct generator_promise : enable_memory_resource_support {
   // attaches leaf-generator
   // TODO reuse somehow in channel, same logic, create X, pass to attach leaf
   template <typename R>
-  attach_leaf yield_value(elements_of<R> e) noexcept {
-    if constexpr (std::is_same_v<std::remove_cvref_t<R>, generator<Yield>>) {
-      return attach_leaf{std::move(e.rng)};
-    } else {
-      auto make_gen = [](auto& r) -> generator<Yield> {
-        for (auto&& x : r) {
-          using val_t = std::remove_reference_t<decltype(x)>;
-          if constexpr (std::is_same_v<val_t, Yield>)
-            co_yield x;
-          else
-            co_yield Yield(x);
-        }
-      };
-      return attach_leaf{make_gen(e.rng)};
-    }
+  noexport::attach_leaf<generator<Yield>> yield_value(elements_of<R> e) noexcept {
+    return noexport::elements_extractor<Yield, ::dd::generator>::extract(std::move(e));
   }
 
   static constexpr std::suspend_always initial_suspend() noexcept {
@@ -153,17 +96,10 @@ struct generator_promise : enable_memory_resource_support {
     set_result(nullptr);
     throw;
   }
-
-  // interface for iterator, used only on top-level generator
-  void produce_next() {
-    assume(root == this);
-    assume(!self_handle().done());
-    current_worker.resume();
-  }
 };
 
 // no default ctor, because its input iterator
-template <typename Yield>
+template <returnable Yield>
 struct generator_iterator {
  private:
   // invariant: != nullptr, ptr for trivial copy/move
@@ -175,7 +111,7 @@ struct generator_iterator {
 
   using iterator_category = std::input_iterator_tag;
   using value_type = Yield;
-  using reference = std::conditional_t<std::is_const_v<Yield>, Yield&, Yield&&>;
+  using reference = Yield&&;
   using difference_type = ptrdiff_t;
 
   // return true if they are attached to same 'channel' object
@@ -194,7 +130,7 @@ struct generator_iterator {
   // * after invoking references to value from operator* are invalidated
   generator_iterator& operator++() KELCORO_LIFETIMEBOUND {
     assert(!self->empty());
-    self->top.promise().produce_next();
+    self->top.promise().current_worker.resume();
     return *this;
   }
   void operator++(int) {
@@ -210,7 +146,7 @@ struct generator_iterator {
 //  will lead to std::terminate
 //  * if exception was throwed from recursivelly co_yielded generator, then this leaf just skipped and caller
 //  can continue iterating after catch(requires new .begin call)
-template <typename Yield>
+template <returnable Yield>
 struct generator {
   using promise_type = generator_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;
@@ -220,7 +156,9 @@ struct generator {
  private:
   friend generator_iterator<Yield>;
   friend generator_promise<Yield>;
+  friend noexport::attach_leaf<generator>;
 
+  // invariant: == nullptr when top.done()
   Yield* current_result = nullptr;
   coroutine_handle<promise_type> top = always_done_coroutine();
 
@@ -280,12 +218,18 @@ struct generator {
     return !empty();
   }
 
+  bool operator==(const generator& other) const noexcept {
+    if (empty())
+      return other.empty();
+    return this == &other;
+  }
+
   // * if .empty(), then begin() == end()
   // * produces next value(often first)
   iterator begin() KELCORO_LIFETIMEBOUND {
     if (!empty()) [[likely]] {
       top.promise()._current_result_ptr = &current_result;
-      top.promise().produce_next();
+      top.promise().current_worker.resume();
     }
     return iterator{*this};
   }

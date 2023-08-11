@@ -77,6 +77,12 @@ concept co_awaiter = requires(T value) {
 template <typename T>
 concept co_awaitable = has_member_co_await<T> || has_global_co_await<T> || co_awaiter<T>;
 
+// concept of type which can be returned from function or yielded from generator
+// that is - not function, not array, not cv-qualified (its has no )
+// additionally reference is not returnable(std::ref exists...)
+template <typename T>
+concept returnable = std::same_as<std::decay_t<T>, T>;
+
 namespace noexport {
 
 // caches value (just because its C-non-inline-call...)
@@ -365,6 +371,7 @@ struct elements_of {
 template <typename R>
 elements_of(R&&) -> elements_of<R&&>;
 
+// TODO rm/change to macro or smth like
 KELCORO_ALWAYS_INLINE void assume(bool b) noexcept {
   assert(b);
   KELCORO_ASSUME(b);
@@ -461,12 +468,144 @@ struct not_movable {
   void operator=(not_movable&&) = delete;
 };
 
-struct terminator_t {
-  explicit terminator_t() = default;
-};
-// may be yielded from channel to produce nullptr on caller side without ending an channel.
-// for example you can produce 'null terminated' sequences of values with this
-// or create an empty but never done channel
-constexpr inline terminator_t terminator{};
+// TODO info about current channel/generator call, is top, handles, iteration from top to bot, !SWAP!
+// операция свапающая два хендла внутри одной цепочки...
 
+// насчет мемори ресурса. Хм.. Может быть на 1 аллокацию сделать ровно, если установлено - берёт его
+// если не установлено - берёт дефолтное(и set default всякое такое сверху)
+// TODO? можно ещё сделать отдельный "канал" для отправки и получения чего-то, что не Yield типа...
+// то есть я на принимающей стороне .send(X), на стороне канала делаю auto x = co_yield y;
+
+// TODO elements of <by_ref
 }  // namespace dd
+
+// TODO into one header with generator / channel
+// TODO specializations like ranges::borrowed_range (TODO hmm)
+namespace dd {
+
+template <returnable>
+struct generator_promise;
+template <returnable>
+struct channel_promise;
+template <returnable>
+struct generator_iterator;
+template <returnable>
+struct channel_iterator;
+template <returnable>
+struct generator;
+template <returnable>
+struct channel;
+template <typename>
+struct elements_of;
+
+// TODO by_ref_elements_of
+}  // namespace dd
+
+namespace dd::noexport {
+
+template <typename Leaf>
+struct attach_leaf {
+  Leaf leaf;
+
+  bool await_ready() const noexcept {
+    return leaf.empty();
+  }
+
+  std::coroutine_handle<> await_suspend(typename Leaf::handle_type owner) const noexcept {
+    assert(owner != leaf.top);
+    auto& leaf_p = leaf.top.promise();
+    auto& root_p = *owner.promise().root;
+    leaf_p.current_worker.promise().root = &root_p;
+    leaf_p._owner = owner;
+    root_p.current_worker = leaf_p.current_worker;
+    return leaf_p.current_worker;
+  }
+  static constexpr void await_resume() noexcept {
+  }
+};
+
+// accepts addressof(elements_of<X>.rng) and converts it into leaf-coroutine
+template <typename Yield, template <typename> typename Generator>
+struct elements_extractor {
+ private:
+  static_assert(!std::is_reference_v<Yield> && !std::is_const_v<Yield>);
+  // leaf type == owner type
+
+  static Generator<Yield> do_extract(Generator<Yield>&& g) noexcept {
+    return std::move(g);
+  }
+  static Generator<Yield> do_extract(Generator<Yield>& g) noexcept {
+    return do_extract(std::move(g));
+  }
+
+  // leaf yields other type
+
+  template <typename U>
+  static generator<Yield> do_extract(generator<U>& g) {
+    for (U&& x : g)
+      co_yield static_cast<Yield&&>(std::move(x));
+  }
+  template <typename U>
+  static generator<Yield> do_extract(generator<U>&& g) {
+    return do_extract(g);
+  }
+
+  template <typename U>
+  static channel<Yield> do_extract(channel<U>& c) {
+    for (auto b = co_await c.begin(); b != c.end(); co_await ++c)
+      co_yield static_cast<Yield>(*b);
+  }
+  template <typename U>
+  static channel<Yield> do_extract(channel<U>&& c) {
+    return do_extract(c);
+  }
+
+  // leaf is just a range
+
+  static Generator<Yield> do_extract(auto&& rng) {
+    if constexpr (!std::ranges::borrowed_range<decltype(rng)> &&
+                  std::is_same_v<std::ranges::range_rvalue_reference_t<decltype(rng)>, Yield&&>) {
+      auto&& b = std::ranges::begin(rng);
+      auto&& e = std::ranges::end(rng);
+      for (; b != e; ++b)
+        co_yield std::ranges::iter_move(b);
+    } else {
+      for (auto&& x : rng)
+        co_yield static_cast<Yield&&>(std::forward<decltype(x)>(x));
+    }
+  }
+
+  // by reference case
+
+  // TODO template <typename X>
+  // TODO static Generator<Yield> do_extract(by_ref<X>&& r) {
+  // TODO   for (auto&& x : r.)
+  // TODO }
+
+ public:
+  template <typename X>
+  static attach_leaf<Generator<Yield>> extract(elements_of<X>&& e) {
+    // captures range by reference, because its all in yield expression in the coroutine
+    return attach_leaf<Generator<Yield>>{do_extract(static_cast<X&&>(e.rng))};
+  }
+};
+
+template <typename Yield>
+struct hold_value_until_resume {
+  Yield value;
+
+  static constexpr bool await_ready() noexcept {
+    return false;
+  }
+  void await_suspend(std::coroutine_handle<generator_promise<Yield>> handle) noexcept {
+    handle.promise().set_result(std::addressof(value));
+  }
+  std::coroutine_handle<> await_suspend(std::coroutine_handle<channel_promise<Yield>> handle) noexcept {
+    handle.promise().set_result(std::addressof(value));
+    return handle.promise().consumer_handle();
+  }
+  static constexpr void await_resume() noexcept {
+  }
+};
+
+}  // namespace dd::noexport
