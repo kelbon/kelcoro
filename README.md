@@ -293,13 +293,19 @@ FetchContent_MakeAvailable(kelcoro)
 target_link_libraries(MyTargetName kelcorolib)
 
 ```
-or use add_subdirectory
+<details>
+  <summary>or use add_subdirectory</summary>
 
-1. Clone this repository into folder with your project 2. Add these lines to it's CMakeLists.txt
+
+1. clone this repository into folder with your project
+   `git clone https://github.com/kelbon/kelcoro`
+3. add these lines to it's CMakeLists.txt
+
 ```
-add_subdirectory(AnyAny)
-target_link_libraries(MyTargetName PUBLIC anyanylib)
+add_subdirectory(kelcoro)
+target_link_libraries(MyTargetName PUBLIC kelcorolib)
 ```
+</details>
 
 Builds tests/examples
 
