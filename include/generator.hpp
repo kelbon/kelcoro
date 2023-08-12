@@ -229,7 +229,7 @@ struct generator {
   // * if .empty(), then begin() == end()
   // * produces next value(often first)
   // iterator invalidated only when generator dies
-  iterator begin() [[clang::lifetimebound]] {
+  iterator begin() & [[clang::lifetimebound]] {
     if (!empty()) [[likely]] {
       top.promise()._current_result_ptr = &current_result;
       top.promise().current_worker.resume();

@@ -74,6 +74,8 @@ struct async_task {
       now = cur_state.load(std::memory_order::acquire);
     }
   }
+  // TODO try_wait / get
+
   // postcondition - handle_ == nullptr
   Result get() &&
         requires(!std::is_void_v<Result>)
@@ -84,7 +86,7 @@ struct async_task {
 
     auto result = *std::move(handle_.promise().storage);
     // result always exist, its setted or std::terminate called on exception.
-    handle_.destroy();
+    std::exchange(handle_, nullptr).destroy();
     return result;
   }
 
