@@ -7,13 +7,9 @@
 #include <cassert>
 #include <thread>
 #include <memory_resource>
-// TODO перенести всякую муть в utility связанную с тредами, опшнлами и тд
+
 #define KELCORO_CO_AWAIT_REQUIRED [[nodiscard("forget co_await?")]]
-#ifdef __clang__
-#define KELCORO_LIFETIMEBOUND [[clang::lifetimebound]]
-#else
-#define KELCORO_LIFETIMEBOUND
-#endif
+
 #if defined(__GNUC__) || defined(__clang__)
 #define KELCORO_UNREACHABLE __builtin_unreachable()
 #elif defined(_MSC_VER)
@@ -21,30 +17,6 @@
 #else
 #define KELCORO_UNREACHABLE (void)0
 #endif
-
-#if defined(__GNUC__) || defined(__clang__)
-#define KELCORO_ALWAYS_INLINE __attribute__((always_inline)) inline
-#elif defined(_MSC_VER)
-#define KELCORO_ALWAYS_INLINE __forceinline
-#else
-#define KELCORO_ALWAYS_INLINE inline
-#endif
-
-#if defined(__GNUC__) || defined(__clang__)
-#define KELCORO_PURE __attribute__((pure))
-#else
-#define KELCORO_PURE
-#endif
-
-#if defined(__GNUC__) || defined(__clang__)
-#define KELCORO_ASSUME(condition) __builtin_assume(condition)
-#elif defined(_MSC_VER)
-#define KELCORO_ASSUME(condition) __assume(condition)
-#else
-#define KELCORO_ASSUME(condition)
-#endif
-
-// TODO undef
 
 namespace dd {
 
@@ -100,7 +72,6 @@ inline thread_local std::pmr::memory_resource* co_memory_resource = new_delete_r
 
 }  // namespace noexport
 
-// TODO only for next allocation + default resource
 // passes 'implicit' argument to all coroutines allocatinon on this thread until object dies
 // usage:
 //    foo_t local = dd::with_resource{r}, create_coro(), foo();
@@ -116,7 +87,7 @@ struct [[nodiscard]] with_resource : not_movable {
  public:
   explicit with_resource(std::pmr::memory_resource& m) noexcept
       : old(std::exchange(noexport::co_memory_resource, &m)) {
-    KELCORO_ASSUME(old != nullptr);
+    assert(old != nullptr);
   }
 
   ~with_resource() {
@@ -132,24 +103,17 @@ consteval size_t coroframe_align() {
   return __STDCPP_DEFAULT_NEW_ALIGNMENT__;
 }
 
-// when used as first argumemt in coroutine it will be allocated by this resource
-// and resource will be stored until coroutine frame destroyed
-template <typename R>
-struct inplace_resource : not_movable {
-  [[no_unique_address]] R r;
-};
-template <typename R>
-inplace_resource(R&&) -> inplace_resource<std::remove_reference_t<R>>;
+// TODO my any memory resource instead of std::pmr
+// TODO inplace resource(blocked by bad standard wording)
+// TODO free list with customizable max blocks
+//  must be good because coroutines have same sizes,
+//  its easy to reuse memory for them
+// TODO info about current channel/generator call, is_top, handle, iteration from top to bot/reverse, swap two
+//  generators in chain
+//  struct co_memory_resource { ... };
 
-// TODO
-// TODO inplace_resource<R> конструируемый в аргументах корутины и не используемый в ней явно, только для
-// аллокации корутина должна иметь к нему доступ (через паблик интерфейс его)
-// // basically free list with customizable max blocks
-// // must be good because coroutines have same sizes,
-// // its easy to reuse memory for them
-// struct co_memory_resource { ... };
-// inheritor(coroutine promise) recieves allocation(std::pmr::memory_resource) support
-// usage: see with_resource(R)
+// inheritor(coroutine promise) receives allocation support(std::pmr::memory_resource)
+// usage: see 'with_resource' and 'inplace_resource'
 struct enable_memory_resource_support {
   static void* operator new(std::size_t frame_size) {
     auto* r = noexport::co_memory_resource;
@@ -158,7 +122,7 @@ struct enable_memory_resource_support {
     std::memcpy(alloc_ptr, &r, sizeof(void*));
     return p;
   }
-  // TODO with inplace resource static void operator new
+
   static void operator delete(void* ptr, std::size_t frame_size) noexcept {
     auto* alloc_ptr = (std::byte*)ptr + frame_size;
     std::pmr::memory_resource* m;
@@ -387,7 +351,7 @@ elements_of(R&&) -> elements_of<R&&>;
 // example:
 // int i = 0;
 // co_yield ref{i};
-// ..here i may be != 0, if caller changed it
+// -- at this point 'i' may be != 0, if caller changed it
 template <typename Yield>
 struct by_ref {
   Yield& value;
@@ -396,52 +360,48 @@ struct by_ref {
 template <typename Yield>
 by_ref(Yield&) -> by_ref<Yield>;
 
-// TODO name handle union
 // never nullptr, stores always_done_coroutine_handle or std::coroutine_handle<Promise>
-// TODO attributes like pure/const/flatten/cold/hot etc
-// реально, если забить на мсвц, то можно писать аттрибуты просто через gnu::x и их поймёт кланг тоже...
-// TODO убрать макросы тогда нахрен
-// TODO проверить комбинацию cold + flatten на unhandled_exception!
 template <typename Promise>
-struct coroutine_handle {
+struct always_done_or {
  private:
   // invariant _h != nullptr
   std::coroutine_handle<> _h = always_done_coroutine();
 
  public:
-  coroutine_handle() = default;
-  coroutine_handle(always_done_coroutine_handle h) noexcept : _h(h) {
+  always_done_or() = default;
+  always_done_or(always_done_coroutine_handle h) noexcept : _h(h) {
     assert(_h != nullptr);
   }
-  coroutine_handle(std::coroutine_handle<Promise> h) noexcept : _h(h) {
+  always_done_or(std::coroutine_handle<Promise> h) noexcept : _h(h) {
     assert(_h != nullptr);
   }
-  coroutine_handle(coroutine_handle&) = default;
-  coroutine_handle(coroutine_handle&&) = default;
-  coroutine_handle& operator=(const coroutine_handle&) = default;
-  coroutine_handle& operator=(coroutine_handle&&) = default;
+  always_done_or(always_done_or&) = default;
+  always_done_or(always_done_or&&) = default;
+  always_done_or& operator=(const always_done_or&) = default;
+  always_done_or& operator=(always_done_or&) = default;
 
-  std::coroutine_handle<Promise> get() const noexcept {
+  [[gnu::pure]] std::coroutine_handle<Promise> get() const noexcept {
     assert(_h != nullptr);
     return std::coroutine_handle<Promise>::from_address(_h.address());
   }
   // precondition: not always_done_coroutine stored
-  Promise& promise() const noexcept {
+  [[gnu::pure]] Promise& promise() const noexcept {
+    assert(_h != always_done_coroutine());
     return std::coroutine_handle<Promise>::from_address(_h.address()).promise();
   }
-  static coroutine_handle from_promise(Promise& p) {
-    coroutine_handle h;
+  [[gnu::pure]] static always_done_or from_promise(Promise& p) {
+    always_done_or h;
     h._h = std::coroutine_handle<Promise>::from_promise(p);
     return h;
   }
   // postcondition returned != nullptr
-  constexpr void* address() const noexcept {
+  [[gnu::pure]] constexpr void* address() const noexcept {
     void* p = _h.address();
-    KELCORO_ASSUME(p != nullptr);
+    assert(p != nullptr);
     return p;
   }
-  static constexpr coroutine_handle from_address(void* addr) {
-    coroutine_handle h;
+  static constexpr always_done_or from_address(void* addr) {
+    always_done_or h;
     h._h = std::coroutine_handle<Promise>::from_address(addr);
     return h;
   }
@@ -453,7 +413,6 @@ struct coroutine_handle {
     assert(!done());
     _h.resume();
   }
-  // can be safely used more then 1 time, noop if no coro attached
   void destroy() {
     _h.destroy();
   }
@@ -461,20 +420,6 @@ struct coroutine_handle {
     return _h;
   }
 };
-
-// TODO info about current channel/generator call, is top, handles, iteration from top to bot, !SWAP!
-// операция свапающая два хендла внутри одной цепочки...
-
-// насчет мемори ресурса. Хм.. Может быть на 1 аллокацию сделать ровно, если установлено - берёт его
-// если не установлено - берёт дефолтное(и set default всякое такое сверху)
-// TODO? можно ещё сделать отдельный "канал" для отправки и получения чего-то, что не Yield типа...
-// то есть я на принимающей стороне .send(X), на стороне канала делаю auto x = co_yield y;
-
-}  // namespace dd
-
-// TODO into one header with generator / channel
-// TODO specializations like ranges::borrowed_range (TODO hmm)
-namespace dd {
 
 template <yieldable>
 struct generator_promise;
@@ -516,7 +461,7 @@ struct attach_leaf {
   }
 };
 
-// accepts addressof(elements_of<X>.rng) and converts it into leaf-coroutine
+// accepts elements_of<X> and converts it into leaf-coroutine
 template <typename Yield, template <typename> typename Generator>
 struct elements_extractor {
  private:

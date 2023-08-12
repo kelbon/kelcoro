@@ -3,8 +3,8 @@
 #include "common.hpp"
 
 namespace dd {
-// TODO one header for generator and channel
-// logic and behavior is very similar to generator, but its async(may suspend before co_yield)
+
+// behavior very similar to generator, but channel may suspend before co_yield
 
 template <yieldable Yield>
 struct channel_promise : enable_memory_resource_support, not_movable {
@@ -87,7 +87,7 @@ struct channel_promise : enable_memory_resource_support, not_movable {
   }
   static constexpr void return_void() noexcept {
   }
-  [[gnu::cold]] void unhandled_exception() {
+  void unhandled_exception() {
     // case when already was exception, its not handled yet and next generated
     if (exception() != nullptr) [[unlikely]]
       std::terminate();
@@ -123,6 +123,10 @@ struct channel_iterator : not_movable {
   constexpr bool equivalent(const channel_iterator& other) const noexcept {
     return std::addressof(chan) == std::addressof(other.chan);
   }
+  channel<Yield>& owner() const noexcept {
+    return chan;
+  }
+
   constexpr bool operator==(std::default_sentinel_t) const noexcept {
     assert(!(chan.top.done() && chan.current_result != nullptr));
     return chan.current_result == nullptr;
@@ -168,7 +172,7 @@ struct channel {
   // initialized when first value created(on in final suspend)
   Yield* current_result = nullptr;
   std::coroutine_handle<> handle = nullptr;  // coro in which i exist(setted in co_await on .begin)
-  coroutine_handle<promise_type> top = always_done_coroutine();  // current top level channel
+  always_done_or<promise_type> top = always_done_coroutine();  // current top level channel
   // invariant: setted only once for one coroutine frame
   // if setted, then top may be not done yet
   std::exception_ptr exception = nullptr;
@@ -182,6 +186,9 @@ struct channel {
   // postcondition: empty()
   constexpr channel() noexcept = default;
 
+  // postconditions:
+  // * other.empty()
+  // * iterators to 'other' == end()
   constexpr channel(channel&& other) noexcept {
     swap(other);
   }
@@ -190,6 +197,7 @@ struct channel {
     return *this;
   }
 
+  // iterators to 'other' and 'this' are swapped too
   void swap(channel& other) noexcept {
     std::swap(current_result, other.current_result);
     std::swap(handle, other.handle);
@@ -229,8 +237,8 @@ struct channel {
     return !empty();
   }
 
-  // returns exception which happens while iterating (or 0)
-  // postcondition: exception marked as handled
+  // returns exception which happens while iterating (or nullptr)
+  // postcondition: exception marked as handled (next call to 'take_exception' will return nullptr)
   [[nodiscard]] std::exception_ptr take_exception() noexcept {
     return std::exchange(exception, nullptr);
   }
@@ -263,8 +271,7 @@ struct channel {
  public:
   // * if .empty(), then co_await begin() == end()
   // produces next value(often first)
-  // NOTE: 'co_await begin' invalidates previous iterators!
-  KELCORO_CO_AWAIT_REQUIRED starter begin() & noexcept KELCORO_LIFETIMEBOUND {
+  KELCORO_CO_AWAIT_REQUIRED starter begin() & noexcept [[clang::lifetimebound]] {
     return starter{*this};
   }
   static constexpr std::default_sentinel_t end() noexcept {
@@ -280,4 +287,5 @@ struct channel {
   if (auto&& dd_channel_ = __VA_ARGS__; true)                                                           \
     for (auto dd_b_ = co_await dd_channel_.begin(); dd_b_ != ::std::default_sentinel; co_await ++dd_b_) \
       if (VARDECL = *dd_b_; true)
+
 }  // namespace dd

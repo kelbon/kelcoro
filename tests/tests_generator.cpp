@@ -14,7 +14,8 @@
 #include <numeric>
 #include <iostream>
 #include <ranges>
-#include <unordered_set>
+#include <sstream>
+#include <deque>
 
 using dd::channel;
 using dd::elements_of;
@@ -516,12 +517,12 @@ TEST(toplevel_throw) {
     for (auto x : throw_c<generator>())
       v.push_back(x);
   } catch (const std::runtime_error& e) {
-    (void)e.what();  // обращение к удалённому ексепшну!!! ЕБАНЫЙ СВЕТ!!!
+    error_if(e.what() != std::string("10"));
     std::vector check{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
-    error_if(v != check);  // бля че, он пытается разрушить ексепшн, который находится на ДЕ аллоцированной
-                           // памяти? Ой бля
+    error_if(v != check);
+    return error_count;
   }
-  return error_count;
+  std::terminate();  // unreachable
 }
 CHANNEL_TEST(toplevel_throw_channel) {
   std::vector<int> v;
@@ -534,13 +535,54 @@ CHANNEL_TEST(toplevel_throw_channel) {
   co_return error_count;
 }
 CO_TEST(toplevel_throw_channel);
-// тесты с сложными типами, то что компилируется всё
-// TODO tests когда начал генерировать, приостановился, скинул все остальные элементы как elements_of
-// и для генератора и для канала
-// TODO test с бросанием пустого инпут ренжа из генератора, например istream_view<int> какое-то
-// TODO тесты с исключениями(бросок из рекурсии) и обработку исключений всё таки
-// TODO генератор и канал должны использовать один и тот же промис абсолютно
-// TODO бросить канал сам из себя, взяв хендл и создав канал внутри канала
+
+CHAN_OR_GEN
+G<int> inp() {
+  std::stringstream s;
+  co_yield elements_of(std::views::istream<int>(s));
+}
+TEST(input_rng) {
+  for (auto x : inp<generator>()) {
+    error_if(true);
+  }
+  return error_count;
+}
+CHANNEL_TEST(input_rng_channel) {
+  co_foreach(auto x, inp<channel>()) {
+    error_if(true);
+  }
+  co_return error_count;
+}
+CO_TEST(input_rng_channel);
+
+struct tester_t : dd::not_movable {
+  int i;
+  tester_t(int i) : i(i) {
+  }
+};
+
+CHAN_OR_GEN
+G<tester_t> nomove_generator() {
+  // must be yielded by ref bcs !borrowed range
+  std::deque<tester_t> d;
+  d.emplace_back(0);
+  d.emplace_back(1);
+  d.emplace_back(2);
+  co_yield elements_of(std::move(d));
+}
+TEST(nomove_gen) {
+  int i = 0;
+  for (tester_t&& x : nomove_generator<generator>())
+    error_if(x.i != i++);
+  return error_count;
+}
+CHANNEL_TEST(nomove_gen_channel) {
+  int i = 0;
+  co_foreach(tester_t && x, nomove_generator<channel>()) error_if(x.i != i++);
+  co_return error_count;
+}
+CO_TEST(nomove_gen_channel);
+
 struct log_resource : std::pmr::memory_resource {
   size_t allocated = 0;
   // sizeof of this thing affects frame size with 2 multiplier bcs its saved in frame + saved for coroutine
@@ -615,5 +657,10 @@ int main() {
   RUN(toplevel_throw);
   RUN(toplevel_throw_channel);
 #endif
+  RUN(input_rng);
+  RUN(input_rng_channel);
+  RUN(nomove_gen);
+  RUN(nomove_gen_channel);
+
   return ec;
 }

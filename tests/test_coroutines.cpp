@@ -149,7 +149,6 @@ dd::async_task<size_t> get_result(auto just_task) {
 TEST(gen_mm) {
   int i = 0;
   auto gen = gen_mm();
-  // TODO check working on rvlaue(or somehow forbide it)
   for (auto task : gen | std::views::filter([](auto&&) { return true; })) {
     error_if(get_result(std::move(task)).get() != i);
     ++i;

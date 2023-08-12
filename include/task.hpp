@@ -76,7 +76,6 @@ struct task {
   };
 
  public:
-  // TODO inline awaiter methods
   constexpr auto operator co_await() noexcept {
     return remember_waiter_and_start_task_t{handle_};
   }

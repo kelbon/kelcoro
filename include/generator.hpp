@@ -13,8 +13,6 @@
 
 namespace dd {
 
-// TODO usage .begin as output iterator hmm что то типа .out хммм
-
 template <yieldable Yield>
 struct generator_promise : enable_memory_resource_support, not_movable {
   using handle_type = std::coroutine_handle<generator_promise>;
@@ -56,7 +54,6 @@ struct generator_promise : enable_memory_resource_support, not_movable {
   auto await_transform(get_handle_t) noexcept {
     return this_coro::handle.operator co_await();
   }
-  // TODO await get info
   std::suspend_always yield_value(Yield&& rvalue) noexcept {
     set_result(std::addressof(rvalue));
     return {};
@@ -88,7 +85,7 @@ struct generator_promise : enable_memory_resource_support, not_movable {
   }
   static constexpr void return_void() noexcept {
   }
-  [[noreturn]] [[gnu::cold]] void unhandled_exception() {
+  [[noreturn]] void unhandled_exception() {
     if (root != this)
       (void)final_suspend();  // skip this leaf
     set_result(nullptr);
@@ -97,6 +94,7 @@ struct generator_promise : enable_memory_resource_support, not_movable {
 };
 
 // no default ctor, because its input iterator
+// behaves also as generator_view (has its own begin/end)
 template <yieldable Yield>
 struct generator_iterator {
  private:
@@ -116,6 +114,9 @@ struct generator_iterator {
   constexpr bool equivalent(const generator_iterator& other) const noexcept {
     return self == other.self;
   }
+  generator<Yield>& owner() const noexcept {
+    return *self;
+  }
 
   constexpr bool operator==(std::default_sentinel_t) const noexcept {
     return self->current_result == nullptr;
@@ -126,7 +127,7 @@ struct generator_iterator {
     return static_cast<reference>(*self->current_result);
   }
   // * after invoking references to value from operator* are invalidated
-  generator_iterator& operator++() KELCORO_LIFETIMEBOUND {
+  generator_iterator& operator++() [[clang::lifetimebound]] {
     assert(!self->empty());
     self->top.promise().current_worker.resume();
     return *this;
@@ -158,7 +159,7 @@ struct generator {
 
   // invariant: == nullptr when top.done()
   Yield* current_result = nullptr;
-  coroutine_handle<promise_type> top = always_done_coroutine();
+  always_done_or<promise_type> top = always_done_coroutine();
 
   // precondition: 'handle' != nullptr, handle does not have other owners
   // used from promise::gen_return_object
@@ -169,7 +170,9 @@ struct generator {
   // postcondition: empty(), 'for' loop produces 0 values
   constexpr generator() noexcept = default;
 
-  // postcondition: other.empty()
+  // postconditions:
+  // * other.empty()
+  // * iterators to 'other' == end()
   constexpr generator(generator&& other) noexcept {
     swap(other);
   }
@@ -178,6 +181,7 @@ struct generator {
     return *this;
   }
 
+  // iterators to 'other' and 'this' are swapped too
   constexpr void swap(generator& other) noexcept {
     std::swap(current_result, other.current_result);
     std::swap(top, other.top);
@@ -224,7 +228,8 @@ struct generator {
 
   // * if .empty(), then begin() == end()
   // * produces next value(often first)
-  iterator begin() KELCORO_LIFETIMEBOUND {
+  // iterator invalidated only when generator dies
+  iterator begin() [[clang::lifetimebound]] {
     if (!empty()) [[likely]] {
       top.promise()._current_result_ptr = &current_result;
       top.promise().current_worker.resume();
