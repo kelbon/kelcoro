@@ -186,7 +186,6 @@ struct event {
   }
 
   // subscribe, but only for coroutines
-
   [[nodiscard]] auto operator co_await() noexcept {
     return awaiter_t{this};
   }

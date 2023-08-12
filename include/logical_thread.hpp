@@ -34,7 +34,7 @@ struct two_way_bound {
 struct KELCORO_CO_AWAIT_REQUIRED stop_token {
  private:
   std::atomic_bool* stop_state_;
-  template <typename>
+
   friend struct logical_thread_promise;
 
   constexpr explicit stop_token(std::atomic_bool* stop_state) : stop_state_(stop_state) {
@@ -57,8 +57,7 @@ constexpr inline get_stop_token_t stop_token = {};
 
 }  // namespace this_coro
 
-template <typename Alloc>
-struct logical_thread_promise : memory_block<Alloc> {
+struct logical_thread_promise : enable_memory_resource_support {
   std::atomic_bool stop_requested_ = false;
   two_way_bound stopped;
 
@@ -115,9 +114,6 @@ struct logical_thread_promise : memory_block<Alloc> {
   auto await_transform(get_stop_token_t) const noexcept {
     return return_stop_token{};
   }
-  auto await_transform(get_handle_t) const noexcept {
-    return return_handle_t<logical_thread_promise>{};
-  }
   template <typename T>
   decltype(auto) await_transform(T&& v) const noexcept {
     return build_awaiter(std::forward<T>(v));
@@ -126,9 +122,8 @@ struct logical_thread_promise : memory_block<Alloc> {
 
 // shared owning of coroutine handle between coroutine object and coroutine frame.
 // Frame always dies with a coroutine object, except it was detached(then it deletes itself after co_return)
-template <typename Alloc>
-struct logical_thread_mm {
-  using promise_type = logical_thread_promise<Alloc>;
+struct logical_thread {
+  using promise_type = logical_thread_promise;
   using handle_type = std::coroutine_handle<promise_type>;
 
  private:
@@ -137,27 +132,27 @@ struct logical_thread_mm {
  public:
   // ctor/owning
 
-  logical_thread_mm() noexcept = default;
-  logical_thread_mm(handle_type handle) : handle_(handle) {
+  logical_thread() noexcept = default;
+  logical_thread(handle_type handle) : handle_(handle) {
   }
 
-  logical_thread_mm(logical_thread_mm&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {
+  logical_thread(logical_thread&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {
   }
 
-  logical_thread_mm& operator=(logical_thread_mm&& other) noexcept {
+  logical_thread& operator=(logical_thread&& other) noexcept {
     try_cancel_and_join();
     handle_ = std::exchange(other.handle_, nullptr);
     return *this;
   }
 
-  void swap(logical_thread_mm& other) noexcept {
+  void swap(logical_thread& other) noexcept {
     std::swap(handle_, other.handle_);
   }
-  friend void swap(logical_thread_mm& left, logical_thread_mm& right) noexcept {
+  friend void swap(logical_thread& left, logical_thread& right) noexcept {
     left.swap(right);
   }
 
-  ~logical_thread_mm() {
+  ~logical_thread() {
     try_cancel_and_join();
   }
 
@@ -204,8 +199,6 @@ struct logical_thread_mm {
     }
   }
 };
-
-using logical_thread = logical_thread_mm<std::allocator<std::byte>>;
 
 // TEMPLATE FUNCTION stop
 

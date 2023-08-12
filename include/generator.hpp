@@ -1,176 +1,248 @@
 #pragma once
 
-#include <coroutine>
 #include <iterator>
 #include <memory>
 #include <utility>
 
 #include "common.hpp"
 
+#if __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunknown-attributes"
+#endif
+
 namespace dd {
 
-struct input_and_output_iterator_tag : std::input_iterator_tag, std::output_iterator_tag {};
+template <yieldable Yield>
+struct generator_promise : enable_memory_resource_support, not_movable {
+  using handle_type = std::coroutine_handle<generator_promise>;
 
-template <typename Yield, typename Alloc>
-struct generator_promise : memory_block<Alloc> {
-  Yield* current_result = nullptr;
+ private:
+  friend generator<Yield>;
+  friend generator_iterator<Yield>;
+  friend noexport::attach_leaf<generator<Yield>>;
+  friend noexport::hold_value_until_resume<Yield>;
 
-  // value type required, so no allocator traits(support memory resources too!)
-  static_assert(std::is_same_v<std::byte, typename Alloc::value_type>);
+  // invariant: root != nullptr
+  generator_promise* root = this;
+  handle_type current_worker = self_handle();
+  union {
+    Yield** _current_result_ptr;  // setted only in root
+    handle_type _owner;           // setted only in leafs
+  };
+
+  handle_type owner() const noexcept {
+    assert(root != this);
+    return _owner;
+  }
+  void set_result(Yield* v) const noexcept {
+    *root->_current_result_ptr = v;
+  }
+  [[gnu::pure]] handle_type self_handle() noexcept {
+    return handle_type::from_promise(*this);
+  }
+
+ public:
+  constexpr generator_promise() noexcept {
+  }
+
+  generator<Yield> get_return_object() noexcept {
+    return generator(self_handle());
+  }
+  // there are no correct things which you can do with co_await in generator
+  void await_transform(auto&&) = delete;
+  auto await_transform(get_handle_t) noexcept {
+    return this_coro::handle.operator co_await();
+  }
+  std::suspend_always yield_value(Yield&& rvalue) noexcept {
+    set_result(std::addressof(rvalue));
+    return {};
+  }
+  noexport::hold_value_until_resume<Yield> yield_value(const Yield& clvalue) noexcept(
+      std::is_nothrow_copy_constructible_v<Yield>) {
+    return noexport::hold_value_until_resume<Yield>{Yield(clvalue)};
+  }
+  std::suspend_always yield_value(by_ref<Yield> r) noexcept {
+    set_result(std::addressof(r.value));
+    return {};
+  }
+  template <typename R>
+  noexport::attach_leaf<generator<Yield>> yield_value(elements_of<R> e) noexcept {
+    return noexport::elements_extractor<Yield, ::dd::generator>::extract(std::move(e));
+  }
 
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
-  static constexpr std::suspend_always final_suspend() noexcept {
-    return {};
-  }
-  auto get_return_object() {
-    return std::coroutine_handle<generator_promise>::from_promise(*this);
+  transfer_control_to final_suspend() const noexcept {
+    if (root != this) {
+      root->current_worker = owner();
+      root->current_worker.promise().root = root;
+      return transfer_control_to{owner()};
+    }
+    set_result(nullptr);
+    return transfer_control_to{std::noop_coroutine()};
   }
   static constexpr void return_void() noexcept {
   }
-
-  auto await_transform(get_handle_t) const noexcept {
-    return return_handle_t<generator_promise>{};
-  }
-  template <typename T>
-  decltype(auto) await_transform(T&& v) const noexcept {
-    return build_awaiter(std::forward<T>(v));
-  }
-  // yield things
- private:
-  struct save_value_before_resume_t {
-    Yield saved_value;
-
-    bool await_ready() const noexcept {
-      return false;
-    }
-    void await_suspend(std::coroutine_handle<generator_promise> handle) noexcept {
-      handle.promise().current_result = std::addressof(saved_value);
-    }
-    void await_resume() const noexcept {
-    }
-  };
-
- public:
-  // lvalue
-  std::suspend_always yield_value(Yield& lvalue) noexcept {
-    current_result = std::addressof(lvalue);
-    return {};
-  }
-  // rvalue or some type which is convertible to Yield
-  template <typename U>
-  auto yield_value(U&& value) noexcept(std::is_nothrow_constructible_v<Yield, U&&>) {
-    return save_value_before_resume_t{Yield(std::forward<U>(value))};
-  }
-
-  [[noreturn]] void unhandled_exception() const {
+  [[noreturn]] void unhandled_exception() {
+    if (root != this)
+      (void)final_suspend();  // skip this leaf
+    set_result(nullptr);
     throw;
   }
 };
 
-// synchronous producer
-template <typename Yield, typename Alloc = std::allocator<std::byte>>
-struct generator {
- public:
-  using value_type = Yield;
-  using promise_type = generator_promise<Yield, Alloc>;
-  using handle_type = std::coroutine_handle<promise_type>;
-
+// no default ctor, because its input iterator
+// behaves also as generator_view (has its own begin/end)
+template <yieldable Yield>
+struct generator_iterator {
  private:
-  handle_type handle_;
+  // invariant: != nullptr, ptr for trivial copy/move
+  generator<Yield>* self;
 
  public:
-  constexpr generator() noexcept = default;
-  constexpr generator(handle_type handle) : handle_(handle) {
+  constexpr explicit generator_iterator(generator<Yield>& g) noexcept : self(std::addressof(g)) {
   }
-  constexpr generator(generator&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {
+
+  using iterator_category = std::input_iterator_tag;
+  using value_type = Yield;
+  using reference = Yield&&;
+  using difference_type = ptrdiff_t;
+
+  // return true if they are attached to same 'channel' object
+  constexpr bool equivalent(const generator_iterator& other) const noexcept {
+    return self == other.self;
   }
-  constexpr generator& operator=(generator&& other) noexcept {
-    std::swap(handle_, other.handle_);
+  generator<Yield>& owner() const noexcept {
+    return *self;
+  }
+
+  constexpr bool operator==(std::default_sentinel_t) const noexcept {
+    return self->current_result == nullptr;
+  }
+  // * returns rvalue ref
+  constexpr reference operator*() const noexcept {
+    assert(*this != std::default_sentinel);
+    return static_cast<reference>(*self->current_result);
+  }
+  // * after invoking references to value from operator* are invalidated
+  generator_iterator& operator++() [[clang::lifetimebound]] {
+    assert(!self->empty());
+    self->top.promise().current_worker.resume();
     return *this;
   }
-
-  [[nodiscard]] handle_type release() noexcept {
-    return std::exchange(handle_, nullptr);
-  }
-
-  ~generator() {
-    if (handle_)
-      handle_.destroy();
-  }
-
-  struct iterator {
-    handle_type owner;
-
-    using iterator_category = input_and_output_iterator_tag;
-    using value_type = Yield;
-    using difference_type = ptrdiff_t;  // requirement of concept input_iterator
-
-    bool operator==(std::default_sentinel_t) const noexcept {
-      return owner.done();
-    }
-    value_type& operator*() const noexcept {
-      return *owner.promise().current_result;
-    }
-    iterator& operator++() {
-      owner.resume();
-      return *this;
-    }
-    // postfix version impossible and logically incorrect for input iterator,
-    // but it is required for concept of input iterator
-    iterator operator++(int) {
-      return ++(*this);
-    }
-  };
-
-  iterator begin() {
-    assert(!handle_.done());
-    handle_.resume();
-    return iterator{handle_};
-  }
-
-  static std::default_sentinel_t end() noexcept {
-    return std::default_sentinel;
-  }
-
-  // no range-for-loop access
-  bool has_next() const noexcept {
-    return !handle_.done();
-  }
-  [[nodiscard]] value_type& next() noexcept {
-    assert(has_next());
-    handle_.promise.resume();
-    return *handle_.promise().current_result;
+  void operator++(int) {
+    ++(*this);
   }
 };
 
-template <std::forward_iterator It, std::sentinel_for<It> Sent>
-generator<typename std::iterator_traits<It>::value_type> circular_view(It it, Sent sent) {
-  while (true) {
-    for (auto it_ = it; it_ != sent; ++it_)
-      co_yield *it_;
+// * produces first value when .begin called
+// * recursive (co_yield dd::elements_of(rng))
+// * default constructed generator is an empty range
+// notes:
+//  * generator ignores fact, that 'destroy' may throw exception from destructor of object in coroutine, it
+//  will lead to std::terminate
+//  * if exception was throwed from recursivelly co_yielded generator, then this leaf just skipped and caller
+//  can continue iterating after catch(requires new .begin call)
+template <yieldable Yield>
+struct generator {
+  using promise_type = generator_promise<Yield>;
+  using handle_type = std::coroutine_handle<promise_type>;
+  using value_type = Yield;
+  using iterator = generator_iterator<Yield>;
+
+ private:
+  friend generator_iterator<Yield>;
+  friend generator_promise<Yield>;
+  friend noexport::attach_leaf<generator>;
+
+  // invariant: == nullptr when top.done()
+  Yield* current_result = nullptr;
+  always_done_or<promise_type> top = always_done_coroutine();
+
+  // precondition: 'handle' != nullptr, handle does not have other owners
+  // used from promise::gen_return_object
+  constexpr explicit generator(handle_type top) noexcept : top(top) {
   }
-}
-// clang-format off
-  template <std::ranges::forward_range Rng>
-  requires(std::ranges::borrowed_range<Rng>)
-  generator<std::ranges::range_value_t<Rng>> circular_view(Rng&& r) {
-  // clang-format on
-  const auto it = std::ranges::begin(r);
-  const auto sent = std::ranges::end(r);
-  while (true) {
-    for (auto it_ = it; it_ != sent; ++it_)
-      co_yield *it_;
+
+ public:
+  // postcondition: empty(), 'for' loop produces 0 values
+  constexpr generator() noexcept = default;
+
+  // postconditions:
+  // * other.empty()
+  // * iterators to 'other' == end()
+  constexpr generator(generator&& other) noexcept {
+    swap(other);
   }
-}
-template <typename First, std::same_as<First>... Ts>
-generator<First> fixed_circular_view(First& f, Ts&... args) {
-  while (true) {
-    co_yield f;
-    (co_yield args, ...);
+  constexpr generator& operator=(generator&& other) noexcept {
+    swap(other);
+    return *this;
   }
-}
-// TODO ? consumer
+
+  // iterators to 'other' and 'this' are swapped too
+  constexpr void swap(generator& other) noexcept {
+    std::swap(current_result, other.current_result);
+    std::swap(top, other.top);
+  }
+  friend constexpr void swap(generator& a, generator& b) noexcept {
+    a.swap(b);
+  }
+
+  constexpr void reset(handle_type handle) noexcept {
+    clear();
+    if (handle)
+      top = handle;
+  }
+
+  // postcondition: .empty()
+  // its caller responsibility to correctly destroy handle
+  [[nodiscard]] constexpr handle_type release() noexcept {
+    if (empty())
+      return nullptr;
+    return std::exchange(top, always_done_coroutine()).get();
+  }
+  // postcondition: .empty()
+  constexpr void clear() noexcept {
+    std::exchange(top, always_done_coroutine()).destroy();
+  }
+  constexpr ~generator() {
+    clear();
+  }
+
+  // observers
+
+  constexpr bool empty() const noexcept {
+    return top.done();
+  }
+  constexpr explicit operator bool() const noexcept {
+    return !empty();
+  }
+
+  bool operator==(const generator& other) const noexcept {
+    if (empty())
+      return other.empty();
+    return this == &other;
+  }
+
+  // * if .empty(), then begin() == end()
+  // * produces next value(often first)
+  // iterator invalidated only when generator dies
+  iterator begin() [[clang::lifetimebound]] {
+    if (!empty()) [[likely]] {
+      top.promise()._current_result_ptr = &current_result;
+      top.promise().current_worker.resume();
+    }
+    return iterator{*this};
+  }
+  static constexpr std::default_sentinel_t end() noexcept {
+    return std::default_sentinel;
+  }
+};
 
 }  // namespace dd
+
+#if __clang__
+#pragma clang diagnostic pop
+#endif

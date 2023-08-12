@@ -4,119 +4,288 @@
 
 namespace dd {
 
-template <typename Yield, typename Alloc>
-struct channel_promise : memory_block<Alloc> {
-  using yield_type = Yield;
+// behavior very similar to generator, but channel may suspend before co_yield
 
-  yield_type* current_result = nullptr;
-  // always setted(by co_await), may change
-  std::coroutine_handle<void> current_owner;
+template <yieldable Yield>
+struct channel_promise : enable_memory_resource_support, not_movable {
+  using handle_type = std::coroutine_handle<channel_promise>;
+
+ private:
+  friend channel<Yield>;
+  friend channel_iterator<Yield>;
+  friend noexport::attach_leaf<channel<Yield>>;
+  friend noexport::hold_value_until_resume<Yield>;
+
+  // invariant: root != nullptr
+  channel_promise* root = this;
+  handle_type current_worker = self_handle();
+  union {
+    channel<Yield>* _consumer;  // setted only in root
+    handle_type _owner;         // setted only in leafs
+  };
+
+  handle_type owner() const noexcept {
+    assert(root != this);
+    return _owner;
+  }
+  channel<Yield>* consumer() const noexcept {
+    return root->_consumer;
+  }
+  std::coroutine_handle<>& consumer_handle() const noexcept {
+    return consumer()->handle;
+  }
+  void set_result(Yield* v) const noexcept {
+    consumer()->current_result = v;
+  }
+  std::exception_ptr& exception() const noexcept {
+    return consumer()->exception;
+  }
+  void set_exception(std::exception_ptr e) const noexcept {
+    exception() = e;
+  }
+  [[gnu::pure]] handle_type self_handle() noexcept {
+    return handle_type::from_promise(*this);
+  }
+
+ public:
+  constexpr channel_promise() noexcept {
+  }
+
+  channel<Yield> get_return_object() noexcept {
+    return channel(self_handle());
+  }
+
+  transfer_control_to yield_value(Yield&& rvalue) noexcept {
+    set_result(std::addressof(rvalue));
+    return transfer_control_to{consumer_handle()};
+  }
+
+  noexport::hold_value_until_resume<Yield> yield_value(const Yield& clvalue) noexcept(
+      std::is_nothrow_copy_constructible_v<Yield>) {
+    return noexport::hold_value_until_resume<Yield>{Yield(clvalue)};
+  }
+  transfer_control_to yield_value(by_ref<Yield> r) noexcept {
+    set_result(std::addressof(r.value));
+    return transfer_control_to{consumer_handle()};
+  }
+  template <typename X>
+  noexport::attach_leaf<channel<Yield>> yield_value(elements_of<X> e) noexcept {
+    return noexport::elements_extractor<Yield, ::dd::channel>::extract(std::move(e));
+  }
 
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
-  auto get_return_object() {
-    return std::coroutine_handle<channel_promise<Yield, Alloc>>::from_promise(*this);
+  transfer_control_to final_suspend() const noexcept {
+    if (root != this) {
+      root->current_worker = owner();
+      root->current_worker.promise().root = root;
+      return transfer_control_to{owner()};
+    }
+    set_result(nullptr);
+    return transfer_control_to{consumer_handle()};
   }
   static constexpr void return_void() noexcept {
   }
-  [[noreturn]] void unhandled_exception() const noexcept {
-    std::terminate();
-  }
-  auto final_suspend() noexcept {
-    return transfer_control_to{current_owner};
-  }
-
-  struct create_value_and_transfer_control_to : transfer_control_to {
-    yield_type saved_value;
-
-    std::coroutine_handle<void> await_suspend(std::coroutine_handle<channel_promise> handle) noexcept {
-      handle.promise().current_result = std::addressof(saved_value);
-      return who_waits;
+  void unhandled_exception() {
+    // case when already was exception, its not handled yet and next generated
+    if (exception() != nullptr) [[unlikely]]
+      std::terminate();
+    if (root == this) {
+      set_result(nullptr);
+      throw;  // after it top is .done() and iteration is over
     }
-  };
-  auto await_transform(get_handle_t) const noexcept {
-    return return_handle_t<channel_promise>{};
-  }
-  template <typename T>
-  decltype(auto) await_transform(T&& v) const noexcept {
-    return build_awaiter(std::forward<T>(v));
-  }
-  // allow yielding
-
-  auto yield_value(yield_type& lvalue) noexcept {
-    current_result = std::addressof(lvalue);
-    // Interesting fact - i dont really know is it needed? I already returns to
-    // current owner because i just need to execute code and its my caller...
-    // so return std::suspend_always{} here seems to be same...
-    // Same logic works also for task<T>...
-    return transfer_control_to{current_owner};
-  }
-
-  template <typename T>
-  auto yield_value(T&& value) noexcept(std::is_nothrow_constructible_v<yield_type, T&&>) {
-    return create_value_and_transfer_control_to{{current_owner}, yield_type{std::forward<T>(value)}};
+    (void)final_suspend();  // up owner(we are done)
+    // consumer sees nullptr and stop iterating,
+    // if consumer catches/ignores exception and calls .begin again, he will observe elements from owner,
+    // effectifelly we will skip failed leaf
+    set_exception(std::current_exception());  // notify root->consumer about exception
+    _consumer = root->_consumer;              // 'final_suspend' will 'set_result' through root
+    root = this;                              // force final suspend return into consumer
+    // here 'final suspend' sets result to 0 and returns to consumer
   }
 };
 
-template <typename Yield, typename Alloc = std::allocator<std::byte>>
-struct channel {
-  using value_type = Yield;
-  using promise_type = channel_promise<Yield, Alloc>;
-  using handle_type = std::coroutine_handle<promise_type>;
+// its pseudo iterator, requires co_awaits etc
+template <yieldable Yield>
+struct channel_iterator : not_movable {
+ private:
+  channel<Yield>& chan;
+  friend channel<Yield>;
 
- protected:
-  handle_type handle_;
+  constexpr explicit channel_iterator(channel<Yield>& c) noexcept : chan(c) {
+  }
 
  public:
-  constexpr channel() noexcept = default;
-  constexpr channel(handle_type handle) : handle_(handle) {
+  using reference = Yield&&;
+
+  // return true if they are attached to same 'channel' object
+  constexpr bool equivalent(const channel_iterator& other) const noexcept {
+    return std::addressof(chan) == std::addressof(other.chan);
+  }
+  channel<Yield>& owner() const noexcept {
+    return chan;
   }
 
-  channel(channel&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {
+  constexpr bool operator==(std::default_sentinel_t) const noexcept {
+    assert(!(chan.top.done() && chan.current_result != nullptr));
+    return chan.current_result == nullptr;
   }
-  channel& operator=(channel&& other) noexcept {
-    std::swap(handle_, other.handle_);
+  // * returns rvalue ref
+  reference operator*() const noexcept {
+    assert(*this != std::default_sentinel);
+    return static_cast<reference>(*chan.current_result);
+  }
+  // * after invoking references to value from operator* are invalidated
+  KELCORO_CO_AWAIT_REQUIRED transfer_control_to operator++() noexcept {
+    assert(*this != std::default_sentinel);
+    return transfer_control_to{chan.top.promise().current_worker};
+  }
+
+  // on the end of loop, when current_value == nullptr reached
+  // lifetime of this iterator ends and it checks for exception.
+  // its for performance(no 'if' on each ++, only one for channel)
+  ~channel_iterator() noexcept(false) {
+    if (chan.exception) [[unlikely]]
+      std::rethrow_exception(chan.take_exception());
+  }
+};
+
+// co_await on empty channel produces nullptr
+// for using see macro co_foreach(value, channel)
+// or use manually
+//   for(auto it = co_await chan.begin(); it != chan.end(); co_await ++it)
+//       auto&& v = *it;
+template <yieldable Yield>
+struct channel {
+  using promise_type = channel_promise<Yield>;
+  using handle_type = std::coroutine_handle<promise_type>;
+  using value_type = Yield;
+
+ private:
+  friend channel_promise<Yield>;
+  friend channel_iterator<Yield>;
+  friend noexport::attach_leaf<channel<Yield>>;
+
+  // invariant: == nullptr when top.done()
+  // Its important for exception handling and better == end(not call .done())
+  // initialized when first value created(on in final suspend)
+  Yield* current_result = nullptr;
+  std::coroutine_handle<> handle = nullptr;  // coro in which i exist(setted in co_await on .begin)
+  always_done_or<promise_type> top = always_done_coroutine();  // current top level channel
+  // invariant: setted only once for one coroutine frame
+  // if setted, then top may be not done yet
+  std::exception_ptr exception = nullptr;
+
+  // precondition: 'handle' != nullptr, handle does not have other owners
+  // used from promise::get_return_object
+  constexpr explicit channel(handle_type top) noexcept : top(top) {
+  }
+
+ public:
+  // postcondition: empty()
+  constexpr channel() noexcept = default;
+
+  // postconditions:
+  // * other.empty()
+  // * iterators to 'other' == end()
+  constexpr channel(channel&& other) noexcept {
+    swap(other);
+  }
+  constexpr channel& operator=(channel&& other) noexcept {
+    swap(other);
     return *this;
   }
 
-  [[nodiscard]] handle_type release() noexcept {
-    return std::exchange(handle_, nullptr);
+  // iterators to 'other' and 'this' are swapped too
+  void swap(channel& other) noexcept {
+    std::swap(current_result, other.current_result);
+    std::swap(handle, other.handle);
+    std::swap(top, other.top);
+    std::swap(exception, other.exception);
   }
-  // returns true if no value can be taken from channel
-  bool empty() const noexcept {
-    return handle_ == nullptr || handle_.done();
+  friend void swap(channel& a, channel& b) noexcept {
+    a.swap(b);
   }
 
+  constexpr void reset(handle_type handle) noexcept {
+    clear();
+    if (handle)
+      top = handle;
+  }
+  // postcondition: .empty()
+  // after this method its caller responsibility to correctly destroy 'handle'
+  [[nodiscard]] constexpr handle_type release() noexcept {
+    if (empty())
+      return nullptr;
+    return std::exchange(top, always_done_coroutine()).get();
+  }
+  // postcondition: .empty()
+  constexpr void clear() noexcept {
+    std::exchange(top, always_done_coroutine()).destroy();
+  }
   ~channel() {
-    if (handle_) [[likely]]
-      handle_.destroy();
+    clear();
+  }
+
+  // observers
+
+  constexpr bool empty() const noexcept {
+    return top.done();
+  }
+  constexpr explicit operator bool() const noexcept {
+    return !empty();
+  }
+
+  // returns exception which happens while iterating (or nullptr)
+  // postcondition: exception marked as handled (next call to 'take_exception' will return nullptr)
+  [[nodiscard]] std::exception_ptr take_exception() noexcept {
+    return std::exchange(exception, nullptr);
+  }
+
+  bool operator==(const channel& other) const noexcept {
+    if (empty())
+      return other.empty();
+    return this == &other;
   }
 
  private:
-  struct remember_owner_transfer_control_to {
-    handle_type stream_handle;
+  struct starter : not_movable {
+    channel& self;
 
+    constexpr explicit starter(channel& c) noexcept : self(c) {
+    }
     bool await_ready() const noexcept {
-      assert(stream_handle != nullptr && !stream_handle.done());
-      return false;
+      return self.empty();
     }
-    std::coroutine_handle<void> await_suspend(std::coroutine_handle<void> owner) noexcept {
-      stream_handle.promise().current_owner = owner;
-      return stream_handle;
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<> consumer) noexcept {
+      self.handle = consumer;
+      self.top.promise()._consumer = &self;
+      return self.top.promise().current_worker;
     }
-    [[nodiscard]] value_type* await_resume() const noexcept {
-      if (!stream_handle.done()) [[likely]]
-        return stream_handle.promise().current_result;
-      else
-        return nullptr;
+    [[nodiscard]] channel_iterator<Yield> await_resume() const noexcept {
+      return channel_iterator<Yield>{self};
     }
   };
 
  public:
-  auto operator co_await() noexcept {
-    return remember_owner_transfer_control_to{handle_};
+  // * if .empty(), then co_await begin() == end()
+  // produces next value(often first)
+  KELCORO_CO_AWAIT_REQUIRED starter begin() & noexcept [[clang::lifetimebound]] {
+    return starter{*this};
+  }
+  static constexpr std::default_sentinel_t end() noexcept {
+    return std::default_sentinel;
   }
 };
+
+// usage example:
+//  co_foreach(std::string s, mychannel) use(s);
+// OR
+//  co_foreach(YieldType&& x, mychannel) { ..use(std::move(x)).. };
+#define co_foreach(VARDECL, ... /*CHANNEL, may be expression produces channel*/)                        \
+  if (auto&& dd_channel_ = __VA_ARGS__; true)                                                           \
+    for (auto dd_b_ = co_await dd_channel_.begin(); dd_b_ != ::std::default_sentinel; co_await ++dd_b_) \
+      if (VARDECL = *dd_b_; true)
 
 }  // namespace dd

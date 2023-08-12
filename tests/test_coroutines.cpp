@@ -1,4 +1,7 @@
-
+#if __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunknown-attributes"
+#endif
 #include <atomic>
 #include <coroutine>
 #include <iterator>
@@ -10,6 +13,7 @@
 #include <thread>
 #include <vector>
 #include <functional>
+#include <iostream>
 
 #include "async_task.hpp"
 #include "channel.hpp"
@@ -20,29 +24,23 @@
 #include "events.hpp"
 
 #define error_if(Cond) error_count += static_cast<bool>((Cond))
-#define TEST(NAME) size_t TEST##NAME(size_t error_count = 0)
+#define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
 
-inline dd::task<size_t> some_task(int i) {
-  auto handle = co_await dd::this_coro::handle;
-  (void)handle;
-  co_return i;
+inline size_t some_task(int i) {
+  return i;
 }
 inline dd::generator<int> foo() {
-  auto handle = co_await dd::this_coro::handle;
-  (void)handle;
   for (int i = 0;; ++i)
-    co_yield co_await some_task(i);
+    co_yield some_task(i);
 }
 
 TEST(generator) {
   static_assert(std::ranges::input_range<dd::generator<size_t>&&>);
-  static_assert(std::input_iterator<dd::generator<std::vector<int>>::iterator>);
-  static_assert(std::ranges::output_range<dd::generator<int>, int> &&
-                std::ranges::input_range<dd::generator<int>>);
+  static_assert(std::input_iterator<dd::generator_iterator<std::vector<int>>>);
+  static_assert(std::ranges::input_range<dd::generator<int>>);
   int i = 1;
   dd::generator gen = foo();
-  for (auto value :
-       gen | ::std::views::take(100) | std::views::filter([](auto v) { return v % 2; })) {
+  for (auto value : gen | ::std::views::take(100) | std::views::filter([](auto v) { return v % 2; })) {
     error_if(value != i);
     i += 2;
   }
@@ -65,32 +63,7 @@ TEST(zip_generator) {
   return error_count;
 }
 
-// x and y are shown, not yields away. Any lvalue in kel::generator will be yielded like this,
-// rvalues will be transformed into generator::value_type and stored until generator resumes
-// this solves several problems:
-//		better perfomance(no copy) / move
-//		making yield_value always noexcept for lvalues(important for coroutines)
-//		yielding an references
-//		interesting applications on consumer side
-inline dd::generator<const int> view_generator() {
-  int x = 1;
-  int y = 2;
-  while (x < 100) {
-    co_yield ++x;
-    co_yield y;
-  }
-}
-
-TEST(view_generator) {
-  std::set<const int*> addresses;
-  for (auto& i : view_generator())
-    addresses.emplace(&i);
-  error_if(addresses.size() != 2);
-  return error_count;
-}
-template <typename MemoryResource>
-inline dd::logical_thread_mm<MemoryResource> multithread(std::allocator_arg_t, MemoryResource,
-                                                     std::atomic<int32_t>& value) {
+inline dd::logical_thread multithread(std::atomic<int32_t>& value) {
   auto handle = co_await dd::this_coro::handle;
   (void)handle;
   auto token = co_await dd::this_coro::stop_token;
@@ -99,11 +72,14 @@ inline dd::logical_thread_mm<MemoryResource> multithread(std::allocator_arg_t, M
   for (auto i : std::views::iota(0, 100))
     ++value, (void)i;
 }
-template <typename MemoryResource = std::allocator<std::byte>>
-inline void moo(std::atomic<int32_t>& value) {
-  std::vector<dd::logical_thread_mm<MemoryResource>> workers;
-  for (int i = 0; i < 10; ++i)
-    workers.emplace_back(multithread<MemoryResource>(std::allocator_arg, MemoryResource{}, value));
+
+inline void moo(std::atomic<int32_t>& value, std::pmr::memory_resource* m = std::pmr::new_delete_resource()) {
+  std::vector<dd::logical_thread> workers;
+  {
+    auto _ = dd::with_resource(*m);
+    for (int i = 0; i < 10; ++i)
+      workers.emplace_back(multithread(value));
+  }
   stop(workers);  // more effective then just dctors for all
 }
 TEST(logical_thread) {
@@ -133,35 +109,39 @@ TEST(coroutines_integral) {
   return error_count;
 }
 
-struct statefull_resource {
+struct statefull_resource : std::pmr::memory_resource {
   size_t sz = 0;
   // sizeof of this thing affects frame size with 2 multiplier bcs its saved in frame + saved for coroutine
-  void* allocate(size_t size) {
+  void* do_allocate(size_t size, size_t) override {
     sz = size;
     return ::operator new(size);
   }
-  void deallocate(void* ptr, size_t size) noexcept {
+  void do_deallocate(void* ptr, size_t size, size_t) noexcept override {
     if (sz != size)  // cant throw here(std::terminate)
-      std::terminate();
-    ::operator delete(ptr, size);
+      (std::cerr << "incorrect size"), std::exit(-111);
+    ::operator delete(ptr);
+  }
+  bool do_is_equal(const memory_resource& _That) const noexcept override {
+    return true;
   }
 };
 
 TEST(logical_thread_mm) {
   std::atomic<int32_t> i;
-  moo<statefull_resource>(i);
+  statefull_resource r;
+  moo(i, &r);
   error_if(i != 1000);  // 10 coroutines * 100 increments
   return error_count;
 }
 
-dd::task<size_t, statefull_resource> task_mm(int i, statefull_resource) {
+dd::task<size_t> task_mm(int i) {
   auto handle = co_await dd::this_coro::handle;
   (void)handle;
   co_return i;
 }
-dd::generator<dd::task<size_t, statefull_resource>, std::allocator<std::byte>> gen_mm() {
+dd::generator<dd::task<size_t>> gen_mm() {
   for (auto i : std::views::iota(0, 10))
-    co_yield task_mm(i, statefull_resource{0});
+    co_yield task_mm(i);
 }
 dd::async_task<size_t> get_result(auto just_task) {
   co_return co_await just_task;
@@ -169,8 +149,7 @@ dd::async_task<size_t> get_result(auto just_task) {
 TEST(gen_mm) {
   int i = 0;
   auto gen = gen_mm();
-  // TODO check working on rvlaue(or somehow forbide it)
-  for (auto& task : gen | std::views::filter([](auto&&) { return true; })) {
+  for (auto task : gen | std::views::filter([](auto&&) { return true; })) {
     error_if(get_result(std::move(task)).get() != i);
     ++i;
   }
@@ -179,8 +158,7 @@ TEST(gen_mm) {
 
 TEST(job_mm) {
   std::atomic<size_t> err_c = 0;
-  auto job_creator = [&](std::atomic<int32_t>& value,
-                        std::pmr::memory_resource*) -> dd::job_mm<std::pmr::polymorphic_allocator<std::byte>> {
+  auto job_creator = [&](std::atomic<int32_t>& value) -> dd::job {
     auto th_id = std::this_thread::get_id();
     co_await dd::jump_on(dd::new_thread_executor{});
     if (th_id == std::this_thread::get_id())
@@ -190,8 +168,11 @@ TEST(job_mm) {
       value.notify_one();
   };
   std::atomic<int32_t> flag = 0;
-  for (auto i : std::views::iota(0, 10))
-    job_creator(flag, std::pmr::new_delete_resource()), (void)i;
+  {
+    auto _ = dd::with_resource(*std::pmr::new_delete_resource());
+    for (auto i : std::views::iota(0, 10))
+      job_creator(flag), (void)i;
+  }
   while (flag.load(std::memory_order::acquire) != 10)
     flag.wait(flag.load(std::memory_order::acquire));
   error_if(flag != 10);
@@ -299,8 +280,8 @@ TEST(when_any) {
   anyx.wait();
   stop(_1, _2, _3, _4);
   one.notify_all(dd::this_thread_executor{});
-  two.notify_all(dd::this_thread_executor {}, 5);
-  three.notify_all(dd::this_thread_executor {}, std::vector<std::string>(3, "hello world"));
+  two.notify_all(dd::this_thread_executor{}, 5);
+  three.notify_all(dd::this_thread_executor{}, std::vector<std::string>(3, "hello world"));
   four.notify_all(dd::this_thread_executor{});
   error_if(count != 100000);
   return error_count;
@@ -373,9 +354,9 @@ dd::channel<std::tuple<int, double, float>> creator() {
 dd::async_task<void> channel_tester() {
   auto my_stream = creator();
   int i = 0;
-  while (auto* v = co_await my_stream) {
+  co_foreach(auto&& v, my_stream) {
     auto tpl = std::tuple{i, static_cast<double>(i), static_cast<float>(i)};
-    if (*v != tpl)
+    if (v != tpl)
       throw false;
     ++i;
   }
@@ -388,8 +369,8 @@ TEST(channel) {
 }
 
 int main() {
-  return static_cast<int>(TESTgenerator() + TESTzip_generator() + TESTview_generator() +
-                          TESTlogical_thread() + TESTcoroutines_integral() + TESTlogical_thread_mm() +
-                          TESTgen_mm() + TESTjob_mm() + TESTthread_safety() + TESTwhen_any() +
-                          TESTwhen_all() + TESTasync_tasks() + TESTvoid_async_task() + TESTchannel());
+  return static_cast<int>(TESTgenerator() + TESTzip_generator() + TESTlogical_thread() +
+                          TESTcoroutines_integral() + TESTlogical_thread_mm() + TESTgen_mm() + TESTjob_mm() +
+                          TESTthread_safety() + TESTwhen_any() + TESTwhen_all() + TESTasync_tasks() +
+                          TESTvoid_async_task() + TESTchannel());
 }

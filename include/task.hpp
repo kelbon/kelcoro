@@ -4,14 +4,14 @@
 
 namespace dd {
 
-template <typename Result, typename Alloc>
-struct task_promise : memory_block<Alloc>, return_block<Result> {
+template <typename Result>
+struct task_promise : enable_memory_resource_support, return_block<Result> {
   std::coroutine_handle<void> who_waits;
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
   auto get_return_object() {
-    return std::coroutine_handle<task_promise<Result, Alloc>>::from_promise(*this);
+    return std::coroutine_handle<task_promise<Result>>::from_promise(*this);
   }
   [[noreturn]] void unhandled_exception() const noexcept {
     std::terminate();
@@ -20,20 +20,13 @@ struct task_promise : memory_block<Alloc>, return_block<Result> {
     // who_waits always setted because task not started or co_awaited
     return transfer_control_to{who_waits};
   }
-  auto await_transform(get_handle_t) const noexcept {
-    return return_handle_t<task_promise>{};
-  }
-  template <typename T>
-  decltype(auto) await_transform(T&& v) const noexcept {
-    return build_awaiter(std::forward<T>(v));
-  }
 };
 
-// single value generator that returns a value with a co_return. Can be sent on executor(have operator())
-template <typename Result, typename Alloc = std::allocator<std::byte>>
+// single value generator that returns a value with a co_return
+template <typename Result>
 struct task {
   using result_type = Result;
-  using promise_type = task_promise<Result, Alloc>;
+  using promise_type = task_promise<Result>;
   using handle_type = std::coroutine_handle<promise_type>;
 
  private:
