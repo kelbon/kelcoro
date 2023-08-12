@@ -16,6 +16,10 @@
 #include <ranges>
 #include <unordered_set>
 
+using dd::channel;
+using dd::elements_of;
+using dd::generator;
+
 #define error_if(Cond) error_count += static_cast<bool>((Cond))
 #define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
 #define CHANNEL_TEST(NAME) inline dd::async_task<size_t> NAME(size_t error_count = 0)
@@ -366,7 +370,171 @@ CHANNEL_TEST(byref_channel) {
 }
 CO_TEST(byref_channel);
 
-// TODO tests with terminator in channel + exceptions etc
+dd::generator<int> interrupted_g() {
+  auto g = base_case<dd::generator>();
+  for (int i : g) {
+    co_yield i;
+    if (i == 10)
+      break;
+  }
+  co_yield dd::elements_of(g);
+}
+dd::channel<int> interrupted_c() {
+  auto g = base_case<dd::channel>();
+  co_foreach(int i, g) {
+    co_yield i;
+    if (i == 10)
+      break;
+  }
+  co_yield dd::elements_of(g);
+}
+TEST(interrupted) {
+  std::vector<int> v;
+  for (int i : interrupted_g())
+    v.push_back(i);
+  std::vector check(100, 0);
+  std::iota(begin(check), end(check), 0);
+  error_if(v != check);
+  return error_count;
+}
+CHANNEL_TEST(interrupted_channel) {
+  std::vector<int> v;
+  co_foreach(int i, interrupted_c()) v.push_back(i);
+  std::vector check(100, 0);
+  std::iota(begin(check), end(check), 0);
+  error_if(v != check);
+  co_return error_count;
+}
+CO_TEST(interrupted_channel);
+
+channel<int> recursive_interrupted_c() {
+  co_yield elements_of(interrupted_c());
+}
+generator<int> recursive_interrupted_g() {
+  co_yield elements_of(interrupted_g());
+}
+
+TEST(recursive_interrupted) {
+  std::vector<int> v;
+  for (int i : recursive_interrupted_g())
+    v.push_back(i);
+  std::vector check(100, 0);
+  std::iota(begin(check), end(check), 0);
+  error_if(v != check);
+  return error_count;
+}
+CHANNEL_TEST(recursive_interrupted_channel) {
+  std::vector<int> v;
+  co_foreach(int i, recursive_interrupted_c()) v.push_back(i);
+  std::vector check(100, 0);
+  std::iota(begin(check), end(check), 0);
+  error_if(v != check);
+  co_return error_count;
+}
+CO_TEST(recursive_interrupted_channel);
+
+channel<int> recursive_interrupted_c2() {
+  co_yield -1;
+  co_yield elements_of(interrupted_c());
+  co_yield 100;
+}
+generator<int> recursive_interrupted_g2() {
+  co_yield -1;
+  co_yield elements_of(interrupted_g());
+  co_yield 100;
+}
+
+TEST(recursive_interrupted2) {
+  std::vector<int> v;
+  for (int i : recursive_interrupted_g2())
+    v.push_back(i);
+  std::vector check(102, 0);
+  std::iota(begin(check), end(check), -1);
+  error_if(v != check);
+  return error_count;
+}
+CHANNEL_TEST(recursive_interrupted_channel2) {
+  std::vector<int> v;
+  co_foreach(int i, recursive_interrupted_c2()) v.push_back(i);
+  std::vector check(102, 0);
+  std::iota(begin(check), end(check), -1);
+  error_if(v != check);
+  co_return error_count;
+}
+CO_TEST(recursive_interrupted_channel2);
+
+CHAN_OR_GEN
+G<int> throw_c() {
+  for (int i = 0; i < 100; ++i) {
+    co_yield i;
+    if (i == 10)
+      throw std::runtime_error{"10"};
+  }
+  std::terminate();  // unreachable
+}
+
+channel<int> throw_tester() {
+  channel c = throw_c<channel>();
+  co_foreach(int i, c) {
+    co_yield i;
+    if (i == 5)
+      break;
+  }
+  co_yield elements_of([&]() -> channel<int> {
+    co_yield -1;
+    co_yield elements_of(c);
+    co_yield -1;
+  }());
+  for (int i = 11; i < 20; ++i)
+    co_yield i;
+}
+
+CHANNEL_TEST(recursive_throw) {
+  std::vector<int> v;
+  channel c = throw_tester();
+  try {
+    co_foreach(int i, c) {
+      v.push_back(i);
+    }
+  } catch (const std::runtime_error& e) {
+    error_if(e.what() != std::string("10"));
+  }
+  std::vector check1 = {0, 1, 2, 3, 4, 5, -1, 6, 7, 8, 9, 10};
+  error_if(v != check1);
+  co_foreach(int i, c) {
+    v.push_back(i);
+  }
+  std::vector check2 = {0, 1, 2, 3, 4, 5, -1, 6, 7, 8, 9, 10, -1, 11, 12, 13, 14, 15, 16, 17, 18, 19};
+  error_if(v != check2);
+  co_return error_count;
+}
+CO_TEST(recursive_throw);
+
+TEST(toplevel_throw) {
+  std::vector<int> v;
+  try {
+    for (auto x : throw_c<generator>())
+      v.push_back(x);
+  } catch (const std::runtime_error& e) {
+    (void)e.what();  // обращение к удалённому ексепшну!!! ЕБАНЫЙ СВЕТ!!!
+    std::vector check{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    error_if(v != check);  // бля че, он пытается разрушить ексепшн, который находится на ДЕ аллоцированной
+                           // памяти? Ой бля
+  }
+  return error_count;
+}
+CHANNEL_TEST(toplevel_throw_channel) {
+  std::vector<int> v;
+  try {
+    co_foreach(auto x, throw_c<channel>()) v.push_back(x);
+  } catch (...) {
+    std::vector check{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    error_if(v != check);
+  }
+  co_return error_count;
+}
+CO_TEST(toplevel_throw_channel);
+// тесты с сложными типами, то что компилируется всё
 // TODO tests когда начал генерировать, приостановился, скинул все остальные элементы как elements_of
 // и для генератора и для канала
 // TODO test с бросанием пустого инпут ренжа из генератора, например istream_view<int> какое-то
@@ -434,5 +602,18 @@ int main() {
   RUN(ranges_base2);
   RUN(byref_generator);
   RUN(byref_channel);
+  RUN(interrupted);
+  RUN(interrupted_channel);
+  RUN(recursive_interrupted);
+  RUN(recursive_interrupted_channel);
+  RUN(recursive_interrupted2);
+  RUN(recursive_interrupted_channel2);
+  RUN(recursive_throw);
+#ifndef _WIN32
+  // segfault when reading throwed exception .what(), because its somehow on coro frame, when it must not
+  // so its already destroyed by generator destructor when cached
+  RUN(toplevel_throw);
+  RUN(toplevel_throw_channel);
+#endif
   return ec;
 }

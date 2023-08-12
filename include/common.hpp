@@ -48,6 +48,12 @@
 
 namespace dd {
 
+struct not_movable {
+  constexpr not_movable() noexcept = default;
+  not_movable(not_movable&&) = delete;
+  void operator=(not_movable&&) = delete;
+};
+
 // CONCEPTS about co_await operator
 
 template <typename T>
@@ -79,9 +85,9 @@ concept co_awaitable = has_member_co_await<T> || has_global_co_await<T> || co_aw
 
 // concept of type which can be returned from function or yielded from generator
 // that is - not function, not array, not cv-qualified (its has no )
-// additionally reference is not returnable(std::ref exists...)
+// additionally reference is not yieldable(std::ref exists...)
 template <typename T>
-concept returnable = std::same_as<std::decay_t<T>, T>;
+concept yieldable = std::same_as<std::decay_t<T>, T> && (!std::is_void_v<T>);
 
 namespace noexport {
 
@@ -94,6 +100,7 @@ inline thread_local std::pmr::memory_resource* co_memory_resource = new_delete_r
 
 }  // namespace noexport
 
+// TODO only for next allocation + default resource
 // passes 'implicit' argument to all coroutines allocatinon on this thread until object dies
 // usage:
 //    foo_t local = dd::with_resource{r}, create_coro(), foo();
@@ -102,7 +109,7 @@ inline thread_local std::pmr::memory_resource* co_memory_resource = new_delete_r
 // OR
 //    dd::with_resource name{r};
 //    ... code with coroutines ...
-struct [[nodiscard]] with_resource {
+struct [[nodiscard]] with_resource : not_movable {
  private:
   std::pmr::memory_resource* old;
 
@@ -111,15 +118,32 @@ struct [[nodiscard]] with_resource {
       : old(std::exchange(noexport::co_memory_resource, &m)) {
     KELCORO_ASSUME(old != nullptr);
   }
-  with_resource(with_resource&&) = delete;
-  void operator=(with_resource&&) = delete;
 
   ~with_resource() {
     noexport::co_memory_resource = old;
   }
 };
 
+// Question: what will be if coroutine local contains alignas(64) int i; ?
+// Answer: (quote from std::generator paper)
+//  "Let BAlloc be allocator_traits<A>::template rebind_alloc<U> where U denotes an unspecified type
+// whose size and alignment are both _STDCPP_DEFAULT_NEW_ALIGNMENT__"
+consteval size_t coroframe_align() {
+  return __STDCPP_DEFAULT_NEW_ALIGNMENT__;
+}
+
+// when used as first argumemt in coroutine it will be allocated by this resource
+// and resource will be stored until coroutine frame destroyed
+template <typename R>
+struct inplace_resource : not_movable {
+  [[no_unique_address]] R r;
+};
+template <typename R>
+inplace_resource(R&&) -> inplace_resource<std::remove_reference_t<R>>;
+
 // TODO
+// TODO inplace_resource<R> конструируемый в аргументах корутины и не используемый в ней явно, только для
+// аллокации корутина должна иметь к нему доступ (через паблик интерфейс его)
 // // basically free list with customizable max blocks
 // // must be good because coroutines have same sizes,
 // // its easy to reuse memory for them
@@ -129,17 +153,17 @@ struct [[nodiscard]] with_resource {
 struct enable_memory_resource_support {
   static void* operator new(std::size_t frame_size) {
     auto* r = noexport::co_memory_resource;
-    auto* p = (std::byte*)r->allocate(frame_size + sizeof(void*), __STDCPP_DEFAULT_NEW_ALIGNMENT__);
+    auto* p = (std::byte*)r->allocate(frame_size + sizeof(void*), coroframe_align());
     std::byte* alloc_ptr = p + frame_size;
     std::memcpy(alloc_ptr, &r, sizeof(void*));
     return p;
   }
-
+  // TODO with inplace resource static void operator new
   static void operator delete(void* ptr, std::size_t frame_size) noexcept {
     auto* alloc_ptr = (std::byte*)ptr + frame_size;
     std::pmr::memory_resource* m;
     std::memcpy(&m, alloc_ptr, sizeof(void*));
-    m->deallocate(ptr, frame_size + sizeof(void*), __STDCPP_DEFAULT_NEW_ALIGNMENT__);
+    m->deallocate(ptr, frame_size + sizeof(void*), coroframe_align());
   }
 };
 
@@ -178,7 +202,6 @@ struct [[nodiscard("co_await it!")]] transfer_control_to {
   }
 };
 
-// TODO normal scope guards
 template <std::invocable<> F>
 struct [[nodiscard("Dont forget to name it!")]] scope_exit {
   [[no_unique_address]] F todo;
@@ -215,37 +238,24 @@ struct new_thread_executor {
   }
 };
 
-template <executor T>
+template <executor E>
 struct KELCORO_CO_AWAIT_REQUIRED jump_on {
- private:
-  using stored_type = std::conditional_t<(std::is_empty_v<T> && std::is_default_constructible_v<T>), T,
-                                         std::add_pointer_t<T>>;
-  [[no_unique_address]] stored_type exe_;
-
-  constexpr void store(T& e) {
-    if constexpr (std::is_pointer_v<stored_type>)
-      exe_ = std::addressof(e);
+  [[no_unique_address]] E e;
+#if __cpp_aggregate_paren_init < 201902L
+  constexpr jump_on(std::type_identity_t<E> e) noexcept : e(static_cast<E&&>(e)) {
   }
-
- public:
-  constexpr jump_on(T& e KELCORO_LIFETIMEBOUND) noexcept {
-    store(e);
-  }
-  constexpr jump_on(T&& e KELCORO_LIFETIMEBOUND) noexcept {
-    store(e);
-  }
-  constexpr bool await_ready() const noexcept {
+#endif
+  static constexpr bool await_ready() noexcept {
     return false;
   }
-  constexpr void await_suspend(std::coroutine_handle<void> handle) const {
-    if constexpr (std::is_pointer_v<stored_type>)
-      exe_->execute(handle);
-    else
-      exe_.execute(handle);
+  constexpr void await_suspend(std::coroutine_handle<> handle) const {
+    e.execute(handle);
   }
-  constexpr void await_resume() const noexcept {
+  static constexpr void await_resume() noexcept {
   }
 };
+template <typename E>
+jump_on(E&&) -> jump_on<E>;
 
 struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
  private:
@@ -296,7 +306,7 @@ constexpr decltype(auto) build_awaiter(T&& value) {
     return std::forward<T>(value).operator co_await();
 }
 
-struct always_done_coroutine_promise {
+struct always_done_coroutine_promise : not_movable {
   static void* operator new(std::size_t frame_size) {
     // worst part - i have  no guarantees about frame size, even when compiler exactly knows
     // how much it will allocoate (if he will)
@@ -370,16 +380,6 @@ struct elements_of {
 };
 template <typename R>
 elements_of(R&&) -> elements_of<R&&>;
-
-// TODO rm/change to macro or smth like
-KELCORO_ALWAYS_INLINE void assume(bool b) noexcept {
-  assert(b);
-  KELCORO_ASSUME(b);
-}
-
-KELCORO_ALWAYS_INLINE void assume_not_null(std::coroutine_handle<> h) noexcept {
-  assume(h.address() != nullptr);
-}
 
 // tag for yielding from generator/channel by reference.
 // This means, if 'value' will be changed by caller it will be
@@ -462,12 +462,6 @@ struct coroutine_handle {
   }
 };
 
-struct not_movable {
-  constexpr not_movable() noexcept = default;
-  not_movable(not_movable&&) = delete;
-  void operator=(not_movable&&) = delete;
-};
-
 // TODO info about current channel/generator call, is top, handles, iteration from top to bot, !SWAP!
 // операция свапающая два хендла внутри одной цепочки...
 
@@ -476,29 +470,27 @@ struct not_movable {
 // TODO? можно ещё сделать отдельный "канал" для отправки и получения чего-то, что не Yield типа...
 // то есть я на принимающей стороне .send(X), на стороне канала делаю auto x = co_yield y;
 
-// TODO elements of <by_ref
 }  // namespace dd
 
 // TODO into one header with generator / channel
 // TODO specializations like ranges::borrowed_range (TODO hmm)
 namespace dd {
 
-template <returnable>
+template <yieldable>
 struct generator_promise;
-template <returnable>
+template <yieldable>
 struct channel_promise;
-template <returnable>
+template <yieldable>
 struct generator_iterator;
-template <returnable>
+template <yieldable>
 struct channel_iterator;
-template <returnable>
+template <yieldable>
 struct generator;
-template <returnable>
+template <yieldable>
 struct channel;
 template <typename>
 struct elements_of;
 
-// TODO by_ref_elements_of
 }  // namespace dd
 
 namespace dd::noexport {
@@ -574,13 +566,6 @@ struct elements_extractor {
         co_yield static_cast<Yield&&>(std::forward<decltype(x)>(x));
     }
   }
-
-  // by reference case
-
-  // TODO template <typename X>
-  // TODO static Generator<Yield> do_extract(by_ref<X>&& r) {
-  // TODO   for (auto&& x : r.)
-  // TODO }
 
  public:
   template <typename X>

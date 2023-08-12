@@ -6,7 +6,7 @@ namespace dd {
 // TODO one header for generator and channel
 // logic and behavior is very similar to generator, but its async(may suspend before co_yield)
 
-template <returnable Yield>
+template <yieldable Yield>
 struct channel_promise : enable_memory_resource_support, not_movable {
   using handle_type = std::coroutine_handle<channel_promise>;
 
@@ -19,7 +19,6 @@ struct channel_promise : enable_memory_resource_support, not_movable {
   // invariant: root != nullptr
   channel_promise* root = this;
   handle_type current_worker = self_handle();
-  // invariant: never nullptr, stores owner for leafs and consumer for top-level channel
   union {
     channel<Yield>* _consumer;  // setted only in root
     handle_type _owner;         // setted only in leafs
@@ -69,7 +68,6 @@ struct channel_promise : enable_memory_resource_support, not_movable {
     set_result(std::addressof(r.value));
     return transfer_control_to{consumer_handle()};
   }
-
   template <typename X>
   noexport::attach_leaf<channel<Yield>> yield_value(elements_of<X> e) noexcept {
     return noexport::elements_extractor<Yield, ::dd::channel>::extract(std::move(e));
@@ -109,7 +107,7 @@ struct channel_promise : enable_memory_resource_support, not_movable {
 };
 
 // its pseudo iterator, requires co_awaits etc
-template <returnable Yield>
+template <yieldable Yield>
 struct channel_iterator : not_movable {
  private:
   channel<Yield>& chan;
@@ -154,7 +152,7 @@ struct channel_iterator : not_movable {
 // or use manually
 //   for(auto it = co_await chan.begin(); it != chan.end(); co_await ++it)
 //       auto&& v = *it;
-template <returnable Yield>
+template <yieldable Yield>
 struct channel {
   using promise_type = channel_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;

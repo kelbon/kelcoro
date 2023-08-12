@@ -15,7 +15,7 @@ namespace dd {
 
 // TODO usage .begin as output iterator hmm что то типа .out хммм
 
-template <returnable Yield>
+template <yieldable Yield>
 struct generator_promise : enable_memory_resource_support, not_movable {
   using handle_type = std::coroutine_handle<generator_promise>;
 
@@ -69,8 +69,6 @@ struct generator_promise : enable_memory_resource_support, not_movable {
     set_result(std::addressof(r.value));
     return {};
   }
-  // attaches leaf-generator
-  // TODO reuse somehow in channel, same logic, create X, pass to attach leaf
   template <typename R>
   noexport::attach_leaf<generator<Yield>> yield_value(elements_of<R> e) noexcept {
     return noexport::elements_extractor<Yield, ::dd::generator>::extract(std::move(e));
@@ -99,7 +97,7 @@ struct generator_promise : enable_memory_resource_support, not_movable {
 };
 
 // no default ctor, because its input iterator
-template <returnable Yield>
+template <yieldable Yield>
 struct generator_iterator {
  private:
   // invariant: != nullptr, ptr for trivial copy/move
@@ -146,7 +144,7 @@ struct generator_iterator {
 //  will lead to std::terminate
 //  * if exception was throwed from recursivelly co_yielded generator, then this leaf just skipped and caller
 //  can continue iterating after catch(requires new .begin call)
-template <returnable Yield>
+template <yieldable Yield>
 struct generator {
   using promise_type = generator_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;
