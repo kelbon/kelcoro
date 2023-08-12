@@ -1,22 +1,26 @@
 # KelCoro - C++20 coroutine library for C++
 * [`How to build?`](#build)
 
-Module `kel.coro` includes:
-* Coroutine types
+Library consists of
+* small common part, usefull for all coroutines, including your own created
+  * tags elements_of and by_ref for generator and channel
+  * with_resource - easy to use allocation customization
+  * enable_memory_resource_support - for your own coroutines
+  * [`jump_on(Executor)`](#jump_on)
+  * always_done_coroutine
+  * etc... see all in 'include/common.hpp'
+* coroutines
   * [`generator<T>`](#generatort)
+  * [`channel<T>`](#channelt)
   * [`logical_thread`](#logical_thread)
   * [`job`](#job)
   * [`async_task<T>`](#async_taskt)
-  * [`channel<T>`](#channelt)
   * [`task<T>`](#taskt)
 * Functions or seems like functions
-  * [`jump_on(Executor)`](#jump_on)
+
   * [`stop(Args...)`](#stop)
-  * [`invoked_in(Foo)`](#invoked_in)
-  * [`yield`](#yield)
 * Event system
-  * [`event_t`](#event_t)
-  * [`every_event_t`](#every_event_t)
+  * [`event`](#eventt)
   * [`when_all`](#when_all)
   * [`when_any`](#when_any)
 * Concepts
@@ -24,41 +28,65 @@ Module `kel.coro` includes:
   * [`co_awaitable`](#co_awaitable)
   * [`executor`](#executor)
 
-# Class Details
+# Primitives:
+
 ## `generator<T>`
 interface:
 ```C++
-// not const! Calculates first value when called!
-  iterator begin() &;
-// generator can be borrowed range, if you explicitly ask
-  iterator_owner begin() &&;
-  static std::default_sentinel_t end();
+  // * if .empty(), then begin() == end()
+  // * produces next value(often first)
+  // iterator invalidated only when generator dies
+  iterator begin() & [[clang::lifetimebound]];
+  static std::default_sentinel_t end() noexcept;
 
-  // maybe you need it for something
-  value_type& next();
-  bool has_next() const;
+  // postcondition: empty(), 'for' loop produces 0 values
+  constexpr generator() noexcept = default;
 
-  // for using generator as borrowed range
-  // (std::ranges do not forward its arguments, so begin&& will not be called
-  // on rvalue generator in Gen() | std::views*something*) (compilation error)
-  // but Get().view() | ... works perfectly
-  auto view() &&;
+  // postconditions:
+  // * other.empty()
+  // * iterators to 'other' == end()
+  constexpr generator(generator&& other) noexcept;
+  constexpr generator& operator=(generator&& other) noexcept;
+
+  bool operator==(const generator& other) const noexcept;
+
+  bool empty() const noexcept;
+  explicit operator bool() const noexcept {
+    return !empty();
+  }
+
+  void reset(handle_type handle) noexcept;
+  // postcondition: .empty()
+  void clear() noexcept;
+  // postcondition: .empty()
+  // its caller responsibility to correctly destroy handle
+  handle_type release() noexcept;
 ```
-* Calculates first value when.begin() / .next() called
-* It is an input AND output range(co_yielded lvalues can be safely changed from consumer side), which means every value from generator will appear only once
+   * produces next/first value when .begin called
+   * recursive (see co_yield dd::elements_of(rng))
+ * default constructed generator is an empty range
 
-Lifetime: frame dies with coroutine object (or special owner iterator if you call.begin() on rvalue generator)
+   
+ notes:
+  * operator* of iterator returns rvalue reference to value, but if you yield 'by_ref(v)' you can change value and generator will observe changes
+  * generator ignores fact, that 'destroy' may throw exception from destructor of object in coroutine, it
+  will lead to std::terminate
+  * if exception was throwed from recursivelly co_yielded generator, then this leaf just skipped and caller
+  can continue iterating after catch(requires new .begin call)
 
 example:
 ```C++
-generator<int> Gen() {
-  for (size_t i = 0;; ++i)
+dd::generator<int> ints() {
+  for (int i = 0; i < 100; ++i)
       co_yield i;
 }
-
-void GeneratorUser() {
-  for (auto i : Gen())
-      ;// do smth with i
+dd::generator<int> intsints() {
+  co_yield dd::elements_of(ints());
+  co_yield dd::elements_of(ints());
+}
+void use() {
+  for (int i : intsints())
+      do_smth(i);
 }
 ```
 
@@ -83,10 +111,10 @@ Lifetime: If not .detach(), then coroutine frame dies with coroutine object, els
 
 example :
 ```C++
-kel::logical_thread Bar() {
+dd::logical_thread Bar() {
 // imagine that already C++47 and networking in the standard
   auto socket = co_await async_connect(endpoint);
-  auto token = co_await this_coro::stop_token; // cancellable coroutine can get stop token associated with it
+  auto token = co_await dd::this_coro::stop_token; // cancellable coroutine can get stop token associated with it
   while (!token.stop_requested()) {
 	auto write_info = co_await socket.async_write("Hello world");
 	auto read_result = co_await socket.async_read();
@@ -97,12 +125,13 @@ kel::logical_thread Bar() {
 ## `job`
  behaves as always detached logical_thread, but more lightweight, has no methods, because always detached == caller have no guarantees about possibility to manipulate coro
  
-Lifetime: same as detached kel::logical_thread
+Lifetime: same as detached dd::logical_thread
 ## `async_task<T>`
 ```C++
 interface:
   void wait() const; // blocks until result is ready
-  Result get(); // waits result and then returns it
+  Result get() &&; // waits result and then returns it
+  bool empty() const noexcept;
 ```
 If unhandled exception happens in async_task std::terminate is called
 Execution starts immediately when async_task created.
@@ -112,7 +141,7 @@ Result can be ignored, it is safe.
 example:
 ```C++
 task<std::string> DoSmth() {
-  co_await jump_on(another_thread);
+  co_await jump_on(dd::new_thread_executor{});
   co_return "hello from task";
 }
 
@@ -134,28 +163,29 @@ but in fact, the coroutine to which control was transferred can be suspended and
 
 ## `channel<T>`
 interface:
-only operator co_await() ! This means channel may be used only in another coroutine.
-co_await channel returns pointer to value co_yielded from channel(nullptr == end), it is pointer to exactly value, so it is two-way channel(consumer can change value via pointer) 
+Literaly same as dd::generator. But 'begin' and operator++ on iterator requires co_await.
+So, there are macro co_foreach for easy usage.
 
 example:
 ```C++
-channel<int> CreateChannel() {
+channel<int> ints_creator() {
   for (int i = 0; i < 100; ++i) {
-    co_await jump_on(another_thread);
+    co_await jump_on(some_executor);
     // any hard working for calculating i
-    co_yield i; // control returns to caller ONLY after co_yield!
+    for (int i = 0; i < 10; ++i)
+      co_yield i; // control returns to caller ONLY after co_yield!
+    co_yield elements_of(std::vector{1, 2, 3, 4, 5});
   }
 }
 
-async_task<void> ChannelUser() {
-  auto my_channel = CreateChannel();
-  int i = 0;
-  // here we in cycle transfer control to channel,
-  // then it calculates value and returns control to us
-  while (auto* v = co_await my_channel) {
-    verify(*v == i);
-    ++i;
+async_task<void> user() {
+  co_foreach(int i, ints_creator())
+    use(i);
   }
+// if you want to not use macro, then:
+// auto c = ints_creator();
+// for (auto b = co_await c.begin(); b != c.end(); co_await ++b)
+//     use(*b);
 }
 ```
 
@@ -169,63 +199,27 @@ task is lazy (starts only when co_awaited)
 example: see async_task example =)
 
 # Memory allocations for coroutines
-Every coroutine supports allocators, (its last template argument of coroutine), by default it is default constructed, but you can use any memory resource with 
-leading allocator convention or trailing allocator convention
+Every coroutine supports allocation customization, just use 'with_resource'
 
 example:
 ```C++
-template <typename Resource>
-task<int, Resource> SmartTask(std::allocator_arg_t, Resource /* i dont use it, coro frame uses it!*/)
-// this task will use Resource for allocations! (it can be allocator, but also can be any with .allocate(size_t) / .deallocate(void*, size_t) methods)
+  my_resource r; // inheritor of std::pmr::memory_resource
+  dd::with_resource _(r); // every coroutine created on this thread until '_' dies will use 'r' as memory resource
+  foo();
 ```
 
 # Usefull
 ## `jump_on`
 co_await jump_on(Executor) equals to suspending coroutine and resume it on Executor(with .execute method), for example it can be thread pool
-or kel::this_thread_executor(executes all on this thread) / kel::noop_executor etc
+or dd::this_thread_executor(executes all on this thread) / dd::noop_executor etc
 ## `stop`
 more effective way to stop(request_stop + join) for many stopable arguments or range of such type.
-## `yield`
-`co_yield X`; is equal to `co_await yield(X)`;
 
-But in yield you can pass more then one argument to construct value in place
-## `invoked_in`
-okay its just magic for functions which want a callback
-example:
-```C++
-// some function which accepts callback
-bool Foo(int a, std::function<bool(int&, int)> f, int c) {
-  int value = 10;
-  // POINT 2: invoke a Foo from co_await call
-  auto result = f(value, a + b + c);
-  assert(value == 20);
-  // POINT 5: after coroutine suspends we are here
-  assert(result == true);
-  return result;
-}
-  // usually it used for async callbacks, but it is possible to use for synchronous callbacks too
-kel::job Bar() {
-  // POINT 1: entering
-  // value / summ is a references(YES even with auto) to arguments in Foo,
-  // ret is a result of callback(not represented if signature<void(...)>)
-  auto [value, summ, ret] = co_await this_coro::invoked_in(Foo, 10, signature<bool(int&, int)>{}, 20);
-  assert(value == 10);
-  value = 20;
-  assert(summ == 45);
-  // POINT 3: part of the coroutine(from co_await this_coro::invoked_in to next suspend) becomes callback for Foo
-  ret = true; // setting return value, because Foo expects it from callback
-  // POINT 4: first coroutine suspend after co_await
-}
-```
 # Event system
 
-## `event_t`
+## `event<T>`
 interface:
 ```C++
-// Executor - who will execute tasks. input type by default *nothing*,
-// but is can be customized with specialization event_traits<your_type>
-// or by using input_type = your_type;
-// returns false if no one has been woken up
   template <executor Executor>
   bool notify_all(Executor&& exe, input_type input);
 
@@ -236,82 +230,39 @@ interface:
   // subscribe, but only for coroutines
   auto operator co_await();
 ```
-## `every_event_t`
-Interface: same as event_t, but have guarantee, that all calls .notify_all() will not be lost. This means:
+example:
+
 ```C++
-struct MyTag {};
-job Foo() {
-// this code is NOT a race condition regardless of the order of .notify_all() calls
-co_await every_event<MyTag>;
-// if notify_all() was here on other thread AND we use event<MyTag> we can lose event,
-// but with every_event<MyTag> we cant lose it
-co_await every_event<MyTag>;
+inline dd::event<int> e1 = {};
+
+dd::job waiter() {
+  while (true) {
+    int i = co_await e1;
+    foo(i);
+  }
+}
+dd::logical_thread notifier() {
+  co_await dd::jump_on(dd::new_thread_executor{});
+  dd::stop_token tok = co_await dd::this_coro::stop_token;
+  while(true) {
+    e1.notify_all(dd::this_thread_executor{}, 1);
+    if (tok.stop_requested())
+      co_return;
+  }
 }
 ```
-
-Thats why every_event.notify_all() returns void(notifies always will be handled)
-
-
-_Note: if you use notify on event\<X\>, then you must use co_await on event\<X\> too, and if
-you use notify on every_event\<X\>, then you must use co_await on every_event\<X\>_
-_Note: every_event\<X\> do not support input types(ill-formed (compilation error))_
 
 ## `when_all`
 ```C++
-template <typename... Events>
-auto when_all() ->
-*awaiter which will return control to coroutine and inputs for every event when all event happens*
+template <typename... Inputs>
+co_awaitable auto when_all(event<Inputs>&... events);
 ```
 ## `when_any`
 ```C++
-template <typename... Events>
-auto when_any() ->
-*awaiter which returns control to coroutine and variant with input(and info what happens) when any of Events happen*
+template <typename... Inputs>
+co_awaitable auto when_any(event<Inputs>&... events);
 ```
 
-example:
-```C++
-// just an event tags
-struct one {};
-struct two {
-  using input_type = int;
-};
-struct three {
-  using input_type = std::vector<std::string>;
-};
-
-async_task<void> waiter_all() {
-  co_await jump_on(another_thread);
-  for (int i : std::views::iota(0, 100)) {
-    auto tuple = co_await when_all<one, two, three>(::test::test_selector{});
-    std::cout << "All three events happen, i accept a tuple with all inputs!\n";
-  }
-}
-
-template <typename Event>
-logical_thread notifier(auto& pool, auto input) {
-  co_await jump_on(another_thread);
-  while (true) {
-  // copy for all events, so no move
-    pool.notify_all<Event>(input);
-  // check if caller .request_stop()? then suspend
-    co_await quit_if_requested;
-  }
-}
-
-void WhenAllExample() {
-  event_pool<this_thread_executor> pool;
-  auto _1 = notifier<one>(pool);
-  auto _2 = notifier<two>(pool, 5);
-  auto _3 = notifier<three>(pool, std::vector<std::string>(3, "hello world"));
-  auto taskl = waiter_all(flag);
-  taskl.wait();
-  stop(_1, _2, _3); // .request_stop() and .join() for all
-  pool.notify_all<one>();
-  pool.notify_all<two>(5);
-  pool.notify_all<three>(std::vector<std::string>(3, "hello world"));
-}
-```
 # Concepts
 ## `co_awaiter`
 ```C++
@@ -330,10 +281,33 @@ concept co_awaitable = has_member_co_await<T> || has_global_co_await<T> || co_aw
 something with .execute([]{}) method
 
 ## `build`
+```CMake
+
+include(FetchContent)
+FetchContent_Declare(
+  kelcoro
+  GIT_REPOSITORY https://github.com/kelbon/kelcoro
+  GIT_TAG        origin/main
+)
+FetchContent_MakeAvailable(kelcoro)
+target_link_libraries(MyTargetName kelcorolib)
+
+```
+or use add_subdirectory
+
+1. Clone this repository into folder with your project 2. Add these lines to it's CMakeLists.txt
+```
+add_subdirectory(AnyAny)
+target_link_libraries(MyTargetName PUBLIC anyanylib)
+```
+
+Builds tests/examples
+
 ```
 git clone https://github.com/kelbon/kelcoro
 cd kelcoro
-cmake . -B build OR cmake . -DENABLE_TESTS=ON -B build # with tests and main.cpp to try something
+cmake . --preset debug_dev
+// also you can use --preset default / debug_dev / release_dev / your own
 cmake --build build
 ```
-_Note cmake now may not support C++ modules(and clang...)_ 
+
