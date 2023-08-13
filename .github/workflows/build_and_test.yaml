@@ -9,7 +9,7 @@ jobs:
         os: [ubuntu-22.04]
         compiler: [g++-12, clang++-14]
         cpp_standard: [20]
-        build_type: [debug_dev, release_dev]
+        build_type: [Debug, Release]
     runs-on: ${{matrix.os}}
 
     steps:
