@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstring>  // memcpy
+#include <utility>
 #include <type_traits>
 #include <cstddef>
 #include <optional>
