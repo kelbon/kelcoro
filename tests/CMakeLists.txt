@@ -9,8 +9,9 @@ set_target_properties(kelcorotest PROPERTIES
 	CXX_STANDARD 20
 )
 
+# sanitizers do not work on clang with coroutines... Rly...
 if(UNIX)
-if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 	target_compile_options(kelcorotest PUBLIC "-fsanitize=undefined" "-fsanitize=address")
 	target_link_options(kelcorotest PUBLIC "-fsanitize=undefined" "-fsanitize=address")
 endif()
@@ -25,7 +26,7 @@ set_target_properties(generator_tests PROPERTIES
 	CXX_STANDARD 20
 )
 if (UNIX)
-if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 	target_compile_options(generator_tests PUBLIC "-fsanitize=undefined" "-fsanitize=address")
 	target_link_options(generator_tests PUBLIC "-fsanitize=undefined" "-fsanitize=address")
 endif()
