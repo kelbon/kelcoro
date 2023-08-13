@@ -491,15 +491,8 @@ struct elements_extractor {
 
   template <typename U>
   static channel<Yield> do_extract(channel<U>& c) {
-#ifndef __GNUC__
-    for (auto b = co_await c.begin(); b != c.end(); co_await ++b)
+    for (auto b = co_await c.begin(); b != c.end(); co_await (++b))
       co_yield static_cast<Yield>(*b);
-#else
-    for (auto b = co_await c.begin(); b != c.end();) {
-      co_yield static_cast<Yield>(*b);
-      co_await ++b;  // workaround gcc bug "not enougth contextual info about type"
-    }
-#endif
   }
   template <typename U>
   static channel<Yield> do_extract(channel<U>&& c) {
