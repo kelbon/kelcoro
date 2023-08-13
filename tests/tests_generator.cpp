@@ -669,8 +669,8 @@ int main() {
   // segfault when reading throwed exception .what(), because its somehow on coro frame, when it must not
   // so its already destroyed by generator destructor when cached
   RUN(toplevel_throw);
-  RUN(toplevel_throw_channel);
 #endif
+  RUN(toplevel_throw_channel);
   RUN(input_rng);
   RUN(input_rng_channel);
   RUN(nomove_gen);

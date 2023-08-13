@@ -95,16 +95,13 @@ struct channel_promise : enable_memory_resource_support, not_movable {
     // case when already was exception, its not handled yet and next generated
     if (exception() != nullptr) [[unlikely]]
       std::terminate();
-    if (root == this) {
-      set_result(nullptr);
-      throw;  // after it top is .done() and iteration is over
-    }
-    (void)final_suspend();  // up owner(we are done)
+    if (root != this)
+      (void)final_suspend();  // up owner(we are done)
     // consumer sees nullptr and stop iterating,
     // if consumer catches/ignores exception and calls .begin again, he will observe elements from owner,
     // effectifelly we will skip failed leaf
     set_exception(std::current_exception());  // notify root->consumer about exception
-    _consumer = root->_consumer;              // 'final_suspend' will 'set_result' through root
+    _consumer = root->_consumer;              // 'final_suspend' will 'set_result' through root->consumer
     root = this;                              // force final suspend return into consumer
     // here 'final suspend' sets result to 0 and returns to consumer
   }
