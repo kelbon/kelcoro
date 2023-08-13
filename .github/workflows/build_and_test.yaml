@@ -7,7 +7,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-22.04]
-        compiler: [g++-13, clang++-15]
+        compiler: [g++-12, clang++-14]
         cpp_standard: [20]
         build_type: [debug_dev, release_dev]
     runs-on: ${{matrix.os}}
@@ -18,7 +18,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install ninja-build lld gcc-13 clang-15
+          sudo apt-get install ninja-build lld gcc-12 clang-14
           sudo ln -sf /usr/local/bin/ld /usr/bin/lld
       - name: Configure CMake
         run: |
