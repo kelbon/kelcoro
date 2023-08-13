@@ -8,8 +8,8 @@ jobs:
       matrix:
         os: [ubuntu-22.04]
         compiler: [g++-12, clang++-14]
-        cpp_standard: [17, 20]
-        build_type: [Debug, Release]
+        cpp_standard: [20]
+        build_type: [debug_dev, release_dev]
     runs-on: ${{matrix.os}}
 
     steps:
@@ -22,10 +22,10 @@ jobs:
           sudo ln -sf /usr/local/bin/ld /usr/bin/lld
       - name: Configure CMake
         run: |
-          cmake . -DAA_ENABLE_TESTING=ON              \
-            -DCMAKE_BUILD_TYPE=${{matrix.build_type}} \
-            -DCMAKE_CXX_COMPILER=${{matrix.compiler}} \
-            -DCMAKE_CXX_STANDARD=${{matrix.cpp_standard}}   \
+          cmake . -DKELCORO_ENABLE_TESTING=ON             \
+            -DCMAKE_BUILD_TYPE=${{matrix.build_type}}     \
+            -DCMAKE_CXX_COMPILER=${{matrix.compiler}}     \
+            -DCMAKE_CXX_STANDARD=${{matrix.cpp_standard}} \
             -B build -G "Ninja"
       - name: Build
         run:
