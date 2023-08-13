@@ -491,7 +491,7 @@ struct elements_extractor {
 
   template <typename U>
   static channel<Yield> do_extract(channel<U>& c) {
-    for (auto b = co_await c.begin(); b != c.end(); co_await (++b))
+    for (auto b = co_await c.begin(); b != c.end(); (void)(co_await (++b)))
       co_yield static_cast<Yield>(*b);
   }
   template <typename U>
