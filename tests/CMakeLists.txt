@@ -11,7 +11,7 @@ set_target_properties(kelcorotest PROPERTIES
 
 if(UNIX)
 if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-	target_compile_options(kelcorotest PUBLIC "-fsanitize=undefined" "-fsanitize=address" "-fsanitize=thread")
+	target_compile_options(kelcorotest PUBLIC "-fsanitize=undefined" "-fsanitize=address")
 endif()
 endif()
 add_executable(generator_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests_generator.cpp)
@@ -25,7 +25,7 @@ set_target_properties(generator_tests PROPERTIES
 )
 if (UNIX)
 if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-	target_compile_options(generator_tests PUBLIC "-fsanitize=undefined" "-fsanitize=address" "-fsanitize=thread")
+	target_compile_options(generator_tests PUBLIC "-fsanitize=undefined" "-fsanitize=address")
 endif()
 endif()
 add_test(NAME generator_tests COMMAND generator_tests)
