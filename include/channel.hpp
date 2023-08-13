@@ -2,6 +2,10 @@
 
 #include "common.hpp"
 
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattributes"
+#endif
 namespace dd {
 
 // behavior very similar to generator, but channel may suspend before co_yield
@@ -91,16 +95,13 @@ struct channel_promise : enable_memory_resource_support, not_movable {
     // case when already was exception, its not handled yet and next generated
     if (exception() != nullptr) [[unlikely]]
       std::terminate();
-    if (root == this) {
-      set_result(nullptr);
-      throw;  // after it top is .done() and iteration is over
-    }
-    (void)final_suspend();  // up owner(we are done)
+    if (root != this)
+      (void)final_suspend();  // up owner(we are done)
     // consumer sees nullptr and stop iterating,
     // if consumer catches/ignores exception and calls .begin again, he will observe elements from owner,
     // effectifelly we will skip failed leaf
     set_exception(std::current_exception());  // notify root->consumer about exception
-    _consumer = root->_consumer;              // 'final_suspend' will 'set_result' through root
+    _consumer = root->_consumer;              // 'final_suspend' will 'set_result' through root->consumer
     root = this;                              // force final suspend return into consumer
     // here 'final suspend' sets result to 0 and returns to consumer
   }
@@ -283,9 +284,14 @@ struct channel {
 //  co_foreach(std::string s, mychannel) use(s);
 // OR
 //  co_foreach(YieldType&& x, mychannel) { ..use(std::move(x)).. };
-#define co_foreach(VARDECL, ... /*CHANNEL, may be expression produces channel*/)                        \
-  if (auto&& dd_channel_ = __VA_ARGS__; true)                                                           \
-    for (auto dd_b_ = co_await dd_channel_.begin(); dd_b_ != ::std::default_sentinel; co_await ++dd_b_) \
+#define co_foreach(VARDECL, ... /*CHANNEL, may be expression produces channel*/)      \
+  if (auto&& dd_channel_ = __VA_ARGS__; true)                                         \
+    for (auto dd_b_ = co_await dd_channel_.begin(); dd_b_ != ::std::default_sentinel; \
+         (void)(co_await (++dd_b_)))                                                  \
       if (VARDECL = *dd_b_; true)
-
+// note: (void)(co_await) (++dd_b)) only because gcc has bug, its not required
 }  // namespace dd
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif

@@ -65,6 +65,20 @@ TEST(base) {
   }
   return error_count;
 }
+channel<float> base_case_chan() {
+  channel<int> c = base_case<channel>();
+  co_yield elements_of(c);
+}
+CHANNEL_TEST(chan_yield) {
+  std::vector<int> v;
+  co_foreach(int i, base_case_chan()) v.push_back(i);
+  std::vector<int> check(100, 0);
+  std::iota(begin(check), end(check), 0);
+  error_if(v != check);
+  co_return error_count;
+}
+CO_TEST(chan_yield);
+
 TEST(base2) {
   std::vector<int> vec;
   auto g = base_case<dd::generator>();
@@ -325,6 +339,9 @@ TEST(nontrivial_references) {
   return error_count;
 }
 
+// clang had bug which breaks all std::views
+#if __clang_major__ >= 15
+
 TEST(ranges_recursive) {
   int i = 0;
   dd::generator g = g4<dd::generator>(i);
@@ -349,6 +366,8 @@ TEST(ranges_base2) {
   error_if(vec != check);
   return error_count;
 }
+#endif  // clang bug
+
 CHAN_OR_GEN
 G<int> byrefg(size_t& error_count) {
   int i = 0;
@@ -536,6 +555,9 @@ CHANNEL_TEST(toplevel_throw_channel) {
 }
 CO_TEST(toplevel_throw_channel);
 
+// clang had bug which breaks all std::views
+#if __clang_major__ >= 15
+
 CHAN_OR_GEN
 G<int> inp() {
   std::stringstream s;
@@ -554,6 +576,8 @@ CHANNEL_TEST(input_rng_channel) {
   co_return error_count;
 }
 CO_TEST(input_rng_channel);
+
+#endif  // clang bug
 
 struct tester_t : dd::not_movable {
   int i;
@@ -640,8 +664,11 @@ int main() {
   RUN(string_generator);
   RUN(nontrivial_references);
   RUN(empty_recursive2);
+  // clang had bug which breaks all std::views
+#if __clang_major__ >= 15
   RUN(ranges_recursive);
   RUN(ranges_base2);
+#endif  // clang bug
   RUN(byref_generator);
   RUN(byref_channel);
   RUN(interrupted);
@@ -655,12 +682,16 @@ int main() {
   // segfault when reading throwed exception .what(), because its somehow on coro frame, when it must not
   // so its already destroyed by generator destructor when cached
   RUN(toplevel_throw);
-  RUN(toplevel_throw_channel);
 #endif
+  RUN(toplevel_throw_channel);
+  // clang had bug which breaks all std::views
+#if __clang_major__ >= 15
   RUN(input_rng);
   RUN(input_rng_channel);
+#endif  // clang bug
   RUN(nomove_gen);
   RUN(nomove_gen_channel);
+  RUN(chan_yield);
 
   return ec;
 }
