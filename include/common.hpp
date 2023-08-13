@@ -491,6 +491,7 @@ struct elements_extractor {
 
   template <typename U>
   static channel<Yield> do_extract(channel<U>& c) {
+    // note: (void)(co_await) (++b)) only because gcc has bug, its not required
     for (auto b = co_await c.begin(); b != c.end(); (void)(co_await (++b)))
       co_yield static_cast<Yield>(*b);
   }

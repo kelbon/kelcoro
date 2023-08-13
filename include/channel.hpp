@@ -284,11 +284,12 @@ struct channel {
 //  co_foreach(std::string s, mychannel) use(s);
 // OR
 //  co_foreach(YieldType&& x, mychannel) { ..use(std::move(x)).. };
-#define co_foreach(VARDECL, ... /*CHANNEL, may be expression produces channel*/)                        \
-  if (auto&& dd_channel_ = __VA_ARGS__; true)                                                           \
-    for (auto dd_b_ = co_await dd_channel_.begin(); dd_b_ != ::std::default_sentinel; co_await ++dd_b_) \
+#define co_foreach(VARDECL, ... /*CHANNEL, may be expression produces channel*/)      \
+  if (auto&& dd_channel_ = __VA_ARGS__; true)                                         \
+    for (auto dd_b_ = co_await dd_channel_.begin(); dd_b_ != ::std::default_sentinel; \
+         (void)(co_await (++dd_b_)))                                                  \
       if (VARDECL = *dd_b_; true)
-
+// note: (void)(co_await) (++dd_b)) only because gcc has bug, its not required
 }  // namespace dd
 
 #ifdef __GNUC__
