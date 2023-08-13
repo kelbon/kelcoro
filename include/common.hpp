@@ -491,8 +491,15 @@ struct elements_extractor {
 
   template <typename U>
   static channel<Yield> do_extract(channel<U>& c) {
+#ifndef __GNUC__
     for (auto b = co_await c.begin(); b != c.end(); co_await ++b)
       co_yield static_cast<Yield>(*b);
+#else
+    for (auto b = co_await c.begin(); b != c.end();) {
+      co_yield static_cast<Yield>(*b);
+      co_await ++b;  // workaround gcc bug "not enougth contextual info about type"
+    }
+#endif
   }
   template <typename U>
   static channel<Yield> do_extract(channel<U>&& c) {
@@ -504,8 +511,10 @@ struct elements_extractor {
   static Generator<Yield> do_extract(auto&& rng) {
     if constexpr (!std::ranges::borrowed_range<decltype(rng)> &&
                   std::is_same_v<std::ranges::range_rvalue_reference_t<decltype(rng)>, Yield&&>) {
-      auto&& b = std::ranges::begin(rng);
-      auto&& e = std::ranges::end(rng);
+      using std::begin;
+      using std::end;
+      auto&& b = begin(rng);
+      auto&& e = end(rng);
       for (; b != e; ++b)
         co_yield std::ranges::iter_move(b);
     } else {

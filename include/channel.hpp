@@ -2,6 +2,10 @@
 
 #include "common.hpp"
 
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattributes"
+#endif
 namespace dd {
 
 // behavior very similar to generator, but channel may suspend before co_yield
@@ -289,3 +293,7 @@ struct channel {
       if (VARDECL = *dd_b_; true)
 
 }  // namespace dd
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif

@@ -65,6 +65,20 @@ TEST(base) {
   }
   return error_count;
 }
+channel<float> base_case_chan() {
+  channel<int> c = base_case<channel>();
+  co_yield elements_of(c);
+}
+CHANNEL_TEST(chan_yield) {
+  std::vector<int> v;
+  co_foreach(int i, base_case_chan()) v.push_back(i);
+  std::vector<int> check(100, 0);
+  std::iota(begin(check), end(check), 0);
+  error_if(v != check);
+  co_return error_count;
+}
+CO_TEST(chan_yield);
+
 TEST(base2) {
   std::vector<int> vec;
   auto g = base_case<dd::generator>();
@@ -661,6 +675,7 @@ int main() {
   RUN(input_rng_channel);
   RUN(nomove_gen);
   RUN(nomove_gen_channel);
+  RUN(chan_yield);
 
   return ec;
 }

@@ -6,9 +6,13 @@
 
 #include "common.hpp"
 
-#if __clang__
+#ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunknown-attributes"
+#endif
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattributes"
 #endif
 
 namespace dd {
@@ -243,6 +247,9 @@ struct generator {
 
 }  // namespace dd
 
-#if __clang__
+#ifdef __clang__
 #pragma clang diagnostic pop
+#endif
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
 #endif
