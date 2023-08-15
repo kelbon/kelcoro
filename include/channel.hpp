@@ -287,6 +287,13 @@ struct channel {
   }
 };
 
+namespace pmr {
+
+template <yieldable Y>
+using channel = ::dd::channel<Y, polymorphic_resource>;
+
+}
+
 // usage example:
 //  co_foreach(std::string s, mychannel) use(s);
 // OR

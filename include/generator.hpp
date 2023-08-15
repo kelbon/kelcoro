@@ -252,6 +252,13 @@ struct generator {
   }
 };
 
+namespace pmr {
+
+template <yieldable Y>
+using generator = ::dd::generator<Y, polymorphic_resource>;
+
+}
+
 }  // namespace dd
 
 namespace std {

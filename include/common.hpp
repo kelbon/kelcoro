@@ -75,16 +75,7 @@ concept memory_resource = std::is_void_v<T> ||
                                 requires !(std::is_empty_v<T> && !std::default_initializable<T>);
                               };
 
-namespace noexport {
-
-// caches value (just because its C-non-inline-call...)
-static std::pmr::memory_resource* const new_delete_resource = std::pmr::new_delete_resource();
-
-// used to pass argument to promise operator new, say 'ty' to standard writers,
-// i want separate coroutine logic from how it allocates frame
-inline thread_local std::pmr::memory_resource* co_memory_resource = new_delete_resource;
-
-}  // namespace noexport
+namespace pmr {
 
 struct polymorphic_resource {
  private:
@@ -129,18 +120,16 @@ inline void pass_resource(std::pmr::memory_resource& m) noexcept {
   polymorphic_resource::passed_resource() = &m;
 }
 
-// Question: what will be if coroutine local contains alignas(64) int i; ?
-// Answer: (quote from std::generator paper)
-//  "Let BAlloc be allocator_traits<A>::template rebind_alloc<U> where U denotes an unspecified type
-// whose size and alignment are both _STDCPP_DEFAULT_NEW_ALIGNMENT__"
+}  // namespace pmr
+
 consteval size_t coroframe_align() {
+  // Question: what will be if coroutine local contains alignas(64) int i; ?
+  // Answer: (quote from std::generator paper)
+  //  "Let BAlloc be allocator_traits<A>::template rebind_alloc<U> where U denotes an unspecified type
+  // whose size and alignment are both _STDCPP_DEFAULT_NEW_ALIGNMENT__"
   return __STDCPP_DEFAULT_NEW_ALIGNMENT__;
 }
 
-// TODO rm all shit тредлокальную. Хотя можно этос делать специальным мемори ресурсом,
-// да, так и надо впринципе
-// TODO my any memory resource instead of std::pmr
-// TODO inplace resource(blocked by bad standard wording)
 // TODO free list with customizable max blocks
 //  must be good because coroutines have same sizes,
 //  its easy to reuse memory for them
@@ -186,13 +175,14 @@ struct find_resource_tag<Head, Tail...> : find_resource_tag<Tail...> {};
 // TODO tests
 template <memory_resource R>
 struct enable_memory_resource_support {
- private:
   template <size_t RequiredPadding>
   static size_t padding_len(size_t sz) noexcept {
     enum { P = RequiredPadding };
     static_assert(P != 0);
     return ((P - sz) % P) % P;
   }
+
+ private:
   static_assert(padding_len<16>(16) == 0);
   static_assert(padding_len<16>(0) == 0);
   static_assert(padding_len<16>(1) == 15);
@@ -248,9 +238,7 @@ struct enable_memory_resource_support {
 // 'teaches' promise to return
 template <typename T>
 struct return_block {
-  using result_type = T;
-  // possibly can be replaced with some buffer
-  std::optional<result_type> storage = std::nullopt;
+  std::optional<T> storage = std::nullopt;
 
   constexpr void return_value(T value) noexcept(std::is_nothrow_move_constructible_v<T>) {
     storage.emplace(std::move(value));
@@ -259,9 +247,20 @@ struct return_block {
     return *std::move(storage);
   }
 };
+template <typename T>
+struct return_block<T&> {
+  T* storage = nullptr;
+
+  constexpr void return_value(T& value) noexcept {
+    storage = std::addressof(value);
+  }
+  constexpr T& result() noexcept {
+    assert(storage != nullptr);
+    return *storage;
+  }
+};
 template <>
 struct return_block<void> {
-  using result_type = void;
   constexpr void return_void() const noexcept {
   }
 };
@@ -363,12 +362,6 @@ namespace this_coro {
 // provides access to inner handle of coroutine
 constexpr inline get_handle_t handle = {};
 
-// returns last resource which was setted on this thread by 'with_resource'
-// guaranteed to be alive only in coroutine for which it was setted
-inline std::pmr::memory_resource& current_memory_resource() noexcept {
-  return *noexport::co_memory_resource;
-}
-
 }  // namespace this_coro
 
 // imitating compiler behaviour for co_await expression mutation into awaiter(without await_transform)
@@ -382,68 +375,6 @@ constexpr decltype(auto) build_awaiter(T&& value) {
     return operator co_await(std::forward<T>(value));
   else if constexpr (has_member_co_await<T&&>)
     return std::forward<T>(value).operator co_await();
-}
-
-struct always_done_coroutine_promise : not_movable {
-  static void* operator new(std::size_t frame_size) {
-    // worst part - i have  no guarantees about frame size, even when compiler exactly knows
-    // how much it will allocoate (if he will)
-    alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__) static char bytes[50];
-    if (frame_size <= 50)
-      return bytes;
-    // this memory can not be deallocated in dctor of global object,
-    // because i have no guarantee, that this memory even will be allocated.
-    // so its memory leak. Ok
-    return new char[frame_size];
-  }
-
-  static void operator delete(void*, std::size_t) noexcept {
-  }
-  static constexpr std::suspend_never initial_suspend() noexcept {
-    return {};
-  }
-  auto get_return_object() {
-    return std::coroutine_handle<always_done_coroutine_promise>::from_promise(*this);
-  }
-  [[noreturn]] static void unhandled_exception() noexcept {
-    assert(false);  // must be unreachable
-    std::abort();
-  }
-  static constexpr void return_void() noexcept {
-  }
-  static constexpr std::suspend_always final_suspend() noexcept {
-    return {};
-  }
-};
-
-using always_done_coroutine_handle = std::coroutine_handle<always_done_coroutine_promise>;
-
-}  // namespace dd
-
-namespace std {
-
-template <typename... Args>
-struct coroutine_traits<::dd::always_done_coroutine_handle, Args...> {
-  using promise_type = ::dd::always_done_coroutine_promise;
-};
-
-}  // namespace std
-
-namespace dd::noexport {
-
-static inline const always_done_coroutine_handle always_done_coro{
-    []() -> always_done_coroutine_handle { co_return; }()};
-
-}  // namespace dd::noexport
-
-namespace dd {
-
-// returns handle for which
-// .done() == true
-// .destroy() is noop
-// .resume() produces undefined behavior
-inline always_done_coroutine_handle always_done_coroutine() noexcept {
-  return noexport::always_done_coro;
 }
 
 template <typename R>
@@ -473,67 +404,6 @@ struct by_ref {
 
 template <typename Yield>
 by_ref(Yield&) -> by_ref<Yield>;
-
-// never nullptr, stores always_done_coroutine_handle or std::coroutine_handle<Promise>
-template <typename Promise>
-struct always_done_or {
- private:
-  // invariant _h != nullptr
-  std::coroutine_handle<> _h = always_done_coroutine();
-
- public:
-  always_done_or() = default;
-  always_done_or(always_done_coroutine_handle h) noexcept : _h(h) {
-    assert(_h != nullptr);
-  }
-  always_done_or(std::coroutine_handle<Promise> h) noexcept : _h(h) {
-    assert(_h != nullptr);
-  }
-  always_done_or(always_done_or&) = default;
-  always_done_or(always_done_or&&) = default;
-  always_done_or& operator=(const always_done_or&) = default;
-  always_done_or& operator=(always_done_or&) = default;
-
-  [[gnu::pure]] std::coroutine_handle<Promise> get() const noexcept {
-    assert(_h != nullptr);
-    return std::coroutine_handle<Promise>::from_address(_h.address());
-  }
-  // precondition: not always_done_coroutine stored
-  [[gnu::pure]] Promise& promise() const noexcept {
-    assert(_h != always_done_coroutine());
-    return std::coroutine_handle<Promise>::from_address(_h.address()).promise();
-  }
-  [[gnu::pure]] static always_done_or from_promise(Promise& p) {
-    always_done_or h;
-    h._h = std::coroutine_handle<Promise>::from_promise(p);
-    return h;
-  }
-  // postcondition returned != nullptr
-  [[gnu::pure]] constexpr void* address() const noexcept {
-    void* p = _h.address();
-    assert(p != nullptr);
-    return p;
-  }
-  static constexpr always_done_or from_address(void* addr) {
-    always_done_or h;
-    h._h = std::coroutine_handle<Promise>::from_address(addr);
-    return h;
-  }
-
-  bool done() const noexcept {
-    return _h.done();
-  }
-  void resume() const {
-    assert(!done());
-    _h.resume();
-  }
-  void destroy() {
-    _h.destroy();
-  }
-  operator std::coroutine_handle<>() const noexcept {
-    return _h;
-  }
-};
 
 template <yieldable>
 struct generator_promise;
