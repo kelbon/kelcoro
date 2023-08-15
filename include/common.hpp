@@ -9,6 +9,7 @@
 #include <cassert>
 #include <thread>
 #include <memory_resource>
+#include <concepts>
 
 #define KELCORO_CO_AWAIT_REQUIRED [[nodiscard("forget co_await?")]]
 
@@ -63,6 +64,17 @@ concept co_awaitable = has_member_co_await<T> || has_global_co_await<T> || co_aw
 template <typename T>
 concept yieldable = std::same_as<std::decay_t<T>, T> && (!std::is_void_v<T>);
 
+template <typename T>
+concept memory_resource = std::is_void_v<T> ||
+                          (!std::is_reference_v<T>) &&
+                              requires(T& value, size_t sz, size_t align, void* ptr) {
+                                { value.allocate(sz, align) } -> std::convertible_to<void*>;
+                                { value.deallocate(ptr, sz, align) } noexcept -> std::same_as<void>;
+                                requires std::is_nothrow_move_constructible_v<T>;
+                                requires alignof(T) <= alignof(std::max_align_t);
+                                requires !(std::is_empty_v<T> && !std::default_initializable<T>);
+                              };
+
 namespace noexport {
 
 // caches value (just because its C-non-inline-call...)
@@ -74,28 +86,48 @@ inline thread_local std::pmr::memory_resource* co_memory_resource = new_delete_r
 
 }  // namespace noexport
 
-// passes 'implicit' argument to all coroutines allocatinon on this thread until object dies
-// usage:
-//    foo_t local = dd::with_resource{r}, create_coro(), foo();
-// OR
-//    dd::with_resource{r}, [&] { ... }();
-// OR
-//    dd::with_resource name{r};
-//    ... code with coroutines ...
-struct [[nodiscard]] with_resource : not_movable {
+struct polymorphic_resource {
  private:
-  std::pmr::memory_resource* old;
+  std::pmr::memory_resource* passed;
+
+  static auto& default_resource() {
+    // never null
+    static std::atomic<std::pmr::memory_resource*> r = std::pmr::new_delete_resource();
+    return r;
+  }
+  static auto& passed_resource() {
+    thread_local constinit std::pmr::memory_resource* r = nullptr;
+    return r;
+  }
+  friend std::pmr::memory_resource& get_default_resource() noexcept;
+  friend std::pmr::memory_resource& set_default_resource(std::pmr::memory_resource&) noexcept;
+  friend void pass_resource(std::pmr::memory_resource&) noexcept;
 
  public:
-  explicit with_resource(std::pmr::memory_resource& m) noexcept
-      : old(std::exchange(noexport::co_memory_resource, &m)) {
-    assert(old != nullptr);
+  polymorphic_resource(std::pmr::memory_resource& m) noexcept
+      : passed(std::exchange(passed_resource(), nullptr)) {
+    if (!passed)
+      passed = std::pmr::get_default_resource();
+    assert(passed != nullptr);
   }
-
-  ~with_resource() {
-    noexport::co_memory_resource = old;
+  void* allocate(size_t sz, size_t align) {
+    return passed->allocate(sz, align);
+  }
+  void deallocate(void* p, std::size_t sz, std::size_t align) noexcept {
+    passed->deallocate(p, sz, align);
   }
 };
+
+inline std::pmr::memory_resource& get_default_resource() noexcept {
+  return *polymorphic_resource::default_resource().load(std::memory_order_acquire);
+}
+
+inline std::pmr::memory_resource& set_default_resource(std::pmr::memory_resource& r) noexcept {
+  return *polymorphic_resource::default_resource().exchange(&r, std::memory_order_acq_rel);
+}
+inline void pass_resource(std::pmr::memory_resource& m) noexcept {
+  polymorphic_resource::passed_resource() = &m;
+}
 
 // Question: what will be if coroutine local contains alignas(64) int i; ?
 // Answer: (quote from std::generator paper)
@@ -105,6 +137,8 @@ consteval size_t coroframe_align() {
   return __STDCPP_DEFAULT_NEW_ALIGNMENT__;
 }
 
+// TODO rm all shit тредлокальную. Хотя можно этос делать специальным мемори ресурсом,
+// да, так и надо впринципе
 // TODO my any memory resource instead of std::pmr
 // TODO inplace resource(blocked by bad standard wording)
 // TODO free list with customizable max blocks
@@ -114,24 +148,102 @@ consteval size_t coroframe_align() {
 //  generators in chain
 //  struct co_memory_resource { ... };
 
-// inheritor(coroutine promise) receives allocation support(std::pmr::memory_resource)
-// usage: see 'with_resource' and 'inplace_resource'
+// when passed into coroutine coro will allocate/deallocate memory using this resource
+template <memory_resource R>
+struct with_resource {
+  [[no_unique_address]] R resource;
+};
+template <typename X>
+with_resource(X&&) -> with_resource<std::remove_cvref_t<X>>;
+
+template <typename>
+struct is_resource_tag : std::false_type {};
+
+template <memory_resource R>
+struct is_resource_tag<with_resource<R>> : std::true_type {};
+
+template <typename... Types>
+consteval bool contains_1_resource_tag() {
+  return (0 + ... + is_resource_tag<std::remove_cvref_t<Types>>::value) == 1;
+}
+constexpr auto only_for_resource(auto&& foo, auto&&... args) {
+  auto try_one = [&](auto& x) {
+    if constexpr (is_resource_tag<std::remove_cvref_t<decltype(x)>>::value)
+      foo(x.resource);
+  };
+  (try_one(args), ...);
+}
+
+template <typename... Args>
+struct find_resource_tag : std::type_identity<void> {};
+template <typename R, typename... Args>
+struct find_resource_tag<with_resource<R>, Args...> : std::type_identity<R> {};
+template <typename Head, typename... Tail>
+struct find_resource_tag<Head, Tail...> : find_resource_tag<Tail...> {};
+
+// inheritor(coroutine promise) may be allocated with 'R'
+// using 'with_resource' tag or default constructed 'R'
+// TODO tests
+template <memory_resource R>
 struct enable_memory_resource_support {
-  static void* operator new(std::size_t frame_size) {
-    auto* r = noexport::co_memory_resource;
-    auto* p = (std::byte*)r->allocate(frame_size + sizeof(void*), coroframe_align());
-    std::byte* alloc_ptr = p + frame_size;
-    std::memcpy(alloc_ptr, &r, sizeof(void*));
-    return p;
+ private:
+  template <size_t RequiredPadding>
+  static size_t padding_len(size_t sz) noexcept {
+    enum { P = RequiredPadding };
+    static_assert(P != 0);
+    return ((P - sz) % P) % P;
+  }
+  static_assert(padding_len<16>(16) == 0);
+  static_assert(padding_len<16>(0) == 0);
+  static_assert(padding_len<16>(1) == 15);
+  static_assert(padding_len<16>(8) == 8);
+
+  enum { frame_align = std::max(coroframe_align(), alignof(R)) };
+  static void* do_allocate(size_t frame_sz, memory_resource auto& r) {
+    if constexpr (std::is_empty_v<R>)
+      return (void*)r->allocate(frame_sz, coroframe_align());
+    else {
+      const size_t padding = padding_len<frame_align>(frame_sz);
+      const size_t bytes_count = frame_sz + padding + sizeof(R);
+      std::byte* p = (std::byte*)r->allocate(bytes_count, frame_align);
+      std::byte* resource_place = p + frame_sz + padding;
+      std::construct_at((R*)resource_place, std::move(r));
+      return p;
+    }
   }
 
-  static void operator delete(void* ptr, std::size_t frame_size) noexcept {
-    auto* alloc_ptr = (std::byte*)ptr + frame_size;
-    std::pmr::memory_resource* m;
-    std::memcpy(&m, alloc_ptr, sizeof(void*));
-    m->deallocate(ptr, frame_size + sizeof(void*), coroframe_align());
+ public:
+  static void* operator new(size_t frame_sz)
+    requires(std::default_initializable<R>)
+  {
+    R r{};
+    return do_allocate(frame_sz, r);
+  }
+  template <typename... Args>
+    requires(contains_1_resource_tag<Args...>())
+  static void* operator new(std::size_t frame_sz, Args&&... args) {
+    void* p;
+    only_for_resource([&](auto& resource) { p = do_allocate(frame_sz, resource); }, args...);
+    return p;
+  }
+  static void operator delete(void* ptr, std::size_t frame_sz) noexcept {
+    if constexpr (std::is_empty_v<R>) {
+      R r{};
+      r.deallocate(ptr, frame_sz, coroframe_align());
+    } else {
+      const size_t padding = padding_len<frame_align>(frame_sz);
+      const size_t bytes_count = frame_sz + padding + sizeof(R);
+      R* onframe_resource = (R*)((std::byte*)ptr + frame_sz + padding);
+      R r = std::move(*onframe_resource);
+      std::destroy_at(onframe_resource);
+      r->deallocate(ptr, bytes_count, frame_align);
+    }
   }
 };
+// TODO macro which enables support for memory resources...
+// да, можно просто добавить тег по которому отсеивать специализации
+// TODO and macro specialization of coroutine traits
+// и видимо придётся это всё таки в шаблон генератора/всех остальных корутин пихать... И алиасы на дефолт
 
 // 'teaches' promise to return
 template <typename T>
@@ -431,9 +543,9 @@ template <yieldable>
 struct generator_iterator;
 template <yieldable>
 struct channel_iterator;
-template <yieldable>
+template <yieldable, memory_resource = void>
 struct generator;
-template <yieldable>
+template <yieldable, memory_resource = void>
 struct channel;
 template <typename>
 struct elements_of;
@@ -464,7 +576,9 @@ struct attach_leaf {
 };
 
 // accepts elements_of<X> and converts it into leaf-coroutine
-template <typename Yield, template <typename> typename Generator>
+// TODO упростить ( с приведением к общему виду, чтобы все генераторы кастовались к void версии, игнорируя
+// ресурсы)
+template <yieldable Yield, template <typename, typename = void> typename Generator>
 struct elements_extractor {
  private:
   static_assert(!std::is_reference_v<Yield> && !std::is_const_v<Yield>);
@@ -493,7 +607,7 @@ struct elements_extractor {
   static channel<Yield> do_extract(channel<U>& c) {
     // note: (void)(co_await) (++b)) only because gcc has bug, its not required
     for (auto b = co_await c.begin(); b != c.end(); (void)(co_await (++b)))
-      co_yield static_cast<Yield>(*b);
+      co_yield static_cast<Yield&&>(*b);
   }
   template <typename U>
   static channel<Yield> do_extract(channel<U>&& c) {

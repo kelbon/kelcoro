@@ -11,7 +11,7 @@ namespace dd {
 // behavior very similar to generator, but channel may suspend before co_yield
 
 template <yieldable Yield>
-struct channel_promise : enable_memory_resource_support, not_movable {
+struct channel_promise : not_movable {
   using handle_type = std::coroutine_handle<channel_promise>;
 
  private:
@@ -56,7 +56,7 @@ struct channel_promise : enable_memory_resource_support, not_movable {
   }
 
   channel<Yield> get_return_object() noexcept {
-    return channel(self_handle());
+    return channel<Yield, void>(self_handle());
   }
 
   transfer_control_to yield_value(Yield&& rvalue) noexcept {
@@ -106,6 +106,10 @@ struct channel_promise : enable_memory_resource_support, not_movable {
     // here 'final suspend' sets result to 0 and returns to consumer
   }
 };
+template <yieldable Y, memory_resource R>
+struct channel_promise_r : enable_memory_resource_support<R>, channel_promise<Y> {
+  static_assert(sizeof(channel_promise_r) == sizeof(channel_promise<Y>));
+};
 
 // its pseudo iterator, requires co_awaits etc
 template <yieldable Yield>
@@ -129,7 +133,6 @@ struct channel_iterator : not_movable {
   }
 
   constexpr bool operator==(std::default_sentinel_t) const noexcept {
-    assert(!(chan.top.done() && chan.current_result != nullptr));
     return chan.current_result == nullptr;
   }
   // * returns rvalue ref
@@ -157,9 +160,15 @@ struct channel_iterator : not_movable {
 // or use manually
 //   for(auto it = co_await chan.begin(); it != chan.end(); co_await ++it)
 //       auto&& v = *it;
-template <yieldable Yield>
+//
+//
+// R = void means selected from function signature(see 'dd::with_resource')
+// For concrete 'R' which is not 'void'
+// it will be always selected and default constructed if not passed into coroutine with 'dd::with_resource'
+template <yieldable Yield, memory_resource R /* = void*/>
 struct channel {
-  using promise_type = channel_promise<Yield>;
+  using promise_type =
+      std::conditional_t<std::is_void_v<R>, channel_promise<Yield>, channel_promise_r<Yield, R>>;
   using handle_type = std::coroutine_handle<promise_type>;
   using value_type = Yield;
 
@@ -173,7 +182,7 @@ struct channel {
   // initialized when first value created(on in final suspend)
   Yield* current_result = nullptr;
   std::coroutine_handle<> handle = nullptr;  // coro in which i exist(setted in co_await on .begin)
-  always_done_or<promise_type> top = always_done_coroutine();  // current top level channel
+  handle_type top = nullptr;                 // current top level channel
   // invariant: setted only once for one coroutine frame
   // if setted, then top may be not done yet
   std::exception_ptr exception = nullptr;
@@ -211,19 +220,17 @@ struct channel {
 
   constexpr void reset(handle_type handle) noexcept {
     clear();
-    if (handle)
-      top = handle;
+    top = handle;
   }
   // postcondition: .empty()
   // after this method its caller responsibility to correctly destroy 'handle'
   [[nodiscard]] constexpr handle_type release() noexcept {
-    if (empty())
-      return nullptr;
-    return std::exchange(top, always_done_coroutine()).get();
+    return std::exchange(top, nullptr);
   }
   // postcondition: .empty()
   constexpr void clear() noexcept {
-    std::exchange(top, always_done_coroutine()).destroy();
+    if (top)
+      std::exchange(top, nullptr).destroy();
   }
   ~channel() {
     clear();
@@ -232,7 +239,7 @@ struct channel {
   // observers
 
   constexpr bool empty() const noexcept {
-    return top.done();
+    return !top || top.done();
   }
   constexpr explicit operator bool() const noexcept {
     return !empty();
@@ -247,7 +254,7 @@ struct channel {
   bool operator==(const channel& other) const noexcept {
     if (empty())
       return other.empty();
-    return this == &other;
+    return this == &other;  // invariant: coro handle has only one owner
   }
 
  private:
@@ -291,6 +298,17 @@ struct channel {
       if (VARDECL = *dd_b_; true)
 // note: (void)(co_await) (++dd_b)) only because gcc has bug, its not required
 }  // namespace dd
+
+namespace std {
+
+template <::dd::yieldable Y, typename... Args>
+  requires(::dd::contains_1_resource_tag<Args...>())
+struct coroutine_traits<::dd::channel<Y, void>, Args...> {
+  using promise_type =
+      ::dd::channel_promise_r<Y, typename ::dd::find_resource_tag<remove_cvref_t<Args>...>::type>;
+};
+
+}  // namespace std
 
 #ifdef __GNUC__
 #pragma GCC diagnostic pop

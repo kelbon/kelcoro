@@ -4,7 +4,7 @@
 
 namespace dd {
 
-struct job_promise : enable_memory_resource_support {
+struct job_promise {
   static constexpr std::suspend_never initial_suspend() noexcept {
     return {};
   }

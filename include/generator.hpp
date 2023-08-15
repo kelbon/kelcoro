@@ -18,7 +18,7 @@
 namespace dd {
 
 template <yieldable Yield>
-struct generator_promise : enable_memory_resource_support, not_movable {
+struct generator_promise : not_movable {
   using handle_type = std::coroutine_handle<generator_promise>;
 
  private:
@@ -51,7 +51,7 @@ struct generator_promise : enable_memory_resource_support, not_movable {
   }
 
   generator<Yield> get_return_object() noexcept {
-    return generator(self_handle());
+    return generator<Yield, void>(self_handle());
   }
   // there are no correct things which you can do with co_await in generator
   void await_transform(auto&&) = delete;
@@ -97,6 +97,10 @@ struct generator_promise : enable_memory_resource_support, not_movable {
   }
 };
 
+template <yieldable Y, memory_resource R>
+struct generator_promise_r : enable_memory_resource_support<R>, generator_promise<Y> {
+  static_assert(sizeof(generator_promise_r) == sizeof(generator_promise<Y>));
+};
 // no default ctor, because its input iterator
 // behaves also as generator_view (has its own begin/end)
 template <yieldable Yield>
@@ -149,9 +153,14 @@ struct generator_iterator {
 //  will lead to std::terminate
 //  * if exception was throwed from recursivelly co_yielded generator, then this leaf just skipped and caller
 //  can continue iterating after catch(requires new .begin call)
-template <yieldable Yield>
+//
+// R = void means selected from function signature(see 'dd::with_resource')
+// For concrete 'R' which is not 'void'
+// it will be always selected and default constructed if not passed into coroutine with 'dd::with_resource'
+template <yieldable Yield, memory_resource R /* = void*/>
 struct generator {
-  using promise_type = generator_promise<Yield>;
+  using promise_type =
+      std::conditional_t<std::is_void_v<R>, generator_promise<Yield>, generator_promise_r<Yield, R>>;
   using handle_type = std::coroutine_handle<promise_type>;
   using value_type = Yield;
   using iterator = generator_iterator<Yield>;
@@ -163,7 +172,7 @@ struct generator {
 
   // invariant: == nullptr when top.done()
   Yield* current_result = nullptr;
-  always_done_or<promise_type> top = always_done_coroutine();
+  handle_type top = nullptr;
 
   // precondition: 'handle' != nullptr, handle does not have other owners
   // used from promise::gen_return_object
@@ -196,20 +205,18 @@ struct generator {
 
   constexpr void reset(handle_type handle) noexcept {
     clear();
-    if (handle)
-      top = handle;
+    top = handle;
   }
 
   // postcondition: .empty()
   // its caller responsibility to correctly destroy handle
   [[nodiscard]] constexpr handle_type release() noexcept {
-    if (empty())
-      return nullptr;
-    return std::exchange(top, always_done_coroutine()).get();
+    return std::exchange(top, nullptr);
   }
   // postcondition: .empty()
   constexpr void clear() noexcept {
-    std::exchange(top, always_done_coroutine()).destroy();
+    if (top)
+      std::exchange(top, nullptr).destroy();
   }
   constexpr ~generator() {
     clear();
@@ -218,7 +225,7 @@ struct generator {
   // observers
 
   constexpr bool empty() const noexcept {
-    return top.done();
+    return !top || top.done();
   }
   constexpr explicit operator bool() const noexcept {
     return !empty();
@@ -227,7 +234,7 @@ struct generator {
   bool operator==(const generator& other) const noexcept {
     if (empty())
       return other.empty();
-    return this == &other;
+    return this == &other;  // invariant: coro handle has only one owner
   }
 
   // * if .empty(), then begin() == end()
@@ -246,6 +253,17 @@ struct generator {
 };
 
 }  // namespace dd
+
+namespace std {
+
+template <::dd::yieldable Y, typename... Args>
+  requires(::dd::contains_1_resource_tag<Args...>())
+struct coroutine_traits<::dd::generator<Y, void>, Args...> {
+  using promise_type =
+      ::dd::generator_promise_r<Y, typename ::dd::find_resource_tag<remove_cvref_t<Args>...>::type>;
+};
+
+}  // namespace std
 
 #ifdef __clang__
 #pragma clang diagnostic pop

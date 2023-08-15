@@ -79,7 +79,7 @@ inline dd::logical_thread multithread(std::atomic<int32_t>& value) {
 inline void moo(std::atomic<int32_t>& value, std::pmr::memory_resource* m = std::pmr::new_delete_resource()) {
   std::vector<dd::logical_thread> workers;
   {
-    auto _ = dd::with_resource(*m);
+    // auto _ = dd::with_resource(*m);
     for (int i = 0; i < 10; ++i)
       workers.emplace_back(multithread(value));
   }
@@ -172,7 +172,7 @@ TEST(job_mm) {
   };
   std::atomic<int32_t> flag = 0;
   {
-    auto _ = dd::with_resource(*std::pmr::new_delete_resource());
+    // auto _ = dd::with_resource(*std::pmr::new_delete_resource());
     for (auto i : std::views::iota(0, 10))
       job_creator(flag), (void)i;
   }

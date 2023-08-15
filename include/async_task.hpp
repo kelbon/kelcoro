@@ -9,7 +9,7 @@ namespace dd {
 enum class state : uint8_t { not_ready, almost_ready, ready, consumer_dead };
 
 template <typename Result>
-struct async_task_promise : enable_memory_resource_support, return_block<Result> {
+struct async_task_promise : return_block<Result> {
   std::atomic<state> task_state = state::not_ready;
 
   static constexpr std::suspend_never initial_suspend() noexcept {
