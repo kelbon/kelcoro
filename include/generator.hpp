@@ -72,7 +72,7 @@ struct generator_promise : not_movable {
   }
   template <typename R>
   noexport::attach_leaf<generator<Yield>> yield_value(elements_of<R> e) noexcept {
-    return noexport::elements_extractor<Yield, ::dd::generator>::extract(std::move(e));
+    return noexport::create_and_attach_leaf<Yield, generator>(std::move(e));
   }
 
   static constexpr std::suspend_always initial_suspend() noexcept {

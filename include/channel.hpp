@@ -74,7 +74,7 @@ struct channel_promise : not_movable {
   }
   template <typename X>
   noexport::attach_leaf<channel<Yield>> yield_value(elements_of<X> e) noexcept {
-    return noexport::elements_extractor<Yield, ::dd::channel>::extract(std::move(e));
+    return noexport::create_and_attach_leaf<Yield, channel>(std::move(e));
   }
 
   static constexpr std::suspend_always initial_suspend() noexcept {

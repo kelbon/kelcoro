@@ -16,7 +16,7 @@
 #include <ranges>
 #include <sstream>
 #include <deque>
-
+// TODO test with yielding another resource generator/channel
 using dd::channel;
 using dd::elements_of;
 using dd::generator;

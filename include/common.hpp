@@ -445,69 +445,56 @@ struct attach_leaf {
   }
 };
 
-// accepts elements_of<X> and converts it into leaf-coroutine
-// TODO упростить ( с приведением к общему виду, чтобы все генераторы кастовались к void версии, игнорируя
-// ресурсы)
-template <yieldable Yield, template <typename, typename = void> typename Generator>
-struct elements_extractor {
- private:
-  static_assert(!std::is_reference_v<Yield> && !std::is_const_v<Yield>);
-  // leaf type == owner type
-
-  static Generator<Yield> do_extract(Generator<Yield>&& g) noexcept {
-    return std::move(g);
+template <yieldable Y, typename Generator>
+Generator to_generator(auto&& rng) {
+  if constexpr (!std::ranges::borrowed_range<decltype(rng)> &&
+                std::is_same_v<std::ranges::range_rvalue_reference_t<decltype(rng)>, Y&&>) {
+    using std::begin;
+    using std::end;
+    auto&& b = begin(rng);
+    auto&& e = end(rng);
+    for (; b != e; ++b)
+      co_yield std::ranges::iter_move(b);
+  } else {
+    for (auto&& x : rng)
+      co_yield static_cast<Y&&>(std::forward<decltype(x)>(x));
   }
-  static Generator<Yield> do_extract(Generator<Yield>& g) noexcept {
-    return do_extract(std::move(g));
-  }
+}
+template <typename, yieldable, template <typename, typename> typename>
+struct extract_from;
 
-  // leaf yields other type
-
-  template <typename U>
-  static generator<Yield> do_extract(generator<U>& g) {
-    for (U&& x : g)
-      co_yield static_cast<Yield&&>(std::move(x));
+template <typename Rng, yieldable Y>
+struct extract_from<Rng, Y, generator> {
+  template <memory_resource R>
+  static generator<Y> do_(generator<Y, R>* g) {
+    return std::move(*reinterpret_cast<generator<Y>*>(g));
   }
-  template <typename U>
-  static generator<Yield> do_extract(generator<U>&& g) {
-    return do_extract(g);
-  }
-
-  template <typename U>
-  static channel<Yield> do_extract(channel<U>& c) {
-    // note: (void)(co_await) (++b)) only because gcc has bug, its not required
-    for (auto b = co_await c.begin(); b != c.end(); (void)(co_await (++b)))
-      co_yield static_cast<Yield&&>(*b);
-  }
-  template <typename U>
-  static channel<Yield> do_extract(channel<U>&& c) {
-    return do_extract(c);
-  }
-
-  // leaf is just a range
-
-  static Generator<Yield> do_extract(auto&& rng) {
-    if constexpr (!std::ranges::borrowed_range<decltype(rng)> &&
-                  std::is_same_v<std::ranges::range_rvalue_reference_t<decltype(rng)>, Yield&&>) {
-      using std::begin;
-      using std::end;
-      auto&& b = begin(rng);
-      auto&& e = end(rng);
-      for (; b != e; ++b)
-        co_yield std::ranges::iter_move(b);
-    } else {
-      for (auto&& x : rng)
-        co_yield static_cast<Yield&&>(std::forward<decltype(x)>(x));
-    }
-  }
-
- public:
-  template <typename X>
-  static attach_leaf<Generator<Yield>> extract(elements_of<X>&& e) {
-    // captures range by reference, because its all in yield expression in the coroutine
-    return attach_leaf<Generator<Yield>>{do_extract(static_cast<X&&>(e.rng))};
+  static generator<Y> do_(auto* r) {
+    return to_generator<Y, generator<Y>>(static_cast<Rng&&>(*r));
   }
 };
+template <typename Rng, yieldable Y>
+struct extract_from<Rng, Y, channel> {
+  template <memory_resource R>
+  static channel<Y> do_(channel<Y, R>* g) {
+    return std::move(*reinterpret_cast<channel<Y>*>(g));
+  }
+  template <yieldable OtherY, memory_resource R>
+  static channel<Y> do_(channel<OtherY, R>* g) {
+    auto& c = *g;
+    // note: (void)(co_await) (++b)) only because gcc has bug, its not required
+    for (auto b = co_await c.begin(); b != c.end(); (void)(co_await (++b)))
+      co_yield static_cast<Y&&>(*b);
+  }
+  static channel<Y> do_(auto* r) {
+    return to_generator<Y, channel<Y>>(static_cast<Rng&&>(*r));
+  }
+};
+
+template <yieldable Y, template <typename, typename> typename G, typename Rng>
+attach_leaf<G<Y, void>> create_and_attach_leaf(elements_of<Rng>&& e) {
+  return attach_leaf<G<Y, void>>{extract_from<Rng, Y, G>::do_(std::addressof(e.rng))};
+}
 
 template <typename Yield>
 struct hold_value_until_resume {
