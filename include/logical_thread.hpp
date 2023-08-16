@@ -122,7 +122,8 @@ struct logical_thread_promise {
 
 // shared owning of coroutine handle between coroutine object and coroutine frame.
 // Frame always dies with a coroutine object, except it was detached(then it deletes itself after co_return)
-struct logical_thread {
+template <memory_resource R = select_from_signature>
+struct logical_thread_r : enable_resource_support<R> {
   using promise_type = logical_thread_promise;
   using handle_type = std::coroutine_handle<promise_type>;
 
@@ -132,27 +133,27 @@ struct logical_thread {
  public:
   // ctor/owning
 
-  logical_thread() noexcept = default;
-  logical_thread(handle_type handle) : handle_(handle) {
+  logical_thread_r() noexcept = default;
+  logical_thread_r(handle_type handle) : handle_(handle) {
   }
 
-  logical_thread(logical_thread&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {
+  logical_thread_r(logical_thread_r&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {
   }
 
-  logical_thread& operator=(logical_thread&& other) noexcept {
+  logical_thread_r& operator=(logical_thread_r&& other) noexcept {
     try_cancel_and_join();
     handle_ = std::exchange(other.handle_, nullptr);
     return *this;
   }
 
-  void swap(logical_thread& other) noexcept {
+  void swap(logical_thread_r& other) noexcept {
     std::swap(handle_, other.handle_);
   }
-  friend void swap(logical_thread& left, logical_thread& right) noexcept {
+  friend void swap(logical_thread_r& left, logical_thread_r& right) noexcept {
     left.swap(right);
   }
 
-  ~logical_thread() {
+  ~logical_thread_r() {
     try_cancel_and_join();
   }
 
@@ -199,6 +200,8 @@ struct logical_thread {
     }
   }
 };
+
+using logical_thread = logical_thread_r<>;
 
 // TEMPLATE FUNCTION stop
 

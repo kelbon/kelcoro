@@ -45,8 +45,8 @@ struct async_task_promise : return_block<Result> {
   }
 };
 
-template <typename Result>
-struct async_task {
+template <typename Result, memory_resource R = select_from_signature>
+struct async_task : enable_resource_support<R> {
  public:
   using promise_type = async_task_promise<Result>;
   using handle_type = std::coroutine_handle<promise_type>;

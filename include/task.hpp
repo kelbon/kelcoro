@@ -23,8 +23,8 @@ struct task_promise : return_block<Result> {
 };
 
 // single value generator that returns a value with a co_return
-template <typename Result>
-struct task {
+template <typename Result, memory_resource R = select_from_signature>
+struct task : enable_resource_support<R> {
   using result_type = Result;
   using promise_type = task_promise<Result>;
   using handle_type = std::coroutine_handle<promise_type>;

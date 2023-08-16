@@ -56,7 +56,7 @@ struct channel_promise : not_movable {
   }
 
   channel<Yield> get_return_object() noexcept {
-    return channel<Yield, void>(self_handle());
+    return channel<Yield>(self_handle());
   }
 
   transfer_control_to yield_value(Yield&& rvalue) noexcept {
@@ -105,10 +105,6 @@ struct channel_promise : not_movable {
     root = this;                              // force final suspend return into consumer
     // here 'final suspend' sets result to 0 and returns to consumer
   }
-};
-template <yieldable Y, memory_resource R>
-struct channel_promise_r : enable_memory_resource_support<R>, channel_promise<Y> {
-  static_assert(sizeof(channel_promise_r) == sizeof(channel_promise<Y>));
 };
 
 // its pseudo iterator, requires co_awaits etc
@@ -161,14 +157,10 @@ struct channel_iterator : not_movable {
 //   for(auto it = co_await chan.begin(); it != chan.end(); co_await ++it)
 //       auto&& v = *it;
 //
-//
-// R = void means selected from function signature(see 'dd::with_resource')
-// For concrete 'R' which is not 'void'
-// it will be always selected and default constructed if not passed into coroutine with 'dd::with_resource'
-template <yieldable Yield, memory_resource R /* = void*/>
-struct channel {
-  using promise_type =
-      std::conditional_t<std::is_void_v<R>, channel_promise<Yield>, channel_promise_r<Yield, R>>;
+// about R - see 'dd::with_resource'
+template <yieldable Yield, memory_resource R /* = select_from_signature*/>
+struct channel : enable_resource_support<R> {
+  using promise_type = channel_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;
   using value_type = Yield;
 
@@ -305,17 +297,6 @@ using channel = ::dd::channel<Y, polymorphic_resource>;
       if (VARDECL = *dd_b_; true)
 // note: (void)(co_await) (++dd_b)) only because gcc has bug, its not required
 }  // namespace dd
-
-namespace std {
-
-template <::dd::yieldable Y, typename... Args>
-  requires(::dd::contains_1_resource_tag<Args...>())
-struct coroutine_traits<::dd::channel<Y, void>, Args...> {
-  using promise_type =
-      ::dd::channel_promise_r<Y, typename ::dd::find_resource_tag<remove_cvref_t<Args>...>::type>;
-};
-
-}  // namespace std
 
 #ifdef __GNUC__
 #pragma GCC diagnostic pop

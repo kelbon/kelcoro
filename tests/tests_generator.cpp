@@ -26,7 +26,7 @@ using dd::generator;
 #define CHANNEL_TEST(NAME) inline dd::async_task<size_t> NAME(size_t error_count = 0)
 #define CO_TEST(NAME) \
   TEST(NAME) { return NAME().get(); }
-#define CHAN_OR_GEN template <template <typename, typename = void> typename G>
+#define CHAN_OR_GEN template <template <typename, typename = ::dd::select_from_signature> typename G>
 #define RANDOM_CONTROL_FLOW                               \
   if constexpr (std::is_same_v<G<int>, dd::channel<int>>) \
     if (flip())                                           \

@@ -65,15 +65,25 @@ template <typename T>
 concept yieldable = std::same_as<std::decay_t<T>, T> && (!std::is_void_v<T>);
 
 template <typename T>
-concept memory_resource = std::is_void_v<T> ||
-                          (!std::is_reference_v<T>) &&
-                              requires(T& value, size_t sz, size_t align, void* ptr) {
-                                { value.allocate(sz, align) } -> std::convertible_to<void*>;
-                                { value.deallocate(ptr, sz, align) } noexcept -> std::same_as<void>;
-                                requires std::is_nothrow_move_constructible_v<T>;
-                                requires alignof(T) <= alignof(std::max_align_t);
-                                requires !(std::is_empty_v<T> && !std::default_initializable<T>);
-                              };
+concept memory_resource = (!std::is_reference_v<T>) &&
+                          requires(T value, size_t sz, size_t align, void* ptr) {
+                            { value.allocate(sz, align) } -> std::convertible_to<void*>;
+                            { value.deallocate(ptr, sz, align) } noexcept -> std::same_as<void>;
+                            requires std::is_nothrow_move_constructible_v<T>;
+                            requires alignof(T) <= alignof(std::max_align_t);
+                            requires !(std::is_empty_v<T> && !std::default_initializable<T>);
+                          };
+
+// used as tag,
+// means real resource will be selected from coroutine signature (see 'with_resource')
+struct select_from_signature {
+  void* allocate(auto&&...) {
+    static_assert(![] {});
+  }
+  void deallocate(auto&&...) noexcept {
+    static_assert(![] {});
+  }
+};
 
 namespace pmr {
 
@@ -145,24 +155,6 @@ struct with_resource {
 template <typename X>
 with_resource(X&&) -> with_resource<std::remove_cvref_t<X>>;
 
-template <typename>
-struct is_resource_tag : std::false_type {};
-
-template <memory_resource R>
-struct is_resource_tag<with_resource<R>> : std::true_type {};
-
-template <typename... Types>
-consteval bool contains_1_resource_tag() {
-  return (0 + ... + is_resource_tag<std::remove_cvref_t<Types>>::value) == 1;
-}
-constexpr auto only_for_resource(auto&& foo, auto&&... args) {
-  auto try_one = [&](auto& x) {
-    if constexpr (is_resource_tag<std::remove_cvref_t<decltype(x)>>::value)
-      foo(x.resource);
-  };
-  (try_one(args), ...);
-}
-
 template <typename... Args>
 struct find_resource_tag : std::type_identity<void> {};
 template <typename R, typename... Args>
@@ -170,32 +162,48 @@ struct find_resource_tag<with_resource<R>, Args...> : std::type_identity<R> {};
 template <typename Head, typename... Tail>
 struct find_resource_tag<Head, Tail...> : find_resource_tag<Tail...> {};
 
+// void is no such
+template <typename... Types>
+using find_resource_tag_t = typename find_resource_tag<std::remove_cvref_t<Types>...>::type;
+
+template <typename... Types>
+consteval bool contains_resource_tag() {
+  return !std::is_void_v<find_resource_tag_t<Types...>>;
+}
+
+constexpr auto only_for_resource(auto&& foo, auto&&... args) {
+  auto try_one = [&](auto& x) {
+    if constexpr (contains_resource_tag<decltype(x)>())
+      foo(x.resource);
+  };
+  (try_one(args), ...);
+}
+
 // inheritor(coroutine promise) may be allocated with 'R'
 // using 'with_resource' tag or default constructed 'R'
 // TODO tests
 template <memory_resource R>
-struct enable_memory_resource_support {
+struct overload_new_delete {
   template <size_t RequiredPadding>
-  static size_t padding_len(size_t sz) noexcept {
+  static constexpr size_t padding_len(size_t sz) noexcept {
     enum { P = RequiredPadding };
     static_assert(P != 0);
     return ((P - sz) % P) % P;
   }
 
  private:
-  static_assert(padding_len<16>(16) == 0);
-  static_assert(padding_len<16>(0) == 0);
-  static_assert(padding_len<16>(1) == 15);
-  static_assert(padding_len<16>(8) == 8);
-
   enum { frame_align = std::max(coroframe_align(), alignof(R)) };
-  static void* do_allocate(size_t frame_sz, memory_resource auto& r) {
+  static void* do_allocate(size_t frame_sz, R& r) {
+    static_assert(padding_len<16>(16) == 0);  // TODO in tests
+    static_assert(padding_len<16>(0) == 0);
+    static_assert(padding_len<16>(1) == 15);
+    static_assert(padding_len<16>(8) == 8);
     if constexpr (std::is_empty_v<R>)
-      return (void*)r->allocate(frame_sz, coroframe_align());
+      return (void*)r.allocate(frame_sz, coroframe_align());
     else {
       const size_t padding = padding_len<frame_align>(frame_sz);
       const size_t bytes_count = frame_sz + padding + sizeof(R);
-      std::byte* p = (std::byte*)r->allocate(bytes_count, frame_align);
+      std::byte* p = (std::byte*)r.allocate(bytes_count, frame_align);
       std::byte* resource_place = p + frame_sz + padding;
       std::construct_at((R*)resource_place, std::move(r));
       return p;
@@ -210,7 +218,7 @@ struct enable_memory_resource_support {
     return do_allocate(frame_sz, r);
   }
   template <typename... Args>
-    requires(contains_1_resource_tag<Args...>())
+    requires(std::same_as<find_resource_tag_t<Args...>, R>)
   static void* operator new(std::size_t frame_sz, Args&&... args) {
     void* p;
     only_for_resource([&](auto& resource) { p = do_allocate(frame_sz, resource); }, args...);
@@ -226,14 +234,41 @@ struct enable_memory_resource_support {
       R* onframe_resource = (R*)((std::byte*)ptr + frame_sz + padding);
       R r = std::move(*onframe_resource);
       std::destroy_at(onframe_resource);
-      r->deallocate(ptr, bytes_count, frame_align);
+      r.deallocate(ptr, bytes_count, frame_align);
     }
   }
 };
-// TODO macro which enables support for memory resources...
-// да, можно просто добавить тег по которому отсеивать специализации
-// TODO and macro specialization of coroutine traits
-// и видимо придётся это всё таки в шаблон генератора/всех остальных корутин пихать... И алиасы на дефолт
+
+// if coroutine inherits from it may be allocated with 'R'
+// coroutine must have inner ::promise_type
+template <memory_resource R>
+struct enable_resource_support {
+  using kelcoro_enable_resource_support = R;
+};
+
+// true => coro may be allocated with 'with_resource<Resource>'
+template <typename Coro>
+concept allocatable_with_resource = requires {
+                                      typename Coro::kelcoro_enable_resource_support;
+                                      typename Coro::promise_type;
+                                    };
+
+template <allocatable_with_resource Coro>
+using supported_resource_t = typename Coro::kelcoro_enable_resource_support;
+
+template <typename Promise, memory_resource R>
+struct resourced : overload_new_delete<R>, Promise {
+  static_assert(sizeof(Promise) == sizeof(resourced));
+  static_assert(alignof(Promise) == alignof(resourced));
+};
+// TODO noexport
+template <typename Promise, typename Resource>
+struct make_resourced_promise : std::type_identity<resourced<Promise, Resource>> {};
+template <typename Promise>
+struct make_resourced_promise<Promise, void> : std::type_identity<Promise> {};
+
+template <typename Promise, typename... Args>
+using make_resourced_promise_t = typename make_resourced_promise<Promise, find_resource_tag_t<Args...>>::type;
 
 // 'teaches' promise to return
 template <typename T>
@@ -266,13 +301,13 @@ struct return_block<void> {
 };
 
 struct [[nodiscard("co_await it!")]] transfer_control_to {
-  std::coroutine_handle<void> who_waits;
+  std::coroutine_handle<> who_waits;
 
   bool await_ready() const noexcept {
     assert(who_waits != nullptr);
     return false;
   }
-  std::coroutine_handle<void> await_suspend(std::coroutine_handle<void>) noexcept {
+  std::coroutine_handle<> await_suspend(std::coroutine_handle<>) noexcept {
     return who_waits;  // symmetric transfer here
   }
   static constexpr void await_resume() noexcept {
@@ -331,6 +366,7 @@ struct KELCORO_CO_AWAIT_REQUIRED jump_on {
   static constexpr void await_resume() noexcept {
   }
 };
+// TODO optimize && always, but for empty by value
 template <typename E>
 jump_on(E&&) -> jump_on<E>;
 
@@ -346,7 +382,7 @@ struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
       handle_ = handle;
       return false;
     }
-    std::coroutine_handle<void> await_resume() const noexcept {
+    std::coroutine_handle<> await_resume() const noexcept {
       return handle_;
     }
   };
@@ -387,6 +423,7 @@ struct elements_of {
   }
 #endif
 };
+// TODO optimize for empty, some alias for such cases, like coroutine tag, or macro coroutine tag?
 template <typename R>
 elements_of(R&&) -> elements_of<R&&>;
 
@@ -413,9 +450,9 @@ template <yieldable>
 struct generator_iterator;
 template <yieldable>
 struct channel_iterator;
-template <yieldable, memory_resource = void>
+template <yieldable, memory_resource = select_from_signature>
 struct generator;
-template <yieldable, memory_resource = void>
+template <yieldable, memory_resource = select_from_signature>
 struct channel;
 template <typename>
 struct elements_of;
@@ -491,9 +528,9 @@ struct extract_from<Rng, Y, channel> {
   }
 };
 
-template <yieldable Y, template <typename, typename> typename G, typename Rng>
-attach_leaf<G<Y, void>> create_and_attach_leaf(elements_of<Rng>&& e) {
-  return attach_leaf<G<Y, void>>{extract_from<Rng, Y, G>::do_(std::addressof(e.rng))};
+template <yieldable Y, template <typename, typename = select_from_signature> typename G, typename Rng>
+attach_leaf<G<Y>> create_and_attach_leaf(elements_of<Rng>&& e) {
+  return attach_leaf<G<Y>>{extract_from<Rng, Y, G>::do_(std::addressof(e.rng))};
 }
 
 template <typename Yield>
@@ -515,3 +552,18 @@ struct hold_value_until_resume {
 };
 
 }  // namespace dd::noexport
+
+namespace std {
+
+template <::dd::allocatable_with_resource Coro, typename... Args>
+struct coroutine_traits<Coro, Args...> {
+  using promise_type = ::dd::resourced<typename Coro::promise_type, ::dd::supported_resource_t<Coro>>;
+};
+
+template <::dd::allocatable_with_resource Coro, typename... Args>
+  requires(same_as<::dd::supported_resource_t<Coro>, ::dd::select_from_signature>)
+struct coroutine_traits<Coro, Args...> {
+  using promise_type = ::dd::make_resourced_promise_t<typename Coro::promise_type, Args...>;
+};
+
+}  // namespace std

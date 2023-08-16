@@ -11,21 +11,24 @@ struct job_promise {
   static constexpr std::suspend_never final_suspend() noexcept {
     return {};
   }
-  auto get_return_object() {
+  auto get_return_object() noexcept {
     return std::coroutine_handle<job_promise>::from_promise(*this);
   }
   static constexpr void return_void() noexcept {
   }
-  [[noreturn]] void unhandled_exception() const noexcept {
+  [[noreturn]] static void unhandled_exception() noexcept {
     std::terminate();
   }
 };
 
-struct [[maybe_unused]] job {
+template <memory_resource R = select_from_signature>
+struct [[maybe_unused]] job_r : enable_resource_support<R> {
   using promise_type = job_promise;
   using handle_type = std::coroutine_handle<promise_type>;
-  constexpr job(handle_type) noexcept {
+  constexpr job_r(handle_type) noexcept {
   }
 };
+
+using job = job_r<>;
 
 }  // namespace dd

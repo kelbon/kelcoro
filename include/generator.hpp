@@ -51,7 +51,7 @@ struct generator_promise : not_movable {
   }
 
   generator<Yield> get_return_object() noexcept {
-    return generator<Yield, void>(self_handle());
+    return generator<Yield>(self_handle());
   }
   // there are no correct things which you can do with co_await in generator
   void await_transform(auto&&) = delete;
@@ -97,10 +97,6 @@ struct generator_promise : not_movable {
   }
 };
 
-template <yieldable Y, memory_resource R>
-struct generator_promise_r : enable_memory_resource_support<R>, generator_promise<Y> {
-  static_assert(sizeof(generator_promise_r) == sizeof(generator_promise<Y>));
-};
 // no default ctor, because its input iterator
 // behaves also as generator_view (has its own begin/end)
 template <yieldable Yield>
@@ -154,13 +150,10 @@ struct generator_iterator {
 //  * if exception was throwed from recursivelly co_yielded generator, then this leaf just skipped and caller
 //  can continue iterating after catch(requires new .begin call)
 //
-// R = void means selected from function signature(see 'dd::with_resource')
-// For concrete 'R' which is not 'void'
-// it will be always selected and default constructed if not passed into coroutine with 'dd::with_resource'
-template <yieldable Yield, memory_resource R /* = void*/>
-struct generator {
-  using promise_type =
-      std::conditional_t<std::is_void_v<R>, generator_promise<Yield>, generator_promise_r<Yield, R>>;
+// about R - see 'with_resource'
+template <yieldable Yield, memory_resource R /* = select_from_signature*/>
+struct generator : enable_resource_support<R> {
+  using promise_type = generator_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;
   using value_type = Yield;
   using iterator = generator_iterator<Yield>;
@@ -260,17 +253,6 @@ using generator = ::dd::generator<Y, polymorphic_resource>;
 }
 
 }  // namespace dd
-
-namespace std {
-
-template <::dd::yieldable Y, typename... Args>
-  requires(::dd::contains_1_resource_tag<Args...>())
-struct coroutine_traits<::dd::generator<Y, void>, Args...> {
-  using promise_type =
-      ::dd::generator_promise_r<Y, typename ::dd::find_resource_tag<remove_cvref_t<Args>...>::type>;
-};
-
-}  // namespace std
 
 #ifdef __clang__
 #pragma clang diagnostic pop
