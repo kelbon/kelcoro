@@ -646,13 +646,13 @@ inline auto sz = size_t(-1);
 struct new_delete_resource {
   void* allocate(size_t s, size_t a) {
     sz = s;
-    (void)a; // cannot use 'align_val_t' on msvc... Its broken
-    return ::new char[s];
+    (void)a;  // cannot use new with 'align_val_t' on msvc... Its broken
+    return malloc(s);
   }
   void deallocate(void* p, size_t s, size_t a) noexcept {
     sz -= s;
     (void)a;
-    ::operator delete[](p, s);
+    free(p);
   }
 };
 int main() {
