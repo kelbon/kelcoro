@@ -45,8 +45,8 @@ struct async_task_promise : return_block<Result> {
   }
 };
 
-template <typename Result, memory_resource R = select_from_signature>
-struct async_task : enable_resource_support<R> {
+template <typename Result>
+struct async_task : enable_resource_deduction {
  public:
   using promise_type = async_task_promise<Result>;
   using handle_type = std::coroutine_handle<promise_type>;
@@ -113,5 +113,15 @@ struct async_task : enable_resource_support<R> {
     // otherwise frame destroys itself because consumer is dead
   }
 };
+
+template <typename Ret, memory_resource R>
+using async_task_r = resourced<async_task<Ret>, R>;
+
+namespace pmr {
+
+template <typename Ret>
+using async_task = ::dd::async_task_r<Ret, polymorphic_resource>;
+
+}
 
 }  // namespace dd

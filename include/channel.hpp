@@ -158,8 +158,8 @@ struct channel_iterator : not_movable {
 //       auto&& v = *it;
 //
 // about R - see 'dd::with_resource'
-template <yieldable Yield, memory_resource R /* = select_from_signature*/>
-struct channel : enable_resource_support<R> {
+template <yieldable Yield>
+struct channel : enable_resource_deduction {
   using promise_type = channel_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;
   using value_type = Yield;
@@ -279,10 +279,13 @@ struct channel : enable_resource_support<R> {
   }
 };
 
+template <yieldable Y, memory_resource R>
+using channel_r = resourced<channel<Y>, R>;
+
 namespace pmr {
 
 template <yieldable Y>
-using channel = ::dd::channel<Y, polymorphic_resource>;
+using channel = ::dd::channel_r<Y, polymorphic_resource>;
 
 }
 

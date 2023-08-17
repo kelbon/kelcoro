@@ -26,7 +26,7 @@ using dd::generator;
 #define CHANNEL_TEST(NAME) inline dd::async_task<size_t> NAME(size_t error_count = 0)
 #define CO_TEST(NAME) \
   TEST(NAME) { return NAME().get(); }
-#define CHAN_OR_GEN template <template <typename, typename = ::dd::select_from_signature> typename G>
+#define CHAN_OR_GEN template <template <typename> typename G>
 #define RANDOM_CONTROL_FLOW                               \
   if constexpr (std::is_same_v<G<int>, dd::channel<int>>) \
     if (flip())                                           \
@@ -641,10 +641,43 @@ struct log_resource : std::pmr::memory_resource {
       std::cout << " +" << '\n';                   \
     }                                              \
   }
+
+inline auto sz = size_t(-1);
+struct new_delete_resource {
+  void* allocate(size_t s, size_t a) {
+    sz = s;
+    (void)a; // cannot use 'align_val_t' on msvc... Its broken
+    return ::new char[s];
+  }
+  void deallocate(void* p, size_t s, size_t a) noexcept {
+    sz -= s;
+    (void)a;
+    ::operator delete[](p, s);
+  }
+};
 int main() {
+  static_assert(::dd::memory_resource<new_delete_resource>);
   (void)flip();  // initalize random
-  log_resource r;
-  // dd::with_resource _(r);
+  {
+    log_resource r;
+    dd::pmr::pass_resource(r);
+    auto x = []() -> dd::generator_r<int, dd::pmr::polymorphic_resource> { co_yield 1; };
+    for (auto i : x())
+      if (i != 1)
+        std::exit(-1);
+    auto y = []() -> dd::generator_r<int, new_delete_resource> { co_yield 1; };
+    for (auto i : y())
+      if (i != 1)
+        std::exit(-2);
+    auto z = [](dd::with_resource<dd::pmr::polymorphic_resource> = {}) -> generator<int> { co_yield 1; };
+    for (auto i : z())
+      if (i != 1)
+        std::exit(-3);
+    auto ze = [](dd::with_resource<new_delete_resource> = {}) -> generator<int> { co_yield 1; };
+    for (auto i : ze())
+      if (i != 1)
+        std::exit(-4);
+  }
   dd::scope_exit e = [&] { std::flush(std::cout), std::flush(std::cerr); };
   size_t ec = 0;
   RUN(base_channel);
@@ -693,5 +726,7 @@ int main() {
   RUN(nomove_gen_channel);
   RUN(chan_yield);
 
+  if (sz != 0 && sz != size_t(-1))
+    std::exit(146);
   return ec;
 }

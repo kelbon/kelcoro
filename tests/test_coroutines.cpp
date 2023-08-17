@@ -14,6 +14,8 @@
 #include <vector>
 #include <functional>
 #include <iostream>
+#include <array>
+#include <algorithm>
 
 #include "async_task.hpp"
 #include "channel.hpp"
@@ -36,7 +38,145 @@ inline dd::generator<int> foo() {
   for (int i = 0;; ++i)
     co_yield some_task(i);
 }
+TEST(allocations) {
+  using dd::noexport::padding_len;
+  static_assert(padding_len<16>(16) == 0);
+  static_assert(padding_len<16>(0) == 0);
+  static_assert(padding_len<16>(1) == 15);
+  static_assert(padding_len<16>(8) == 8);
+  static_assert(padding_len<4>(3) == 1);
+  static_assert(padding_len<4>(2) == 2);
+  static_assert(padding_len<4>(1) == 3);
+  static_assert(padding_len<4>(4) == 0);
 
+#define EXPECT_PROMISE(promise, ... /* coro arg args*/) \
+  static_assert(std::is_same_v<std::coroutine_traits<__VA_ARGS__>::promise_type, promise>);
+  using namespace dd;
+  using r = pmr::polymorphic_resource;
+  {
+    static constexpr std::array szs{sizeof(dd::generator<int>), sizeof(dd::generator<float>),
+                                    sizeof(dd::generator_r<int, r>), sizeof(dd::generator_r<float, r>)};
+    static_assert(std::all_of(begin(szs), end(szs), [](auto x) { return x == szs.front(); }));
+  }
+  {
+    static constexpr std::array szs{sizeof(dd::channel<int>), sizeof(dd::channel<float>),
+                                    sizeof(dd::channel_r<int, r>), sizeof(dd::channel_r<float, r>)};
+    static_assert(std::all_of(begin(szs), end(szs), [](auto x) { return x == szs.front(); }));
+  }
+  {
+    static constexpr std::array szs{sizeof(std::coroutine_traits<dd::generator<int>>::promise_type),
+                                    sizeof(std::coroutine_traits<dd::generator<float>>::promise_type),
+                                    sizeof(std::coroutine_traits<dd::generator_r<int, r>>::promise_type),
+                                    sizeof(std::coroutine_traits<dd::generator_r<float, r>>::promise_type)};
+    static_assert(std::all_of(begin(szs), end(szs), [](auto x) { return x == szs.front(); }));
+  }
+  {
+    static constexpr std::array szs{sizeof(std::coroutine_traits<dd::channel<int>>::promise_type),
+                                    sizeof(std::coroutine_traits<dd::channel<float>>::promise_type),
+                                    sizeof(std::coroutine_traits<dd::channel_r<int, r>>::promise_type),
+                                    sizeof(std::coroutine_traits<dd::channel_r<float, r>>::promise_type)};
+    static_assert(std::all_of(begin(szs), end(szs), [](auto x) { return x == szs.front(); }));
+  }
+  {
+    r test_resource;
+    auto x0 = with_resource{r{}};
+    auto x1 = with_resource{test_resource};
+    auto x2 = with_resource{std::as_const(test_resource)};
+    static_assert(std::is_same_v<decltype(x0), decltype(x1)>);
+    static_assert(std::is_same_v<decltype(x1), decltype(x2)>);
+    static_assert(std::is_same_v<decltype(x0), with_resource<r>>);
+  }
+  // resource deduction
+  {
+    using default_promise = generator_promise<int>;
+    using expected = resourced_promise<generator_promise<int>, r>;
+    using test_t = generator<int>;
+#define TEST_DEDUCTED                                                                                      \
+  EXPECT_PROMISE(default_promise, test_t, int, float, double);                                             \
+  EXPECT_PROMISE(default_promise, test_t);                                                                 \
+  EXPECT_PROMISE(expected, test_t, with_resource<r>);                                                      \
+  EXPECT_PROMISE(expected, test_t, with_resource<r>&);                                                     \
+  EXPECT_PROMISE(expected, test_t, float, float, double, int, with_resource<r>&);                          \
+  EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>, with_resource<r>&); \
+  // TODO test resource EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>&,                    \
+  //               with_resource<select_from_signature>)
+    TEST_DEDUCTED;
+  }
+  {
+    using default_promise = channel_promise<int>;
+    using expected = resourced_promise<channel_promise<int>, r>;
+    using test_t = channel<int>;
+    TEST_DEDUCTED;
+  }
+  {
+    using default_promise = job_promise;
+    using expected = resourced_promise<job_promise, r>;
+    using test_t = job;
+    TEST_DEDUCTED;
+  }
+  {
+    using default_promise = logical_thread_promise;
+    using expected = resourced_promise<logical_thread_promise, r>;
+    using test_t = logical_thread;
+    TEST_DEDUCTED;
+  }
+  {
+    using default_promise = task_promise<int>;
+    using expected = resourced_promise<task_promise<int>, r>;
+    using test_t = task<int>;
+    TEST_DEDUCTED;
+  }
+  {
+    using default_promise = async_task_promise<int>;
+    using expected = resourced_promise<async_task_promise<int>, r>;
+    using test_t = async_task<int>;
+    TEST_DEDUCTED;
+  }
+  // concrete resource
+  // TODO test sizeofs and align of all coroutines same for different types and resources(and promise types
+  // too)
+  {
+    using expected = resourced_promise<generator_promise<int>, r>;
+    using test_t = generator_r<int, r>;
+#define TEST_CONCRETE                                                 \
+  EXPECT_PROMISE(expected, test_t, int, float, double);               \
+  EXPECT_PROMISE(expected, test_t, int, with_resource<r>, double);    \
+  EXPECT_PROMISE(expected, test_t, with_resource<r>);                 \
+  EXPECT_PROMISE(expected, test_t, const volatile with_resource<r>&); \
+  EXPECT_PROMISE(expected, test_t);
+
+    TEST_CONCRETE;
+  }
+  {
+    using expected = resourced_promise<channel_promise<int>, r>;
+    using test_t = channel_r<int, r>;
+    TEST_CONCRETE;
+  }
+  {
+    using expected = resourced_promise<job_promise, r>;
+    using test_t = job_r<r>;
+    TEST_CONCRETE;
+  }
+  {
+    using expected = resourced_promise<task_promise<int>, r>;
+    using test_t = task_r<int, r>;
+    TEST_CONCRETE;
+  }
+  {
+    using expected = resourced_promise<async_task_promise<int>, r>;
+    using test_t = async_task_r<int, r>;
+    TEST_CONCRETE;
+  }
+  {
+    using expected = resourced_promise<logical_thread_promise, r>;
+    using test_t = logical_thread_r<r>;
+    TEST_CONCRETE;
+  }
+#undef EXPECT_RPOMISE
+#undef TEST_CONCRETE
+#undef TEST_DEDUCTED
+  return error_count;
+}
 TEST(generator) {
   static_assert(std::ranges::input_range<dd::generator<size_t>&&>);
   static_assert(std::input_iterator<dd::generator_iterator<std::vector<int>>>);
@@ -375,7 +515,7 @@ int main() {
   return static_cast<int>(TESTgenerator() + TESTzip_generator() + TESTlogical_thread() +
                           TESTcoroutines_integral() + TESTlogical_thread_mm() + TESTgen_mm() + TESTjob_mm() +
                           TESTthread_safety() + TESTwhen_any() + TESTwhen_all() + TESTasync_tasks() +
-                          TESTvoid_async_task() + TESTchannel());
+                          TESTvoid_async_task() + TESTchannel() + TESTallocations());
 }
 #else
 int main() {

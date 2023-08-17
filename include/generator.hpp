@@ -151,8 +151,8 @@ struct generator_iterator {
 //  can continue iterating after catch(requires new .begin call)
 //
 // about R - see 'with_resource'
-template <yieldable Yield, memory_resource R /* = select_from_signature*/>
-struct generator : enable_resource_support<R> {
+template <yieldable Yield>
+struct generator : enable_resource_deduction {
   using promise_type = generator_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;
   using value_type = Yield;
@@ -168,7 +168,7 @@ struct generator : enable_resource_support<R> {
   handle_type top = nullptr;
 
   // precondition: 'handle' != nullptr, handle does not have other owners
-  // used from promise::gen_return_object
+  // used from promise::get_return_object
   constexpr explicit generator(handle_type top) noexcept : top(top) {
   }
 
@@ -245,10 +245,13 @@ struct generator : enable_resource_support<R> {
   }
 };
 
+template <yieldable Y, memory_resource R>
+using generator_r = resourced<generator<Y>, R>;
+
 namespace pmr {
 
 template <yieldable Y>
-using generator = ::dd::generator<Y, polymorphic_resource>;
+using generator = ::dd::generator_r<Y, polymorphic_resource>;
 
 }
 

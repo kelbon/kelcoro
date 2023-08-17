@@ -21,14 +21,21 @@ struct job_promise {
   }
 };
 
-template <memory_resource R = select_from_signature>
-struct [[maybe_unused]] job_r : enable_resource_support<R> {
+struct [[maybe_unused]] job : enable_resource_deduction {
   using promise_type = job_promise;
   using handle_type = std::coroutine_handle<promise_type>;
-  constexpr job_r(handle_type) noexcept {
+  constexpr job(handle_type) noexcept {
   }
 };
 
-using job = job_r<>;
+template <memory_resource R>
+using job_r = resourced<job, R>;
+
+namespace pmr {
+
+template <typename Ret>
+using job = ::dd::job_r<polymorphic_resource>;
+
+}
 
 }  // namespace dd

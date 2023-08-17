@@ -21,6 +21,12 @@
 #define KELCORO_UNREACHABLE (void)0
 #endif
 
+#ifdef _MSC_VER
+#define MSVC_EBO __declspec(empty_bases)
+#else
+#define MSVC_EBO
+#endif
+
 namespace dd {
 
 struct not_movable {
@@ -74,16 +80,12 @@ concept memory_resource = (!std::is_reference_v<T>) &&
                             requires !(std::is_empty_v<T> && !std::default_initializable<T>);
                           };
 
-// used as tag,
-// means real resource will be selected from coroutine signature (see 'with_resource')
-struct select_from_signature {
-  void* allocate(auto&&...) {
-    static_assert(![] {});
-  }
-  void deallocate(auto&&...) noexcept {
-    static_assert(![] {});
-  }
-};
+namespace noexport {
+
+template <typename T>
+concept coro = requires { typename T::promise_type; };
+
+}
 
 namespace pmr {
 
@@ -105,8 +107,7 @@ struct polymorphic_resource {
   friend void pass_resource(std::pmr::memory_resource&) noexcept;
 
  public:
-  polymorphic_resource(std::pmr::memory_resource& m) noexcept
-      : passed(std::exchange(passed_resource(), nullptr)) {
+  polymorphic_resource() noexcept : passed(std::exchange(passed_resource(), nullptr)) {
     if (!passed)
       passed = std::pmr::get_default_resource();
     assert(passed != nullptr);
@@ -155,6 +156,8 @@ struct with_resource {
 template <typename X>
 with_resource(X&&) -> with_resource<std::remove_cvref_t<X>>;
 
+namespace noexport {
+
 template <typename... Args>
 struct find_resource_tag : std::type_identity<void> {};
 template <typename R, typename... Args>
@@ -162,46 +165,48 @@ struct find_resource_tag<with_resource<R>, Args...> : std::type_identity<R> {};
 template <typename Head, typename... Tail>
 struct find_resource_tag<Head, Tail...> : find_resource_tag<Tail...> {};
 
-// void is no such
+}  // namespace noexport
+
+// searches for 'with_resource' in Types and returns first finded or void if no such
 template <typename... Types>
-using find_resource_tag_t = typename find_resource_tag<std::remove_cvref_t<Types>...>::type;
+using find_resource_tag_t = typename noexport::find_resource_tag<std::remove_cvref_t<Types>...>::type;
+
+namespace noexport {
 
 template <typename... Types>
-consteval bool contains_resource_tag() {
-  return !std::is_void_v<find_resource_tag_t<Types...>>;
+consteval bool contains_1_resource_tag() {
+  return 1 == (!std::is_void_v<find_resource_tag_t<Types>> + ... + 0);
 }
 
 constexpr auto only_for_resource(auto&& foo, auto&&... args) {
+  static_assert(contains_1_resource_tag<decltype(args)...>());
   auto try_one = [&](auto& x) {
-    if constexpr (contains_resource_tag<decltype(x)>())
+    if constexpr (contains_1_resource_tag<decltype(x)>())
       foo(x.resource);
   };
   (try_one(args), ...);
 }
 
+template <size_t RequiredPadding>
+constexpr size_t padding_len(size_t sz) noexcept {
+  enum { P = RequiredPadding };
+  static_assert(P != 0);
+  return ((P - sz) % P) % P;
+}
+
+}  // namespace noexport
+
 // inheritor(coroutine promise) may be allocated with 'R'
 // using 'with_resource' tag or default constructed 'R'
-// TODO tests
 template <memory_resource R>
 struct overload_new_delete {
-  template <size_t RequiredPadding>
-  static constexpr size_t padding_len(size_t sz) noexcept {
-    enum { P = RequiredPadding };
-    static_assert(P != 0);
-    return ((P - sz) % P) % P;
-  }
-
  private:
   enum { frame_align = std::max(coroframe_align(), alignof(R)) };
   static void* do_allocate(size_t frame_sz, R& r) {
-    static_assert(padding_len<16>(16) == 0);  // TODO in tests
-    static_assert(padding_len<16>(0) == 0);
-    static_assert(padding_len<16>(1) == 15);
-    static_assert(padding_len<16>(8) == 8);
     if constexpr (std::is_empty_v<R>)
       return (void*)r.allocate(frame_sz, coroframe_align());
     else {
-      const size_t padding = padding_len<frame_align>(frame_sz);
+      const size_t padding = noexport::padding_len<frame_align>(frame_sz);
       const size_t bytes_count = frame_sz + padding + sizeof(R);
       std::byte* p = (std::byte*)r.allocate(bytes_count, frame_align);
       std::byte* resource_place = p + frame_sz + padding;
@@ -218,10 +223,10 @@ struct overload_new_delete {
     return do_allocate(frame_sz, r);
   }
   template <typename... Args>
-    requires(std::same_as<find_resource_tag_t<Args...>, R>)
+    requires(std::same_as<find_resource_tag_t<Args...>, R> && noexport::contains_1_resource_tag<Args...>())
   static void* operator new(std::size_t frame_sz, Args&&... args) {
     void* p;
-    only_for_resource([&](auto& resource) { p = do_allocate(frame_sz, resource); }, args...);
+    noexport::only_for_resource([&](auto& resource) { p = do_allocate(frame_sz, resource); }, args...);
     return p;
   }
   static void operator delete(void* ptr, std::size_t frame_sz) noexcept {
@@ -229,9 +234,10 @@ struct overload_new_delete {
       R r{};
       r.deallocate(ptr, frame_sz, coroframe_align());
     } else {
-      const size_t padding = padding_len<frame_align>(frame_sz);
+      const size_t padding = noexport::padding_len<frame_align>(frame_sz);
       const size_t bytes_count = frame_sz + padding + sizeof(R);
       R* onframe_resource = (R*)((std::byte*)ptr + frame_sz + padding);
+      assert((((uintptr_t)onframe_resource % alignof(R)) == 0));
       R r = std::move(*onframe_resource);
       std::destroy_at(onframe_resource);
       r.deallocate(ptr, bytes_count, frame_align);
@@ -239,36 +245,56 @@ struct overload_new_delete {
   }
 };
 
-// if coroutine inherits from it may be allocated with 'R'
-// coroutine must have inner ::promise_type
-template <memory_resource R>
-struct enable_resource_support {
-  using kelcoro_enable_resource_support = R;
+struct enable_resource_deduction {};
+
+// creates type of coroutine which may be allocated with resource 'R'
+// disables resource deduction
+// typical usage: aliases like generator_r/channel_r/etc
+// for not duplicating code and not changing signature with default constructible resources
+// see dd::pmr::generator as example
+template <typename Coro, memory_resource R>
+struct MSVC_EBO resourced : Coro {
+  using resource_type = R;
+
+  using Coro::Coro;
+  using Coro::operator=;
+
+  constexpr resourced(auto&&... args)
+    requires(std::constructible_from<Coro, decltype(args)...>)
+      : Coro(std::forward<decltype(args)>(args)...) {
+  }
+
+  constexpr Coro& decay() & noexcept {
+    return *this;
+  }
+  constexpr Coro&& decay() && noexcept {
+    return std::move(*this);
+  }
+  constexpr const Coro& decay() const& noexcept {
+    return *this;
+  }
+  constexpr const Coro&& decay() const&& noexcept {
+    return std::move(*this);
+  }
 };
-
-// true => coro may be allocated with 'with_resource<Resource>'
-template <typename Coro>
-concept allocatable_with_resource = requires {
-                                      typename Coro::kelcoro_enable_resource_support;
-                                      typename Coro::promise_type;
-                                    };
-
-template <allocatable_with_resource Coro>
-using supported_resource_t = typename Coro::kelcoro_enable_resource_support;
 
 template <typename Promise, memory_resource R>
-struct resourced : overload_new_delete<R>, Promise {
-  static_assert(sizeof(Promise) == sizeof(resourced));
-  static_assert(alignof(Promise) == alignof(resourced));
-};
-// TODO noexport
-template <typename Promise, typename Resource>
-struct make_resourced_promise : std::type_identity<resourced<Promise, Resource>> {};
-template <typename Promise>
-struct make_resourced_promise<Promise, void> : std::type_identity<Promise> {};
+struct MSVC_EBO resourced_promise : Promise, overload_new_delete<R> {
+  using Promise::Promise;
+  using Promise::operator=;
 
-template <typename Promise, typename... Args>
-using make_resourced_promise_t = typename make_resourced_promise<Promise, find_resource_tag_t<Args...>>::type;
+  constexpr resourced_promise(auto&&... args)
+    requires(std::constructible_from<Promise, decltype(args)...>)
+      : Promise(std::forward<decltype(args)>(args)...) {
+  }
+
+  using overload_new_delete<R>::operator new;
+  using overload_new_delete<R>::operator delete;
+
+  // assume sizeof and alignof of *this is equal with 'Promise'
+  // its formal UB, but its used in reference implementation,
+  // standard wording goes wrong
+};
 
 // 'teaches' promise to return
 template <typename T>
@@ -450,9 +476,9 @@ template <yieldable>
 struct generator_iterator;
 template <yieldable>
 struct channel_iterator;
-template <yieldable, memory_resource = select_from_signature>
+template <yieldable>
 struct generator;
-template <yieldable, memory_resource = select_from_signature>
+template <yieldable>
 struct channel;
 template <typename>
 struct elements_of;
@@ -497,14 +523,17 @@ Generator to_generator(auto&& rng) {
       co_yield static_cast<Y&&>(std::forward<decltype(x)>(x));
   }
 }
-template <typename, yieldable, template <typename, typename> typename>
+template <typename, yieldable, template <typename> typename>
 struct extract_from;
 
 template <typename Rng, yieldable Y>
 struct extract_from<Rng, Y, generator> {
+  static generator<Y> do_(generator<Y>* g) {
+    return std::move(*g);
+  }
   template <memory_resource R>
-  static generator<Y> do_(generator<Y, R>* g) {
-    return std::move(*reinterpret_cast<generator<Y>*>(g));
+  static generator<Y> do_(resourced<generator<Y>, R>* g) {
+    return do_(&g->decay());
   }
   static generator<Y> do_(auto* r) {
     return to_generator<Y, generator<Y>>(static_cast<Rng&&>(*r));
@@ -512,23 +541,30 @@ struct extract_from<Rng, Y, generator> {
 };
 template <typename Rng, yieldable Y>
 struct extract_from<Rng, Y, channel> {
-  template <memory_resource R>
-  static channel<Y> do_(channel<Y, R>* g) {
-    return std::move(*reinterpret_cast<channel<Y>*>(g));
+  static channel<Y> do_(channel<Y>* g) {
+    return std::move(*g);
   }
-  template <yieldable OtherY, memory_resource R>
-  static channel<Y> do_(channel<OtherY, R>* g) {
+  template <memory_resource R>
+  static channel<Y> do_(resourced<channel<Y>, R>* g) {
+    return do_(&g->decay());
+  }
+  template <yieldable OtherY>
+  static channel<Y> do_(channel<OtherY>* g) {
     auto& c = *g;
     // note: (void)(co_await) (++b)) only because gcc has bug, its not required
     for (auto b = co_await c.begin(); b != c.end(); (void)(co_await (++b)))
       co_yield static_cast<Y&&>(*b);
+  }
+  template <yieldable OtherY, memory_resource R>
+  static channel<Y> do_(resourced<channel<OtherY>, R>* g) {
+    return do_(&g->decay());
   }
   static channel<Y> do_(auto* r) {
     return to_generator<Y, channel<Y>>(static_cast<Rng&&>(*r));
   }
 };
 
-template <yieldable Y, template <typename, typename = select_from_signature> typename G, typename Rng>
+template <yieldable Y, template <typename> typename G, typename Rng>
 attach_leaf<G<Y>> create_and_attach_leaf(elements_of<Rng>&& e) {
   return attach_leaf<G<Y>>{extract_from<Rng, Y, G>::do_(std::addressof(e.rng))};
 }
@@ -555,15 +591,26 @@ struct hold_value_until_resume {
 
 namespace std {
 
-template <::dd::allocatable_with_resource Coro, typename... Args>
-struct coroutine_traits<Coro, Args...> {
-  using promise_type = ::dd::resourced<typename Coro::promise_type, ::dd::supported_resource_t<Coro>>;
+template <::dd::noexport::coro Coro, ::dd::memory_resource R, typename... Args>
+struct coroutine_traits<::dd::resourced<Coro, R>, Args...> {
+  using promise_type = ::dd::resourced_promise<typename Coro::promise_type, R>;
 };
 
-template <::dd::allocatable_with_resource Coro, typename... Args>
-  requires(same_as<::dd::supported_resource_t<Coro>, ::dd::select_from_signature>)
+template <::dd::noexport::coro Coro, typename... Args>
+  requires derived_from<Coro, ::dd::enable_resource_deduction>
 struct coroutine_traits<Coro, Args...> {
-  using promise_type = ::dd::make_resourced_promise_t<typename Coro::promise_type, Args...>;
+ private:
+  template <typename Promise>
+  static auto deduct_promise() {
+    if constexpr (::dd::noexport::contains_1_resource_tag<Args...>())
+      return std::type_identity<::dd::resourced_promise<Promise, ::dd::find_resource_tag_t<Args...>>>{};
+    else
+      return std::type_identity<Promise>{};
+  }
+
+ public:
+  // if Args contain exactly ONE(1) 'with_resource<X>' it is used, otherwise Coro::promise_type selected
+  using promise_type = typename decltype(deduct_promise<typename Coro::promise_type>())::type;
 };
 
 }  // namespace std

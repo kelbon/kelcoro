@@ -23,8 +23,8 @@ struct task_promise : return_block<Result> {
 };
 
 // single value generator that returns a value with a co_return
-template <typename Result, memory_resource R = select_from_signature>
-struct task : enable_resource_support<R> {
+template <typename Result>
+struct task : enable_resource_deduction {
   using result_type = Result;
   using promise_type = task_promise<Result>;
   using handle_type = std::coroutine_handle<promise_type>;
@@ -80,5 +80,15 @@ struct task : enable_resource_support<R> {
     return remember_waiter_and_start_task_t{handle_};
   }
 };
+
+template <typename Ret, memory_resource R>
+using task_r = resourced<task<Ret>, R>;
+
+namespace pmr {
+
+template <typename Ret>
+using task = ::dd::task_r<Ret, polymorphic_resource>;
+
+}
 
 }  // namespace dd
