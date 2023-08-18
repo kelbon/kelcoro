@@ -406,7 +406,6 @@ struct KELCORO_CO_AWAIT_REQUIRED jump_on {
   static constexpr void await_resume() noexcept {
   }
 };
-// TODO optimize && always, but for empty by value
 template <typename E>
 jump_on(E&&) -> jump_on<E>;
 
@@ -463,7 +462,6 @@ struct elements_of {
   }
 #endif
 };
-// TODO optimize for empty, some alias for such cases, like coroutine tag, or macro coroutine tag?
 template <typename R>
 elements_of(R&&) -> elements_of<R&&>;
 

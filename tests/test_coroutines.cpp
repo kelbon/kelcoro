@@ -86,6 +86,10 @@ TEST(allocations) {
     static_assert(std::is_same_v<decltype(x1), decltype(x2)>);
     static_assert(std::is_same_v<decltype(x0), with_resource<r>>);
   }
+  struct some_resource {
+    void* allocate(size_t, size_t);
+    void deallocate(void*, size_t, size_t) noexcept;
+  };
   // resource deduction
   {
     using default_promise = generator_promise<int>;
@@ -98,8 +102,8 @@ TEST(allocations) {
   EXPECT_PROMISE(expected, test_t, with_resource<r>&);                                                     \
   EXPECT_PROMISE(expected, test_t, float, float, double, int, with_resource<r>&);                          \
   EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>, with_resource<r>&); \
-  // TODO test resource EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>&,                    \
-  //               with_resource<select_from_signature>)
+  EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>&,                    \
+                 with_resource<some_resource>)
     TEST_DEDUCTED;
   }
   {
@@ -133,8 +137,6 @@ TEST(allocations) {
     TEST_DEDUCTED;
   }
   // concrete resource
-  // TODO test sizeofs and align of all coroutines same for different types and resources(and promise types
-  // too)
   {
     using expected = resourced_promise<generator_promise<int>, r>;
     using test_t = generator_r<int, r>;
