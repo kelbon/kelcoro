@@ -18,7 +18,7 @@
 namespace dd {
 
 template <yieldable Yield>
-struct generator_promise : enable_memory_resource_support, not_movable {
+struct generator_promise : not_movable {
   using handle_type = std::coroutine_handle<generator_promise>;
 
  private:
@@ -42,7 +42,7 @@ struct generator_promise : enable_memory_resource_support, not_movable {
   void set_result(Yield* v) const noexcept {
     *root->_current_result_ptr = v;
   }
-  [[gnu::pure]] handle_type self_handle() noexcept {
+  KELCORO_PURE handle_type self_handle() noexcept {
     return handle_type::from_promise(*this);
   }
 
@@ -51,7 +51,7 @@ struct generator_promise : enable_memory_resource_support, not_movable {
   }
 
   generator<Yield> get_return_object() noexcept {
-    return generator(self_handle());
+    return generator<Yield>(self_handle());
   }
   // there are no correct things which you can do with co_await in generator
   void await_transform(auto&&) = delete;
@@ -72,7 +72,7 @@ struct generator_promise : enable_memory_resource_support, not_movable {
   }
   template <typename R>
   noexport::attach_leaf<generator<Yield>> yield_value(elements_of<R> e) noexcept {
-    return noexport::elements_extractor<Yield, ::dd::generator>::extract(std::move(e));
+    return noexport::create_and_attach_leaf<Yield, generator>(std::move(e));
   }
 
   static constexpr std::suspend_always initial_suspend() noexcept {
@@ -131,7 +131,7 @@ struct generator_iterator {
     return static_cast<reference>(*self->current_result);
   }
   // * after invoking references to value from operator* are invalidated
-  generator_iterator& operator++() [[clang::lifetimebound]] {
+  generator_iterator& operator++() KELCORO_LIFETIMEBOUND {
     assert(!self->empty());
     self->top.promise().current_worker.resume();
     return *this;
@@ -149,8 +149,10 @@ struct generator_iterator {
 //  will lead to std::terminate
 //  * if exception was throwed from recursivelly co_yielded generator, then this leaf just skipped and caller
 //  can continue iterating after catch(requires new .begin call)
+//
+// about R - see 'with_resource'
 template <yieldable Yield>
-struct generator {
+struct generator : enable_resource_deduction {
   using promise_type = generator_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;
   using value_type = Yield;
@@ -163,10 +165,10 @@ struct generator {
 
   // invariant: == nullptr when top.done()
   Yield* current_result = nullptr;
-  always_done_or<promise_type> top = always_done_coroutine();
+  handle_type top = nullptr;
 
   // precondition: 'handle' != nullptr, handle does not have other owners
-  // used from promise::gen_return_object
+  // used from promise::get_return_object
   constexpr explicit generator(handle_type top) noexcept : top(top) {
   }
 
@@ -196,20 +198,18 @@ struct generator {
 
   constexpr void reset(handle_type handle) noexcept {
     clear();
-    if (handle)
-      top = handle;
+    top = handle;
   }
 
   // postcondition: .empty()
   // its caller responsibility to correctly destroy handle
   [[nodiscard]] constexpr handle_type release() noexcept {
-    if (empty())
-      return nullptr;
-    return std::exchange(top, always_done_coroutine()).get();
+    return std::exchange(top, nullptr);
   }
   // postcondition: .empty()
   constexpr void clear() noexcept {
-    std::exchange(top, always_done_coroutine()).destroy();
+    if (top)
+      std::exchange(top, nullptr).destroy();
   }
   constexpr ~generator() {
     clear();
@@ -218,7 +218,7 @@ struct generator {
   // observers
 
   constexpr bool empty() const noexcept {
-    return top.done();
+    return !top || top.done();
   }
   constexpr explicit operator bool() const noexcept {
     return !empty();
@@ -227,13 +227,13 @@ struct generator {
   bool operator==(const generator& other) const noexcept {
     if (empty())
       return other.empty();
-    return this == &other;
+    return this == &other;  // invariant: coro handle has only one owner
   }
 
   // * if .empty(), then begin() == end()
   // * produces next value(often first)
   // iterator invalidated only when generator dies
-  iterator begin() & [[clang::lifetimebound]] {
+  iterator begin() & KELCORO_LIFETIMEBOUND {
     if (!empty()) [[likely]] {
       top.promise()._current_result_ptr = &current_result;
       top.promise().current_worker.resume();
@@ -244,6 +244,16 @@ struct generator {
     return std::default_sentinel;
   }
 };
+
+template <yieldable Y, memory_resource R>
+using generator_r = resourced<generator<Y>, R>;
+
+namespace pmr {
+
+template <yieldable Y>
+using generator = ::dd::generator_r<Y, polymorphic_resource>;
+
+}
 
 }  // namespace dd
 

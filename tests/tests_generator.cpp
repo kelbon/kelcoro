@@ -399,7 +399,7 @@ dd::generator<int> interrupted_g() {
   }
   co_yield dd::elements_of(g);
 }
-dd::channel<int> interrupted_c() {
+dd::channel<int> interrupted_c(auto&&) {
   auto g = base_case<dd::channel>();
   co_foreach(int i, g) {
     co_yield i;
@@ -419,7 +419,7 @@ TEST(interrupted) {
 }
 CHANNEL_TEST(interrupted_channel) {
   std::vector<int> v;
-  co_foreach(int i, interrupted_c()) v.push_back(i);
+  co_foreach(int i, interrupted_c(dd::with_resource<dd::pmr::polymorphic_resource>{})) v.push_back(i);
   std::vector check(100, 0);
   std::iota(begin(check), end(check), 0);
   error_if(v != check);
@@ -428,7 +428,7 @@ CHANNEL_TEST(interrupted_channel) {
 CO_TEST(interrupted_channel);
 
 channel<int> recursive_interrupted_c() {
-  co_yield elements_of(interrupted_c());
+  co_yield elements_of(interrupted_c(dd::with_resource<dd::pmr::polymorphic_resource>{}));
 }
 generator<int> recursive_interrupted_g() {
   co_yield elements_of(interrupted_g());
@@ -455,7 +455,7 @@ CO_TEST(recursive_interrupted_channel);
 
 channel<int> recursive_interrupted_c2() {
   co_yield -1;
-  co_yield elements_of(interrupted_c());
+  co_yield elements_of(interrupted_c(dd::with_resource<dd::pmr::polymorphic_resource>{}));
   co_yield 100;
 }
 generator<int> recursive_interrupted_g2() {
@@ -641,10 +641,125 @@ struct log_resource : std::pmr::memory_resource {
       std::cout << " +" << '\n';                   \
     }                                              \
   }
+
+inline auto sz = size_t(-1);
+struct new_delete_resource {
+  void* allocate(size_t s, size_t a) {
+    sz = s;
+    (void)a;  // cannot use new with 'align_val_t' on msvc... Its broken
+    return malloc(s);
+  }
+  void deallocate(void* p, size_t s, size_t a) noexcept {
+    sz -= s;
+    (void)a;
+    free(p);
+  }
+};
+dd::generator_r<int, new_delete_resource> new_ints() {
+  co_yield 1;
+}
+dd::generator_r<int, new_delete_resource> new_ints2(dd::with_resource<dd::pmr::polymorphic_resource>) {
+  co_yield 2;
+}
+dd::generator_r<float, new_delete_resource> new_ints3() {
+  co_yield 3;
+}
+dd::generator<int> new_ints4() {
+  co_yield 4;
+}
+dd::generator<int> new_ints5(dd::with_resource<dd::pmr::polymorphic_resource>) {
+  co_yield 5;
+}
+dd::generator<float> new_ints6() {
+  co_yield 6;
+}
+dd::generator<float> new_ints7(dd::with_resource<dd::pmr::polymorphic_resource>) {
+  co_yield 7;
+}
+dd::generator<int> throw_different_things() {
+  co_yield elements_of(new_ints());
+  co_yield elements_of(new_ints2({}));
+  co_yield elements_of(new_ints3());
+  co_yield elements_of(new_ints4());
+  co_yield elements_of(new_ints5({}));
+  co_yield elements_of(new_ints6());
+  co_yield elements_of(new_ints7({}));
+}
+TEST(different_yields) {
+  std::vector<int> v;
+  for (auto x : throw_different_things())
+    v.push_back(x);
+  error_if((v != std::vector{1, 2, 3, 4, 5, 6, 7}));
+  return error_count;
+}
+dd::channel_r<int, new_delete_resource> new_ints_c() {
+  co_yield 1;
+}
+dd::channel_r<int, new_delete_resource> new_ints2_c(dd::with_resource<dd::pmr::polymorphic_resource>) {
+  co_yield 2;
+}
+dd::channel_r<float, new_delete_resource> new_ints3_c() {
+  co_yield 3;
+}
+dd::channel<int> new_ints4_c() {
+  co_yield 4;
+}
+dd::channel<int> new_ints5_c(dd::with_resource<dd::pmr::polymorphic_resource>) {
+  co_yield 5;
+}
+dd::channel<float> new_ints6_c() {
+  co_yield 6;
+}
+dd::channel<float> new_ints7_c(dd::with_resource<dd::pmr::polymorphic_resource>) {
+  co_yield 7;
+}
+dd::channel<int> throw_different_things_c() {
+  co_yield elements_of(new_ints());
+  co_yield elements_of(new_ints2({}));
+  co_yield elements_of(new_ints3());
+  co_yield elements_of(new_ints4());
+  co_yield elements_of(new_ints5({}));
+  co_yield elements_of(new_ints6());
+  co_yield elements_of(new_ints7({}));
+  co_yield elements_of(new_ints_c());
+  co_yield elements_of(new_ints2_c({}));
+  co_yield elements_of(new_ints3_c());
+  co_yield elements_of(new_ints4_c());
+  co_yield elements_of(new_ints5_c({}));
+  co_yield elements_of(new_ints6_c());
+  co_yield elements_of(new_ints7_c({}));
+}
+CHANNEL_TEST(different_yields_channel) {
+  std::vector<int> v;
+  co_foreach(auto x, throw_different_things_c()) v.push_back(x);
+  error_if((v != std::vector{1, 2, 3, 4, 5, 6, 7, 1, 2, 3, 4, 5, 6, 7}));
+  co_return error_count;
+}
+CO_TEST(different_yields_channel);
+
 int main() {
+  static_assert(::dd::memory_resource<new_delete_resource>);
   (void)flip();  // initalize random
-  log_resource r;
-  dd::with_resource _(r);
+  {
+    log_resource r;
+    dd::pmr::pass_resource(r);
+    auto x = []() -> dd::generator_r<int, dd::pmr::polymorphic_resource> { co_yield 1; };
+    for (auto i : x())
+      if (i != 1)
+        std::exit(-1);
+    auto y = []() -> dd::generator_r<int, new_delete_resource> { co_yield 1; };
+    for (auto i : y())
+      if (i != 1)
+        std::exit(-2);
+    auto z = [](dd::with_resource<dd::pmr::polymorphic_resource> = {}) -> generator<int> { co_yield 1; };
+    for (auto i : z())
+      if (i != 1)
+        std::exit(-3);
+    auto ze = [](dd::with_resource<new_delete_resource> = {}) -> generator<int> { co_yield 1; };
+    for (auto i : ze())
+      if (i != 1)
+        std::exit(-4);
+  }
   dd::scope_exit e = [&] { std::flush(std::cout), std::flush(std::cerr); };
   size_t ec = 0;
   RUN(base_channel);
@@ -692,6 +807,9 @@ int main() {
   RUN(nomove_gen);
   RUN(nomove_gen_channel);
   RUN(chan_yield);
-
+  RUN(different_yields);
+  RUN(different_yields_channel);
+  if (sz != 0 && sz != size_t(-1))
+    std::exit(146);
   return ec;
 }

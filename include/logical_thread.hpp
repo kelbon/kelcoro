@@ -57,7 +57,7 @@ constexpr inline get_stop_token_t stop_token = {};
 
 }  // namespace this_coro
 
-struct logical_thread_promise : enable_memory_resource_support {
+struct logical_thread_promise {
   std::atomic_bool stop_requested_ = false;
   two_way_bound stopped;
 
@@ -122,7 +122,7 @@ struct logical_thread_promise : enable_memory_resource_support {
 
 // shared owning of coroutine handle between coroutine object and coroutine frame.
 // Frame always dies with a coroutine object, except it was detached(then it deletes itself after co_return)
-struct logical_thread {
+struct logical_thread : enable_resource_deduction {
   using promise_type = logical_thread_promise;
   using handle_type = std::coroutine_handle<promise_type>;
 
@@ -199,6 +199,16 @@ struct logical_thread {
     }
   }
 };
+
+template <memory_resource R>
+using logical_thread_r = resourced<logical_thread, R>;
+
+namespace pmr {
+
+template <typename Ret>
+using logical_thread = ::dd::logical_thread_r<polymorphic_resource>;
+
+}
 
 // TEMPLATE FUNCTION stop
 

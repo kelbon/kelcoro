@@ -11,7 +11,7 @@ namespace dd {
 // behavior very similar to generator, but channel may suspend before co_yield
 
 template <yieldable Yield>
-struct channel_promise : enable_memory_resource_support, not_movable {
+struct channel_promise : not_movable {
   using handle_type = std::coroutine_handle<channel_promise>;
 
  private:
@@ -47,7 +47,7 @@ struct channel_promise : enable_memory_resource_support, not_movable {
   void set_exception(std::exception_ptr e) const noexcept {
     exception() = e;
   }
-  [[gnu::pure]] handle_type self_handle() noexcept {
+  KELCORO_PURE handle_type self_handle() noexcept {
     return handle_type::from_promise(*this);
   }
 
@@ -56,7 +56,7 @@ struct channel_promise : enable_memory_resource_support, not_movable {
   }
 
   channel<Yield> get_return_object() noexcept {
-    return channel(self_handle());
+    return channel<Yield>(self_handle());
   }
 
   transfer_control_to yield_value(Yield&& rvalue) noexcept {
@@ -74,7 +74,7 @@ struct channel_promise : enable_memory_resource_support, not_movable {
   }
   template <typename X>
   noexport::attach_leaf<channel<Yield>> yield_value(elements_of<X> e) noexcept {
-    return noexport::elements_extractor<Yield, ::dd::channel>::extract(std::move(e));
+    return noexport::create_and_attach_leaf<Yield, channel>(std::move(e));
   }
 
   static constexpr std::suspend_always initial_suspend() noexcept {
@@ -129,7 +129,6 @@ struct channel_iterator : not_movable {
   }
 
   constexpr bool operator==(std::default_sentinel_t) const noexcept {
-    assert(!(chan.top.done() && chan.current_result != nullptr));
     return chan.current_result == nullptr;
   }
   // * returns rvalue ref
@@ -157,8 +156,10 @@ struct channel_iterator : not_movable {
 // or use manually
 //   for(auto it = co_await chan.begin(); it != chan.end(); co_await ++it)
 //       auto&& v = *it;
+//
+// about R - see 'dd::with_resource'
 template <yieldable Yield>
-struct channel {
+struct channel : enable_resource_deduction {
   using promise_type = channel_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;
   using value_type = Yield;
@@ -173,7 +174,7 @@ struct channel {
   // initialized when first value created(on in final suspend)
   Yield* current_result = nullptr;
   std::coroutine_handle<> handle = nullptr;  // coro in which i exist(setted in co_await on .begin)
-  always_done_or<promise_type> top = always_done_coroutine();  // current top level channel
+  handle_type top = nullptr;                 // current top level channel
   // invariant: setted only once for one coroutine frame
   // if setted, then top may be not done yet
   std::exception_ptr exception = nullptr;
@@ -211,19 +212,17 @@ struct channel {
 
   constexpr void reset(handle_type handle) noexcept {
     clear();
-    if (handle)
-      top = handle;
+    top = handle;
   }
   // postcondition: .empty()
   // after this method its caller responsibility to correctly destroy 'handle'
   [[nodiscard]] constexpr handle_type release() noexcept {
-    if (empty())
-      return nullptr;
-    return std::exchange(top, always_done_coroutine()).get();
+    return std::exchange(top, nullptr);
   }
   // postcondition: .empty()
   constexpr void clear() noexcept {
-    std::exchange(top, always_done_coroutine()).destroy();
+    if (top)
+      std::exchange(top, nullptr).destroy();
   }
   ~channel() {
     clear();
@@ -232,7 +231,7 @@ struct channel {
   // observers
 
   constexpr bool empty() const noexcept {
-    return top.done();
+    return !top || top.done();
   }
   constexpr explicit operator bool() const noexcept {
     return !empty();
@@ -247,7 +246,7 @@ struct channel {
   bool operator==(const channel& other) const noexcept {
     if (empty())
       return other.empty();
-    return this == &other;
+    return this == &other;  // invariant: coro handle has only one owner
   }
 
  private:
@@ -272,13 +271,23 @@ struct channel {
  public:
   // * if .empty(), then co_await begin() == end()
   // produces next value(often first)
-  KELCORO_CO_AWAIT_REQUIRED starter begin() & noexcept [[clang::lifetimebound]] {
+  KELCORO_CO_AWAIT_REQUIRED starter begin() & noexcept KELCORO_LIFETIMEBOUND {
     return starter{*this};
   }
   static constexpr std::default_sentinel_t end() noexcept {
     return std::default_sentinel;
   }
 };
+
+template <yieldable Y, memory_resource R>
+using channel_r = resourced<channel<Y>, R>;
+
+namespace pmr {
+
+template <yieldable Y>
+using channel = ::dd::channel_r<Y, polymorphic_resource>;
+
+}
 
 // usage example:
 //  co_foreach(std::string s, mychannel) use(s);

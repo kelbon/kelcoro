@@ -9,6 +9,7 @@
 #include <cassert>
 #include <thread>
 #include <memory_resource>
+#include <concepts>
 
 #define KELCORO_CO_AWAIT_REQUIRED [[nodiscard("forget co_await?")]]
 
@@ -18,6 +19,26 @@
 #define KELCORO_UNREACHABLE __assume(false)
 #else
 #define KELCORO_UNREACHABLE (void)0
+#endif
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#define KELCORO_LIFETIMEBOUND [[msvc::lifetimebound]]
+#elif defined(__clang__)
+#define KELCORO_LIFETIMEBOUND [[clang::lifetimebound]]
+#else
+#define KELCORO_LIFETIMEBOUND
+#endif
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#define KELCORO_PURE
+#else
+#define KELCORO_PURE [[gnu::pure]]
+#endif
+
+#ifdef _MSC_VER
+#define MSVC_EBO __declspec(empty_bases)
+#else
+#define MSVC_EBO
 #endif
 
 namespace dd {
@@ -63,50 +84,77 @@ concept co_awaitable = has_member_co_await<T> || has_global_co_await<T> || co_aw
 template <typename T>
 concept yieldable = std::same_as<std::decay_t<T>, T> && (!std::is_void_v<T>);
 
+template <typename T>
+concept memory_resource = (!std::is_reference_v<T>) &&
+                          requires(T value, size_t sz, size_t align, void* ptr) {
+                            { value.allocate(sz, align) } -> std::convertible_to<void*>;
+                            { value.deallocate(ptr, sz, align) } noexcept -> std::same_as<void>;
+                            requires std::is_nothrow_move_constructible_v<T>;
+                            requires alignof(T) <= alignof(std::max_align_t);
+                            requires !(std::is_empty_v<T> && !std::default_initializable<T>);
+                          };
+
 namespace noexport {
 
-// caches value (just because its C-non-inline-call...)
-static std::pmr::memory_resource* const new_delete_resource = std::pmr::new_delete_resource();
+template <typename T>
+concept coro = requires { typename T::promise_type; };
 
-// used to pass argument to promise operator new, say 'ty' to standard writers,
-// i want separate coroutine logic from how it allocates frame
-inline thread_local std::pmr::memory_resource* co_memory_resource = new_delete_resource;
+}
 
-}  // namespace noexport
+namespace pmr {
 
-// passes 'implicit' argument to all coroutines allocatinon on this thread until object dies
-// usage:
-//    foo_t local = dd::with_resource{r}, create_coro(), foo();
-// OR
-//    dd::with_resource{r}, [&] { ... }();
-// OR
-//    dd::with_resource name{r};
-//    ... code with coroutines ...
-struct [[nodiscard]] with_resource : not_movable {
+struct polymorphic_resource {
  private:
-  std::pmr::memory_resource* old;
+  std::pmr::memory_resource* passed;
+
+  static auto& default_resource() {
+    // never null
+    static std::atomic<std::pmr::memory_resource*> r = std::pmr::new_delete_resource();
+    return r;
+  }
+  static auto& passed_resource() {
+    thread_local constinit std::pmr::memory_resource* r = nullptr;
+    return r;
+  }
+  friend std::pmr::memory_resource& get_default_resource() noexcept;
+  friend std::pmr::memory_resource& set_default_resource(std::pmr::memory_resource&) noexcept;
+  friend void pass_resource(std::pmr::memory_resource&) noexcept;
 
  public:
-  explicit with_resource(std::pmr::memory_resource& m) noexcept
-      : old(std::exchange(noexport::co_memory_resource, &m)) {
-    assert(old != nullptr);
+  polymorphic_resource() noexcept : passed(std::exchange(passed_resource(), nullptr)) {
+    if (!passed)
+      passed = std::pmr::get_default_resource();
+    assert(passed != nullptr);
   }
-
-  ~with_resource() {
-    noexport::co_memory_resource = old;
+  void* allocate(size_t sz, size_t align) {
+    return passed->allocate(sz, align);
+  }
+  void deallocate(void* p, std::size_t sz, std::size_t align) noexcept {
+    passed->deallocate(p, sz, align);
   }
 };
 
-// Question: what will be if coroutine local contains alignas(64) int i; ?
-// Answer: (quote from std::generator paper)
-//  "Let BAlloc be allocator_traits<A>::template rebind_alloc<U> where U denotes an unspecified type
-// whose size and alignment are both _STDCPP_DEFAULT_NEW_ALIGNMENT__"
+inline std::pmr::memory_resource& get_default_resource() noexcept {
+  return *polymorphic_resource::default_resource().load(std::memory_order_acquire);
+}
+
+inline std::pmr::memory_resource& set_default_resource(std::pmr::memory_resource& r) noexcept {
+  return *polymorphic_resource::default_resource().exchange(&r, std::memory_order_acq_rel);
+}
+inline void pass_resource(std::pmr::memory_resource& m) noexcept {
+  polymorphic_resource::passed_resource() = &m;
+}
+
+}  // namespace pmr
+
 consteval size_t coroframe_align() {
+  // Question: what will be if coroutine local contains alignas(64) int i; ?
+  // Answer: (quote from std::generator paper)
+  //  "Let BAlloc be allocator_traits<A>::template rebind_alloc<U> where U denotes an unspecified type
+  // whose size and alignment are both _STDCPP_DEFAULT_NEW_ALIGNMENT__"
   return __STDCPP_DEFAULT_NEW_ALIGNMENT__;
 }
 
-// TODO my any memory resource instead of std::pmr
-// TODO inplace resource(blocked by bad standard wording)
 // TODO free list with customizable max blocks
 //  must be good because coroutines have same sizes,
 //  its easy to reuse memory for them
@@ -114,31 +162,158 @@ consteval size_t coroframe_align() {
 //  generators in chain
 //  struct co_memory_resource { ... };
 
-// inheritor(coroutine promise) receives allocation support(std::pmr::memory_resource)
-// usage: see 'with_resource' and 'inplace_resource'
-struct enable_memory_resource_support {
-  static void* operator new(std::size_t frame_size) {
-    auto* r = noexport::co_memory_resource;
-    auto* p = (std::byte*)r->allocate(frame_size + sizeof(void*), coroframe_align());
-    std::byte* alloc_ptr = p + frame_size;
-    std::memcpy(alloc_ptr, &r, sizeof(void*));
-    return p;
+// when passed into coroutine coro will allocate/deallocate memory using this resource
+template <memory_resource R>
+struct with_resource {
+  [[no_unique_address]] R resource;
+};
+template <typename X>
+with_resource(X&&) -> with_resource<std::remove_cvref_t<X>>;
+
+namespace noexport {
+
+template <typename... Args>
+struct find_resource_tag : std::type_identity<void> {};
+template <typename R, typename... Args>
+struct find_resource_tag<with_resource<R>, Args...> : std::type_identity<R> {};
+template <typename Head, typename... Tail>
+struct find_resource_tag<Head, Tail...> : find_resource_tag<Tail...> {};
+
+}  // namespace noexport
+
+// searches for 'with_resource' in Types and returns first finded or void if no such
+template <typename... Types>
+using find_resource_tag_t = typename noexport::find_resource_tag<std::remove_cvref_t<Types>...>::type;
+
+namespace noexport {
+
+template <typename... Types>
+consteval bool contains_1_resource_tag() {
+  return 1 == (!std::is_void_v<find_resource_tag_t<Types>> + ... + 0);
+}
+
+constexpr auto only_for_resource(auto&& foo, auto&&... args) {
+  static_assert(contains_1_resource_tag<decltype(args)...>());
+  auto try_one = [&](auto& x) {
+    if constexpr (contains_1_resource_tag<decltype(x)>())
+      foo(x.resource);
+  };
+  (try_one(args), ...);
+}
+
+template <size_t RequiredPadding>
+constexpr size_t padding_len(size_t sz) noexcept {
+  enum { P = RequiredPadding };
+  static_assert(P != 0);
+  return ((P - sz) % P) % P;
+}
+
+}  // namespace noexport
+
+// inheritor(coroutine promise) may be allocated with 'R'
+// using 'with_resource' tag or default constructed 'R'
+template <memory_resource R>
+struct overload_new_delete {
+ private:
+  enum { frame_align = std::max(coroframe_align(), alignof(R)) };
+  static void* do_allocate(size_t frame_sz, R& r) {
+    if constexpr (std::is_empty_v<R>)
+      return (void*)r.allocate(frame_sz, coroframe_align());
+    else {
+      const size_t padding = noexport::padding_len<frame_align>(frame_sz);
+      const size_t bytes_count = frame_sz + padding + sizeof(R);
+      std::byte* p = (std::byte*)r.allocate(bytes_count, frame_align);
+      std::byte* resource_place = p + frame_sz + padding;
+      std::construct_at((R*)resource_place, std::move(r));
+      return p;
+    }
   }
 
-  static void operator delete(void* ptr, std::size_t frame_size) noexcept {
-    auto* alloc_ptr = (std::byte*)ptr + frame_size;
-    std::pmr::memory_resource* m;
-    std::memcpy(&m, alloc_ptr, sizeof(void*));
-    m->deallocate(ptr, frame_size + sizeof(void*), coroframe_align());
+ public:
+  static void* operator new(size_t frame_sz)
+    requires(std::default_initializable<R>)
+  {
+    R r{};
+    return do_allocate(frame_sz, r);
   }
+  template <typename... Args>
+    requires(std::same_as<find_resource_tag_t<Args...>, R> && noexport::contains_1_resource_tag<Args...>())
+  static void* operator new(std::size_t frame_sz, Args&&... args) {
+    void* p;
+    noexport::only_for_resource([&](auto& resource) { p = do_allocate(frame_sz, resource); }, args...);
+    return p;
+  }
+  static void operator delete(void* ptr, std::size_t frame_sz) noexcept {
+    if constexpr (std::is_empty_v<R>) {
+      R r{};
+      r.deallocate(ptr, frame_sz, coroframe_align());
+    } else {
+      const size_t padding = noexport::padding_len<frame_align>(frame_sz);
+      const size_t bytes_count = frame_sz + padding + sizeof(R);
+      R* onframe_resource = (R*)((std::byte*)ptr + frame_sz + padding);
+      assert((((uintptr_t)onframe_resource % alignof(R)) == 0));
+      R r = std::move(*onframe_resource);
+      std::destroy_at(onframe_resource);
+      r.deallocate(ptr, bytes_count, frame_align);
+    }
+  }
+};
+
+struct enable_resource_deduction {};
+
+// creates type of coroutine which may be allocated with resource 'R'
+// disables resource deduction
+// typical usage: aliases like generator_r/channel_r/etc
+// for not duplicating code and not changing signature with default constructible resources
+// see dd::pmr::generator as example
+template <typename Coro, memory_resource R>
+struct MSVC_EBO resourced : Coro {
+  using resource_type = R;
+
+  using Coro::Coro;
+  using Coro::operator=;
+
+  constexpr resourced(auto&&... args)
+    requires(std::constructible_from<Coro, decltype(args)...>)
+      : Coro(std::forward<decltype(args)>(args)...) {
+  }
+
+  constexpr Coro& decay() & noexcept {
+    return *this;
+  }
+  constexpr Coro&& decay() && noexcept {
+    return std::move(*this);
+  }
+  constexpr const Coro& decay() const& noexcept {
+    return *this;
+  }
+  constexpr const Coro&& decay() const&& noexcept {
+    return std::move(*this);
+  }
+};
+
+template <typename Promise, memory_resource R>
+struct MSVC_EBO resourced_promise : Promise, overload_new_delete<R> {
+  using Promise::Promise;
+  using Promise::operator=;
+
+  constexpr resourced_promise(auto&&... args)
+    requires(std::constructible_from<Promise, decltype(args)...>)
+      : Promise(std::forward<decltype(args)>(args)...) {
+  }
+
+  using overload_new_delete<R>::operator new;
+  using overload_new_delete<R>::operator delete;
+
+  // assume sizeof and alignof of *this is equal with 'Promise'
+  // its formal UB, but its used in reference implementation,
+  // standard wording goes wrong
 };
 
 // 'teaches' promise to return
 template <typename T>
 struct return_block {
-  using result_type = T;
-  // possibly can be replaced with some buffer
-  std::optional<result_type> storage = std::nullopt;
+  std::optional<T> storage = std::nullopt;
 
   constexpr void return_value(T value) noexcept(std::is_nothrow_move_constructible_v<T>) {
     storage.emplace(std::move(value));
@@ -147,21 +322,32 @@ struct return_block {
     return *std::move(storage);
   }
 };
+template <typename T>
+struct return_block<T&> {
+  T* storage = nullptr;
+
+  constexpr void return_value(T& value) noexcept {
+    storage = std::addressof(value);
+  }
+  constexpr T& result() noexcept {
+    assert(storage != nullptr);
+    return *storage;
+  }
+};
 template <>
 struct return_block<void> {
-  using result_type = void;
   constexpr void return_void() const noexcept {
   }
 };
 
 struct [[nodiscard("co_await it!")]] transfer_control_to {
-  std::coroutine_handle<void> who_waits;
+  std::coroutine_handle<> who_waits;
 
   bool await_ready() const noexcept {
     assert(who_waits != nullptr);
     return false;
   }
-  std::coroutine_handle<void> await_suspend(std::coroutine_handle<void>) noexcept {
+  std::coroutine_handle<> await_suspend(std::coroutine_handle<>) noexcept {
     return who_waits;  // symmetric transfer here
   }
   static constexpr void await_resume() noexcept {
@@ -235,7 +421,7 @@ struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
       handle_ = handle;
       return false;
     }
-    std::coroutine_handle<void> await_resume() const noexcept {
+    std::coroutine_handle<> await_resume() const noexcept {
       return handle_;
     }
   };
@@ -251,12 +437,6 @@ namespace this_coro {
 // provides access to inner handle of coroutine
 constexpr inline get_handle_t handle = {};
 
-// returns last resource which was setted on this thread by 'with_resource'
-// guaranteed to be alive only in coroutine for which it was setted
-inline std::pmr::memory_resource& current_memory_resource() noexcept {
-  return *noexport::co_memory_resource;
-}
-
 }  // namespace this_coro
 
 // imitating compiler behaviour for co_await expression mutation into awaiter(without await_transform)
@@ -270,68 +450,6 @@ constexpr decltype(auto) build_awaiter(T&& value) {
     return operator co_await(std::forward<T>(value));
   else if constexpr (has_member_co_await<T&&>)
     return std::forward<T>(value).operator co_await();
-}
-
-struct always_done_coroutine_promise : not_movable {
-  static void* operator new(std::size_t frame_size) {
-    // worst part - i have  no guarantees about frame size, even when compiler exactly knows
-    // how much it will allocoate (if he will)
-    alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__) static char bytes[50];
-    if (frame_size <= 50)
-      return bytes;
-    // this memory can not be deallocated in dctor of global object,
-    // because i have no guarantee, that this memory even will be allocated.
-    // so its memory leak. Ok
-    return new char[frame_size];
-  }
-
-  static void operator delete(void*, std::size_t) noexcept {
-  }
-  static constexpr std::suspend_never initial_suspend() noexcept {
-    return {};
-  }
-  auto get_return_object() {
-    return std::coroutine_handle<always_done_coroutine_promise>::from_promise(*this);
-  }
-  [[noreturn]] static void unhandled_exception() noexcept {
-    assert(false);  // must be unreachable
-    std::abort();
-  }
-  static constexpr void return_void() noexcept {
-  }
-  static constexpr std::suspend_always final_suspend() noexcept {
-    return {};
-  }
-};
-
-using always_done_coroutine_handle = std::coroutine_handle<always_done_coroutine_promise>;
-
-}  // namespace dd
-
-namespace std {
-
-template <typename... Args>
-struct coroutine_traits<::dd::always_done_coroutine_handle, Args...> {
-  using promise_type = ::dd::always_done_coroutine_promise;
-};
-
-}  // namespace std
-
-namespace dd::noexport {
-
-static inline const always_done_coroutine_handle always_done_coro{
-    []() -> always_done_coroutine_handle { co_return; }()};
-
-}  // namespace dd::noexport
-
-namespace dd {
-
-// returns handle for which
-// .done() == true
-// .destroy() is noop
-// .resume() produces undefined behavior
-inline always_done_coroutine_handle always_done_coroutine() noexcept {
-  return noexport::always_done_coro;
 }
 
 template <typename R>
@@ -361,67 +479,6 @@ struct by_ref {
 
 template <typename Yield>
 by_ref(Yield&) -> by_ref<Yield>;
-
-// never nullptr, stores always_done_coroutine_handle or std::coroutine_handle<Promise>
-template <typename Promise>
-struct always_done_or {
- private:
-  // invariant _h != nullptr
-  std::coroutine_handle<> _h = always_done_coroutine();
-
- public:
-  always_done_or() = default;
-  always_done_or(always_done_coroutine_handle h) noexcept : _h(h) {
-    assert(_h != nullptr);
-  }
-  always_done_or(std::coroutine_handle<Promise> h) noexcept : _h(h) {
-    assert(_h != nullptr);
-  }
-  always_done_or(always_done_or&) = default;
-  always_done_or(always_done_or&&) = default;
-  always_done_or& operator=(const always_done_or&) = default;
-  always_done_or& operator=(always_done_or&) = default;
-
-  [[gnu::pure]] std::coroutine_handle<Promise> get() const noexcept {
-    assert(_h != nullptr);
-    return std::coroutine_handle<Promise>::from_address(_h.address());
-  }
-  // precondition: not always_done_coroutine stored
-  [[gnu::pure]] Promise& promise() const noexcept {
-    assert(_h != always_done_coroutine());
-    return std::coroutine_handle<Promise>::from_address(_h.address()).promise();
-  }
-  [[gnu::pure]] static always_done_or from_promise(Promise& p) {
-    always_done_or h;
-    h._h = std::coroutine_handle<Promise>::from_promise(p);
-    return h;
-  }
-  // postcondition returned != nullptr
-  [[gnu::pure]] constexpr void* address() const noexcept {
-    void* p = _h.address();
-    assert(p != nullptr);
-    return p;
-  }
-  static constexpr always_done_or from_address(void* addr) {
-    always_done_or h;
-    h._h = std::coroutine_handle<Promise>::from_address(addr);
-    return h;
-  }
-
-  bool done() const noexcept {
-    return _h.done();
-  }
-  void resume() const {
-    assert(!done());
-    _h.resume();
-  }
-  void destroy() {
-    _h.destroy();
-  }
-  operator std::coroutine_handle<>() const noexcept {
-    return _h;
-  }
-};
 
 template <yieldable>
 struct generator_promise;
@@ -459,71 +516,76 @@ struct attach_leaf {
     root_p.current_worker = leaf_p.current_worker;
     return leaf_p.current_worker;
   }
+  // support yielding generators with different resource
+  template <memory_resource R>
+  auto await_suspend(std::coroutine_handle<resourced_promise<typename Leaf::promise_type, R>> handle) {
+    return await_suspend(handle.promise().self_handle());
+  }
   static constexpr void await_resume() noexcept {
   }
 };
 
-// accepts elements_of<X> and converts it into leaf-coroutine
-template <typename Yield, template <typename> typename Generator>
-struct elements_extractor {
- private:
-  static_assert(!std::is_reference_v<Yield> && !std::is_const_v<Yield>);
-  // leaf type == owner type
-
-  static Generator<Yield> do_extract(Generator<Yield>&& g) noexcept {
-    return std::move(g);
+template <yieldable Y, typename Generator>
+Generator to_generator(auto&& rng) {
+  // 'rng' captured by ref because used as part of 'co_yield' expression
+  if constexpr (!std::ranges::borrowed_range<decltype(rng)> &&
+                std::is_same_v<std::ranges::range_rvalue_reference_t<decltype(rng)>, Y&&>) {
+    using std::begin;
+    using std::end;
+    auto&& b = begin(rng);
+    auto&& e = end(rng);
+    for (; b != e; ++b)
+      co_yield std::ranges::iter_move(b);
+  } else {
+    for (auto&& x : rng)
+      co_yield static_cast<Y&&>(std::forward<decltype(x)>(x));
   }
-  static Generator<Yield> do_extract(Generator<Yield>& g) noexcept {
-    return do_extract(std::move(g));
-  }
+}
+template <typename, yieldable, template <typename> typename>
+struct extract_from;
 
-  // leaf yields other type
-
-  template <typename U>
-  static generator<Yield> do_extract(generator<U>& g) {
-    for (U&& x : g)
-      co_yield static_cast<Yield&&>(std::move(x));
+template <typename Rng, yieldable Y>
+struct extract_from<Rng, Y, generator> {
+  static generator<Y> do_(generator<Y>* g) {
+    return std::move(*g);
   }
-  template <typename U>
-  static generator<Yield> do_extract(generator<U>&& g) {
-    return do_extract(g);
+  template <memory_resource R>
+  static generator<Y> do_(resourced<generator<Y>, R>* g) {
+    return do_(&g->decay());
   }
-
-  template <typename U>
-  static channel<Yield> do_extract(channel<U>& c) {
-    // note: (void)(co_await) (++b)) only because gcc has bug, its not required
-    for (auto b = co_await c.begin(); b != c.end(); (void)(co_await (++b)))
-      co_yield static_cast<Yield>(*b);
-  }
-  template <typename U>
-  static channel<Yield> do_extract(channel<U>&& c) {
-    return do_extract(c);
-  }
-
-  // leaf is just a range
-
-  static Generator<Yield> do_extract(auto&& rng) {
-    if constexpr (!std::ranges::borrowed_range<decltype(rng)> &&
-                  std::is_same_v<std::ranges::range_rvalue_reference_t<decltype(rng)>, Yield&&>) {
-      using std::begin;
-      using std::end;
-      auto&& b = begin(rng);
-      auto&& e = end(rng);
-      for (; b != e; ++b)
-        co_yield std::ranges::iter_move(b);
-    } else {
-      for (auto&& x : rng)
-        co_yield static_cast<Yield&&>(std::forward<decltype(x)>(x));
-    }
-  }
-
- public:
-  template <typename X>
-  static attach_leaf<Generator<Yield>> extract(elements_of<X>&& e) {
-    // captures range by reference, because its all in yield expression in the coroutine
-    return attach_leaf<Generator<Yield>>{do_extract(static_cast<X&&>(e.rng))};
+  static generator<Y> do_(auto* r) {
+    return to_generator<Y, generator<Y>>(static_cast<Rng&&>(*r));
   }
 };
+template <typename Rng, yieldable Y>
+struct extract_from<Rng, Y, channel> {
+  static channel<Y> do_(channel<Y>* g) {
+    return std::move(*g);
+  }
+  template <memory_resource R>
+  static channel<Y> do_(resourced<channel<Y>, R>* g) {
+    return do_(&g->decay());
+  }
+  template <yieldable OtherY>
+  static channel<Y> do_(channel<OtherY>* g) {
+    auto& c = *g;
+    // note: (void)(co_await) (++b)) only because gcc has bug, its not required
+    for (auto b = co_await c.begin(); b != c.end(); (void)(co_await (++b)))
+      co_yield static_cast<Y&&>(*b);
+  }
+  template <yieldable OtherY, memory_resource R>
+  static channel<Y> do_(resourced<channel<OtherY>, R>* g) {
+    return do_(&g->decay());
+  }
+  static channel<Y> do_(auto* r) {
+    return to_generator<Y, channel<Y>>(static_cast<Rng&&>(*r));
+  }
+};
+
+template <yieldable Y, template <typename> typename G, typename Rng>
+attach_leaf<G<Y>> create_and_attach_leaf(elements_of<Rng>&& e) {
+  return attach_leaf<G<Y>>{extract_from<Rng, Y, G>::do_(std::addressof(e.rng))};
+}
 
 template <typename Yield>
 struct hold_value_until_resume {
@@ -539,8 +601,45 @@ struct hold_value_until_resume {
     handle.promise().set_result(std::addressof(value));
     return handle.promise().consumer_handle();
   }
+  template <memory_resource R>
+  void await_suspend(std::coroutine_handle<resourced_promise<generator_promise<Yield>, R>> handle) noexcept {
+    // decay handle
+    return await_suspend(handle.promise().self_handle());
+  }
+  template <memory_resource R>
+  std::coroutine_handle<> await_suspend(
+      std::coroutine_handle<resourced_promise<channel_promise<Yield>, R>> handle) noexcept {
+    // decay handle
+    return await_suspend(handle.promise().self_handle());
+  }
   static constexpr void await_resume() noexcept {
   }
 };
 
 }  // namespace dd::noexport
+
+namespace std {
+
+template <::dd::noexport::coro Coro, ::dd::memory_resource R, typename... Args>
+struct coroutine_traits<::dd::resourced<Coro, R>, Args...> {
+  using promise_type = ::dd::resourced_promise<typename Coro::promise_type, R>;
+};
+
+template <::dd::noexport::coro Coro, typename... Args>
+  requires derived_from<Coro, ::dd::enable_resource_deduction>
+struct coroutine_traits<Coro, Args...> {
+ private:
+  template <typename Promise>
+  static auto deduct_promise() {
+    if constexpr (::dd::noexport::contains_1_resource_tag<Args...>())
+      return std::type_identity<::dd::resourced_promise<Promise, ::dd::find_resource_tag_t<Args...>>>{};
+    else
+      return std::type_identity<Promise>{};
+  }
+
+ public:
+  // if Args contain exactly ONE(1) 'with_resource<X>' it is used, otherwise Coro::promise_type selected
+  using promise_type = typename decltype(deduct_promise<typename Coro::promise_type>())::type;
+};
+
+}  // namespace std
