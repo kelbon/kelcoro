@@ -504,12 +504,18 @@ struct attach_leaf {
     root_p.current_worker = leaf_p.current_worker;
     return leaf_p.current_worker;
   }
+  // support yielding generators with different resource
+  template <memory_resource R>
+  auto await_suspend(std::coroutine_handle<resourced_promise<typename Leaf::promise_type, R>> handle) {
+    return await_suspend(handle.promise().self_handle());
+  }
   static constexpr void await_resume() noexcept {
   }
 };
 
 template <yieldable Y, typename Generator>
 Generator to_generator(auto&& rng) {
+  // 'rng' captured by ref because used as part of 'co_yield' expression
   if constexpr (!std::ranges::borrowed_range<decltype(rng)> &&
                 std::is_same_v<std::ranges::range_rvalue_reference_t<decltype(rng)>, Y&&>) {
     using std::begin;
@@ -582,6 +588,17 @@ struct hold_value_until_resume {
   std::coroutine_handle<> await_suspend(std::coroutine_handle<channel_promise<Yield>> handle) noexcept {
     handle.promise().set_result(std::addressof(value));
     return handle.promise().consumer_handle();
+  }
+  template <memory_resource R>
+  void await_suspend(std::coroutine_handle<resourced_promise<generator_promise<Yield>, R>> handle) noexcept {
+    // decay handle
+    return await_suspend(handle.promise().self_handle());
+  }
+  template <memory_resource R>
+  std::coroutine_handle<> await_suspend(
+      std::coroutine_handle<resourced_promise<channel_promise<Yield>, R>> handle) noexcept {
+    // decay handle
+    return await_suspend(handle.promise().self_handle());
   }
   static constexpr void await_resume() noexcept {
   }
