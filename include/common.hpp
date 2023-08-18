@@ -21,6 +21,20 @@
 #define KELCORO_UNREACHABLE (void)0
 #endif
 
+#if defined(_MSC_VER) && !defined(__clang__)
+#define KELCORO_LIFETIMEBOUND [[msvc::lifetimebound]]
+#elif defined(__clang__)
+#define KELCORO_LIFETIMEBOUND [[clang::lifetimebound]]
+#else
+#define KELCORO_LIFETIMEBOUND
+#endif
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#define KELCORO_PURE
+#else
+#define KELCORO_PURE [[gnu::pure]]
+#endif
+
 #ifdef _MSC_VER
 #define MSVC_EBO __declspec(empty_bases)
 #else

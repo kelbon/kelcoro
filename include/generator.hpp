@@ -42,7 +42,7 @@ struct generator_promise : not_movable {
   void set_result(Yield* v) const noexcept {
     *root->_current_result_ptr = v;
   }
-  [[gnu::pure]] handle_type self_handle() noexcept {
+  KELCORO_PURE handle_type self_handle() noexcept {
     return handle_type::from_promise(*this);
   }
 
@@ -131,7 +131,7 @@ struct generator_iterator {
     return static_cast<reference>(*self->current_result);
   }
   // * after invoking references to value from operator* are invalidated
-  generator_iterator& operator++() [[clang::lifetimebound]] {
+  generator_iterator& operator++() KELCORO_LIFETIMEBOUND {
     assert(!self->empty());
     self->top.promise().current_worker.resume();
     return *this;
@@ -233,7 +233,7 @@ struct generator : enable_resource_deduction {
   // * if .empty(), then begin() == end()
   // * produces next value(often first)
   // iterator invalidated only when generator dies
-  iterator begin() & [[clang::lifetimebound]] {
+  iterator begin() & KELCORO_LIFETIMEBOUND {
     if (!empty()) [[likely]] {
       top.promise()._current_result_ptr = &current_result;
       top.promise().current_worker.resume();

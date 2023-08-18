@@ -47,7 +47,7 @@ struct channel_promise : not_movable {
   void set_exception(std::exception_ptr e) const noexcept {
     exception() = e;
   }
-  [[gnu::pure]] handle_type self_handle() noexcept {
+  KELCORO_PURE handle_type self_handle() noexcept {
     return handle_type::from_promise(*this);
   }
 
@@ -271,7 +271,7 @@ struct channel : enable_resource_deduction {
  public:
   // * if .empty(), then co_await begin() == end()
   // produces next value(often first)
-  KELCORO_CO_AWAIT_REQUIRED starter begin() & noexcept [[clang::lifetimebound]] {
+  KELCORO_CO_AWAIT_REQUIRED starter begin() & noexcept KELCORO_LIFETIMEBOUND {
     return starter{*this};
   }
   static constexpr std::default_sentinel_t end() noexcept {
