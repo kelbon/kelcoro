@@ -23,8 +23,12 @@
 
 #ifdef _MSC_VER
 #define KELCORO_ASSUME(expr) __assume((expr))
-#elif defined(__GNUC__) || defined(__clang__)
+#elif defined(__clang__)
 #define KELCORO_ASSUME(expr) __builtin_assume((expr))
+#elif defined(__GNUC__)
+#define KELCORO_ASSUME(expr) \
+  if (!(expr))               \
+  __builtin_unreachable()
 #else
 #define KELCORO_ASSUME(expr) (void)(expr)
 #endif
