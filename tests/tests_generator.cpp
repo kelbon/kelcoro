@@ -743,6 +743,22 @@ CHANNEL_TEST(different_yields_channel) {
 }
 CO_TEST(different_yields_channel);
 
+dd::generator<int> byref_g(int& res) {
+  int i;
+  while (true) {
+    co_yield dd::by_ref{i};
+    res += i;
+  }
+}
+
+TEST(generator_as_output_range) {
+  std::vector v{1, 2, 3, 4, 5};
+  int res = 0;
+  std::copy(begin(v), end(v), byref_g(res).begin().out());
+  error_if(res != (1 + 2 + 3 + 4 + 5));
+  return error_count;
+}
+
 int main() {
   static_assert(::dd::memory_resource<new_delete_resource>);
   (void)flip();  // initalize random
@@ -815,6 +831,7 @@ int main() {
   RUN(chan_yield);
   RUN(different_yields);
   RUN(different_yields_channel);
+  RUN(generator_as_output_range);
   if (sz != 0 && sz != size_t(-1))
     std::exit(146);
   return ec;

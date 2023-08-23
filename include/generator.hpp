@@ -160,6 +160,19 @@ struct generator_iterator {
   void operator++(int) {
     ++(*this);
   }
+
+ private:
+  struct output_iterator : generator_iterator {
+    constexpr Yield& operator*() const noexcept {
+      Yield&& i = generator_iterator::operator*();
+      return i;
+    }
+  };
+
+ public:
+  auto out() && noexcept {
+    return output_iterator{*this};
+  }
 };
 
 // * produces first value when .begin called
@@ -255,7 +268,7 @@ struct generator : enable_resource_deduction {
   // * if .empty(), then begin() == end()
   // * produces next value(often first)
   // iterator invalidated only when generator dies
-  iterator begin() & KELCORO_LIFETIMEBOUND {
+  iterator begin() KELCORO_LIFETIMEBOUND {
     if (!empty()) [[likely]] {
       top.promise()._consumer = this;
       const auto* const top_address_before = top.address();
