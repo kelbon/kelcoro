@@ -26,7 +26,7 @@
 #include "events.hpp"
 
 // clang had bug which breaks all std::views
-#if __clang_major__ >= 15
+#if !defined(__clang_major__) || __clang_major__ >= 15
 
 #define error_if(Cond) error_count += static_cast<bool>((Cond))
 #define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
