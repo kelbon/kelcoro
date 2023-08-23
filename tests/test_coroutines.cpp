@@ -378,10 +378,13 @@ inline dd::event<void> four;
 
 dd::async_task<void> waiter_any(uint32_t& count) {
   co_await dd::jump_on(dd::new_thread_executor{});
-  for (int32_t i : std::views::iota(0, 100000)) {
-    (void)i;
+  std::mutex m;
+  int32_t i = 0;
+  while (i < 100000) {
     auto variant = co_await dd::when_any(one, two, three, four);
+    std::lock_guard l(m);
     count++;
+    ++i;
   }
 }
 dd::async_task<void> waiter_all(uint32_t& count) {
