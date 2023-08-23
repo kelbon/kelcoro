@@ -105,7 +105,7 @@ struct generator_promise : not_movable {
   };
 
  public:
-  auto final_suspend() const noexcept {
+  final_awaiter final_suspend() const noexcept {
     return final_awaiter{*this};
   }
   static constexpr void return_void() noexcept {

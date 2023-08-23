@@ -50,6 +50,13 @@ struct channel_promise : not_movable {
   KELCORO_PURE handle_type self_handle() noexcept {
     return handle_type::from_promise(*this);
   }
+  void skip_this_leaf() const noexcept {
+    KELCORO_ASSUME(root != this);
+    channel_promise& owner_p = _owner.promise();
+    KELCORO_ASSUME(&owner_p != this);
+    owner_p.root = root;
+    root->current_worker = _owner;
+  }
 
  public:
   constexpr channel_promise() noexcept {
@@ -80,23 +87,33 @@ struct channel_promise : not_movable {
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
-  transfer_control_to final_suspend() const noexcept {
-    if (root != this) {
-      root->current_worker = owner();
-      root->current_worker.promise().root = root;
-      return transfer_control_to{owner()};
+  struct final_awaiter {
+    const channel_promise& self;
+    static constexpr bool await_ready() noexcept {
+      return false;
     }
-    set_result(nullptr);
-    return transfer_control_to{consumer_handle()};
+    static constexpr void await_resume() noexcept {
+    }
+    constexpr std::coroutine_handle<> await_suspend(std::coroutine_handle<>) const noexcept {
+      if (self.root != &self) {
+        self.skip_this_leaf();
+        return self.owner();
+      }
+      self.set_result(nullptr);
+      return self.consumer_handle();
+    }
+  };
+  final_awaiter final_suspend() const noexcept {
+    return final_awaiter{*this};
   }
   static constexpr void return_void() noexcept {
   }
-  void unhandled_exception() {
+  void unhandled_exception() noexcept {
     // case when already was exception, its not handled yet and next generated
     if (exception() != nullptr) [[unlikely]]
       std::terminate();
     if (root != this)
-      (void)final_suspend();  // up owner(we are done)
+      skip_this_leaf();
     // consumer sees nullptr and stop iterating,
     // if consumer catches/ignores exception and calls .begin again, he will observe elements from owner,
     // effectifelly we will skip failed leaf
