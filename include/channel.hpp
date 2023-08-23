@@ -246,9 +246,9 @@ struct channel : enable_resource_deduction {
   }
 
   bool operator==(const channel& other) const noexcept {
-    if (empty())
-      return other.empty();
-    return this == &other;  // invariant: coro handle has only one owner
+    if (this == &other)  // invariant: coro handle has only one owner
+      return true;
+    return empty() && other.empty();
   }
 
  private:

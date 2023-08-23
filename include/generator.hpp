@@ -254,9 +254,9 @@ struct generator : enable_resource_deduction {
   }
 
   bool operator==(const generator& other) const noexcept {
-    if (empty())
-      return other.empty();
-    return this == &other;  // invariant: coro handle has only one owner
+    if (this == &other)  // invariant: coro handle has only one owner
+      return true;
+    return empty() && other.empty();
   }
 
   // * if .empty(), then begin() == end()
