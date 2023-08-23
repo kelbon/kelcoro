@@ -1,34 +1,45 @@
-# KelCoro - C++20 coroutine library for C++
-* [`How to build?`](#build)
+# kelcoro - C++20 coroutines library
 
-Library consists of
-* small common part, usefull for all coroutines, including your own created
-  * tags elements_of and by_ref for generator and channel
-  * with_resource - easy to use allocation customization
-  * enable_memory_resource_support - for your own coroutines
-  * [`jump_on(Executor)`](#jump_on)
-  * always_done_coroutine
-  * etc... see all in 'include/common.hpp'
-* coroutines
+clang, gcc, msvc
+[![](
+https://github.com/kelbon/kelcoro/actions/workflows/build_and_test.yaml/badge.svg?branch=main)](
+https://github.com/kelbon/kelcoro/actions/workflows/build_and_test.yaml)
+
+* [`How to build?`](#build)
+  
   * [`generator<T>`](#generatort)
   * [`channel<T>`](#channelt)
   * [`logical_thread`](#logical_thread)
   * [`job`](#job)
   * [`async_task<T>`](#async_taskt)
   * [`task<T>`](#taskt)
+
+<details>
+	<summary>How to customize allocations?</summary>
+Library uses memory resources(see concept `dd::memory_resource`)
+
+By default all coroutines deduct memory resource from arguments
+
+All coroutines have *_r version, for example `generator_r`, such alias will use selected memory resource for allocations (if required),
+
+for example:
+
+```C++
+generator<int> g();                                // will use operator new if required
+generator<int> g(int, dd::with_resource<Resource>) // will use 'Resource' if allocation required
+```
+Also all coroutines have `dd::pmr::*` version which can use std::pmr::memory_resource using `dd::pass_resource` or default, if not passed (you can set default polymorphic memory resource globally)
+```C++
+std::pmr::memory_resource& get_default_resource() noexcept
+std::pmr::memory_resource& set_default_resource(std::pmr::memory_resource& r) noexcept;
+// next coroutine with 'dd::polymorphic_resource' on this thread will use 'm' for allocation
+void pass_resource(std::pmr::memory_resource& m) noexcept;
+```
+</details>
+	
 * Functions or seems like functions
-
   * [`stop(Args...)`](#stop)
-* Event system
-  * [`event`](#eventt)
-  * [`when_all`](#when_all)
-  * [`when_any`](#when_any)
-* Concepts
-  * [`co_awaiter`](#co_awaiter)
-  * [`co_awaitable`](#co_awaitable)
-  * [`executor`](#executor)
-
-# Primitives:
+  * [`jump_on(Executor)`](#jump_on)
 
 ## `generator<T>`
 interface:
@@ -68,11 +79,26 @@ interface:
 
    
  notes:
-  * operator* of iterator returns rvalue reference to value, but if you yield 'by_ref(v)' you can change value and generator will observe changes
-  * generator ignores fact, that 'destroy' may throw exception from destructor of object in coroutine, it
-  will lead to std::terminate
-  * if exception was throwed from recursivelly co_yielded generator, then this leaf just skipped and caller
-  can continue iterating after catch(requires new .begin call)
+  * tag `dd::elements_of(RNG)` accepts range(including other generator) and yields all elements of it more effectively, then for-loop
+  * tag `by_ref` allows to yield lvalue referencnes, so caller may get reference from iterator's operator* and change value, so generator will observe changes.
+This allows usage generator as in-place output range, which may be very cose
+Example:
+```C++
+dd::generator<int> printer() {
+  int i;
+  while (true) {
+    co_yield dd::by_ref{i};
+    print(i);
+  }
+}
+
+void print_foo(std::vector<int> values) {
+  // prints all values
+  std::copy(begin(values), end(values), printer().begin().out());
+  return error_count;
+}
+```
+  * operator* of iterator returns rvalue reference to value, so `for(std::string s : generator())` is effective code(one move from generator)
 
 example:
 ```C++
@@ -174,7 +200,7 @@ channel<int> ints_creator() {
     // any hard working for calculating i
     for (int i = 0; i < 10; ++i)
       co_yield i; // control returns to caller ONLY after co_yield!
-    co_yield elements_of(std::vector{1, 2, 3, 4, 5});
+    co_yield elements_of(std::vector{1, 2, 3, 4, 5}); // accepts range or other channel
   }
 }
 
@@ -198,87 +224,13 @@ task is lazy (starts only when co_awaited)
 
 example: see async_task example =)
 
-# Memory allocations for coroutines
-Every coroutine supports allocation customization, just use 'with_resource'
-
-example:
-```C++
-  my_resource r; // inheritor of std::pmr::memory_resource
-  dd::with_resource _(r); // every coroutine created on this thread until '_' dies will use 'r' as memory resource
-  foo();
-```
-
 # Usefull
+
 ## `jump_on`
 co_await jump_on(Executor) equals to suspending coroutine and resume it on Executor(with .execute method), for example it can be thread pool
 or dd::this_thread_executor(executes all on this thread) / dd::noop_executor etc
 ## `stop`
 more effective way to stop(request_stop + join) for many stopable arguments or range of such type.
-
-# Event system
-
-## `event<T>`
-interface:
-```C++
-  template <executor Executor>
-  bool notify_all(Executor&& exe, input_type input);
-
-  // subscribe for not coroutines(allocator for task allocating)
-  template <typename Alloc = std::allocator<std::byte>, typename F>
-  void set_callback(F f, Alloc alloc = Alloc{});
-
-  // subscribe, but only for coroutines
-  auto operator co_await();
-```
-example:
-
-```C++
-inline dd::event<int> e1 = {};
-
-dd::job waiter() {
-  while (true) {
-    int i = co_await e1;
-    foo(i);
-  }
-}
-dd::logical_thread notifier() {
-  co_await dd::jump_on(dd::new_thread_executor{});
-  dd::stop_token tok = co_await dd::this_coro::stop_token;
-  while(true) {
-    e1.notify_all(dd::this_thread_executor{}, 1);
-    if (tok.stop_requested())
-      co_return;
-  }
-}
-```
-
-## `when_all`
-```C++
-template <typename... Inputs>
-co_awaitable auto when_all(event<Inputs>&... events);
-```
-## `when_any`
-```C++
-template <typename... Inputs>
-co_awaitable auto when_any(event<Inputs>&... events);
-```
-
-# Concepts
-## `co_awaiter`
-```C++
-template <typename T>
-concept co_awaiter = requires(T value) {
-  { value.await_ready() } -> std::same_as<bool>;
-  value.await_resume();
-};
-```
-## `co_awaitable`
-```C++
-template <typename T>
-concept co_awaitable = has_member_co_await<T> || has_global_co_await<T> || co_awaiter<T>;
-```
-## `executor`
-something with .execute([]{}) method
 
 ## `build`
 ```CMake
