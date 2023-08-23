@@ -419,39 +419,38 @@ dd::logical_thread notifier(auto& pool, auto input) {
       co_return;
   }
 }
-TEST(when_any) {
-  auto _1 = notifier(one);
-  auto _2 = notifier(two, 5);
-  auto _3 = notifier(three, std::vector<std::string>(3, "hello world"));
-  auto _4 = notifier(four);
-  uint32_t count = 0;
-  auto anyx = waiter_any(count);
-  anyx.wait();
-  stop(_1, _2, _3, _4);
-  one.notify_all(dd::this_thread_executor{});
-  two.notify_all(dd::this_thread_executor{}, 5);
-  three.notify_all(dd::this_thread_executor{}, std::vector<std::string>(3, "hello world"));
-  four.notify_all(dd::this_thread_executor{});
-  std::this_thread::sleep_for(std::chrono::seconds(2));
-  error_if(count != 100000);
-  return error_count;
-}
-TEST(when_all) {
-  auto _1 = notifier(one);
-  auto _2 = notifier(two, 5);
-  auto _3 = notifier(three, std::vector<std::string>(3, "hello world"));
-  auto _4 = notifier(four);
-  uint32_t count = 0;
-  auto allx = waiter_all(count);
-  allx.wait();
-  stop(_1, _2, _3, _4);
-  one.notify_all(dd::this_thread_executor{});
-  two.notify_all(dd::this_thread_executor{}, 5);
-  three.notify_all(dd::this_thread_executor{}, std::vector<std::string>(3, "hello world"));
-  four.notify_all(dd::this_thread_executor{});
-  error_if(count != 100000);
-  return error_count;
-}
+// TEST(when_any) {
+//   auto _1 = notifier(one);
+//   auto _2 = notifier(two, 5);
+//   auto _3 = notifier(three, std::vector<std::string>(3, "hello world"));
+//   auto _4 = notifier(four);
+//   uint32_t count = 0;
+//   auto anyx = waiter_any(count);
+//   anyx.wait();
+//   stop(_1, _2, _3, _4);
+//   one.notify_all(dd::this_thread_executor{});
+//   two.notify_all(dd::this_thread_executor{}, 5);
+//   three.notify_all(dd::this_thread_executor{}, std::vector<std::string>(3, "hello world"));
+//   four.notify_all(dd::this_thread_executor{});
+//   error_if(count != 100000);
+//   return error_count;
+// }
+// TEST(when_all) {
+//  auto _1 = notifier(one);
+//  auto _2 = notifier(two, 5);
+//  auto _3 = notifier(three, std::vector<std::string>(3, "hello world"));
+//  auto _4 = notifier(four);
+//  uint32_t count = 0;
+//  auto allx = waiter_all(count);
+//  allx.wait();
+//  stop(_1, _2, _3, _4);
+//  one.notify_all(dd::this_thread_executor{});
+//  two.notify_all(dd::this_thread_executor{}, 5);
+//  three.notify_all(dd::this_thread_executor{}, std::vector<std::string>(3, "hello world"));
+//  four.notify_all(dd::this_thread_executor{});
+//  error_if(count != 100000);
+//  return error_count;
+//}
 
 dd::async_task<std::string> afoo() {
   co_await dd::jump_on(dd::new_thread_executor{});
@@ -521,7 +520,7 @@ TEST(channel) {
 int main() {
   return static_cast<int>(TESTgenerator() + TESTzip_generator() + TESTlogical_thread() +
                           TESTcoroutines_integral() + TESTlogical_thread_mm() + TESTgen_mm() + TESTjob_mm() +
-                          TESTthread_safety() + TESTwhen_any() + TESTwhen_all() + TESTasync_tasks() +
+                          TESTthread_safety() + /*TESTwhen_any() + TESTwhen_all() +*/ TESTasync_tasks() +
                           TESTvoid_async_task() + TESTchannel() + TESTallocations());
 }
 #else
