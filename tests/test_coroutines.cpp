@@ -432,6 +432,7 @@ TEST(when_any) {
   two.notify_all(dd::this_thread_executor{}, 5);
   three.notify_all(dd::this_thread_executor{}, std::vector<std::string>(3, "hello world"));
   four.notify_all(dd::this_thread_executor{});
+  std::this_thread::sleep_for(std::chrono::seconds(2));
   error_if(count != 100000);
   return error_count;
 }
