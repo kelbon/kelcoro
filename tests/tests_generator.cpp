@@ -45,6 +45,7 @@ static_assert(std::input_iterator<dd::generator_iterator<int>>);
 TEST(empty) {
   dd::generator<int> g;
   error_if(!g.empty());
+  error_if(g != dd::generator<int>{});
   for (auto x : g)
     error_if(true);
   return error_count;
@@ -59,15 +60,19 @@ G<int> base_case() {
 }
 TEST(base) {
   int j = 0;
-  for (int i : base_case<dd::generator>()) {
+  auto g = base_case<dd::generator>();
+  for (int i : g) {
     error_if(j != i);
     ++j;
   }
+  error_if(g != dd::generator<int>{});
   return error_count;
 }
 channel<float> base_case_chan() {
   channel<int> c = base_case<channel>();
   co_yield elements_of(c);
+  if (c != channel<int>{})
+    throw std::runtime_error{"base case chan failed"};
 }
 CHANNEL_TEST(chan_yield) {
   std::vector<int> v;
@@ -108,6 +113,7 @@ CO_TEST(base_channel);
 CHANNEL_TEST(empty_channel) {
   dd::channel<int> g;
   error_if(!g.empty());
+  error_if(g != dd::channel<int>{});
   co_foreach(auto&& x, g) error_if(true);
   co_return error_count;
 }
@@ -340,7 +346,7 @@ TEST(nontrivial_references) {
 }
 
 // clang had bug which breaks all std::views
-#if __clang_major__ >= 15
+#if !defined(__clang_major__) || __clang_major__ >= 15
 
 TEST(ranges_recursive) {
   int i = 0;
@@ -556,7 +562,7 @@ CHANNEL_TEST(toplevel_throw_channel) {
 CO_TEST(toplevel_throw_channel);
 
 // clang had bug which breaks all std::views
-#if __clang_major__ >= 15
+#if !defined(__clang_major__) || __clang_major__ >= 15
 
 CHAN_OR_GEN
 G<int> inp() {
@@ -780,7 +786,7 @@ int main() {
   RUN(nontrivial_references);
   RUN(empty_recursive2);
   // clang had bug which breaks all std::views
-#if __clang_major__ >= 15
+#if !defined(__clang_major__) || __clang_major__ >= 15
   RUN(ranges_recursive);
   RUN(ranges_base2);
 #endif  // clang bug
@@ -800,7 +806,7 @@ int main() {
 #endif
   RUN(toplevel_throw_channel);
   // clang had bug which breaks all std::views
-#if __clang_major__ >= 15
+#if !defined(__clang_major__) || __clang_major__ >= 15
   RUN(input_rng);
   RUN(input_rng_channel);
 #endif  // clang bug

@@ -29,7 +29,7 @@ struct channel_promise : not_movable {
   };
 
   handle_type owner() const noexcept {
-    assert(root != this);
+    KELCORO_ASSUME(root != this);
     return _owner;
   }
   channel<Yield>* consumer() const noexcept {
@@ -49,6 +49,13 @@ struct channel_promise : not_movable {
   }
   KELCORO_PURE handle_type self_handle() noexcept {
     return handle_type::from_promise(*this);
+  }
+  void skip_this_leaf() const noexcept {
+    KELCORO_ASSUME(root != this);
+    channel_promise& owner_p = _owner.promise();
+    KELCORO_ASSUME(&owner_p != this);
+    owner_p.root = root;
+    root->current_worker = _owner;
   }
 
  public:
@@ -80,23 +87,31 @@ struct channel_promise : not_movable {
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
-  transfer_control_to final_suspend() const noexcept {
+  // *this is an final awaiter for size optimization
+  static constexpr bool await_ready() noexcept {
+    return false;
+  }
+  static constexpr void await_resume() noexcept {
+  }
+  constexpr std::coroutine_handle<> await_suspend(std::coroutine_handle<>) const noexcept {
     if (root != this) {
-      root->current_worker = owner();
-      root->current_worker.promise().root = root;
-      return transfer_control_to{owner()};
+      skip_this_leaf();
+      return owner();
     }
     set_result(nullptr);
-    return transfer_control_to{consumer_handle()};
+    return consumer_handle();
+  }
+  const channel_promise& final_suspend() const noexcept {
+    return *this;
   }
   static constexpr void return_void() noexcept {
   }
-  void unhandled_exception() {
+  void unhandled_exception() noexcept {
     // case when already was exception, its not handled yet and next generated
     if (exception() != nullptr) [[unlikely]]
       std::terminate();
     if (root != this)
-      (void)final_suspend();  // up owner(we are done)
+      skip_this_leaf();
     // consumer sees nullptr and stop iterating,
     // if consumer catches/ignores exception and calls .begin again, he will observe elements from owner,
     // effectifelly we will skip failed leaf
@@ -128,17 +143,17 @@ struct channel_iterator : not_movable {
     return chan;
   }
 
-  constexpr bool operator==(std::default_sentinel_t) const noexcept {
+  KELCORO_PURE constexpr bool operator==(std::default_sentinel_t) const noexcept {
     return chan.current_result == nullptr;
   }
   // * returns rvalue ref
   reference operator*() const noexcept {
-    assert(*this != std::default_sentinel);
+    KELCORO_ASSUME(*this != std::default_sentinel);
     return static_cast<reference>(*chan.current_result);
   }
   // * after invoking references to value from operator* are invalidated
   KELCORO_CO_AWAIT_REQUIRED transfer_control_to operator++() noexcept {
-    assert(*this != std::default_sentinel);
+    KELCORO_ASSUME(!chan.empty());
     return transfer_control_to{chan.top.promise().current_worker};
   }
 
@@ -151,13 +166,13 @@ struct channel_iterator : not_movable {
   }
 };
 
-// co_await on empty channel produces nullptr
+// same as 'generator', but may suspend before 'yield'
+//
 // for using see macro co_foreach(value, channel)
 // or use manually
 //   for(auto it = co_await chan.begin(); it != chan.end(); co_await ++it)
 //       auto&& v = *it;
 //
-// about R - see 'dd::with_resource'
 template <yieldable Yield>
 struct channel : enable_resource_deduction {
   using promise_type = channel_promise<Yield>;
@@ -221,8 +236,10 @@ struct channel : enable_resource_deduction {
   }
   // postcondition: .empty()
   constexpr void clear() noexcept {
-    if (top)
-      std::exchange(top, nullptr).destroy();
+    if (top) {
+      top.destroy();
+      top = nullptr;
+    }
   }
   ~channel() {
     clear();
@@ -230,7 +247,7 @@ struct channel : enable_resource_deduction {
 
   // observers
 
-  constexpr bool empty() const noexcept {
+  KELCORO_PURE constexpr bool empty() const noexcept {
     return !top || top.done();
   }
   constexpr explicit operator bool() const noexcept {
@@ -244,9 +261,9 @@ struct channel : enable_resource_deduction {
   }
 
   bool operator==(const channel& other) const noexcept {
-    if (empty())
-      return other.empty();
-    return this == &other;  // invariant: coro handle has only one owner
+    if (this == &other)  // invariant: coro handle has only one owner
+      return true;
+    return empty() && other.empty();
   }
 
  private:

@@ -31,19 +31,26 @@ struct generator_promise : not_movable {
   generator_promise* root = this;
   handle_type current_worker = self_handle();
   union {
-    Yield** _current_result_ptr;  // setted only in root
+    generator<Yield>* _consumer;  // setted only in root
     handle_type _owner;           // setted only in leafs
   };
 
   handle_type owner() const noexcept {
-    assert(root != this);
+    KELCORO_ASSUME(root != this);
     return _owner;
   }
-  void set_result(Yield* v) const noexcept {
-    *root->_current_result_ptr = v;
+  void set_result(Yield* p) const noexcept {
+    root->_consumer->current_result = p;
   }
   KELCORO_PURE handle_type self_handle() noexcept {
     return handle_type::from_promise(*this);
+  }
+  void skip_this_leaf() const noexcept {
+    KELCORO_ASSUME(root != this);
+    generator_promise& owner_p = _owner.promise();
+    KELCORO_ASSUME(&owner_p != this);
+    owner_p.root = root;
+    root->current_worker = _owner;
   }
 
  public:
@@ -78,20 +85,29 @@ struct generator_promise : not_movable {
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
-  transfer_control_to final_suspend() const noexcept {
+
+  // *this is an final awaiter for size optimization
+  static constexpr bool await_ready() noexcept {
+    return false;
+  }
+  static constexpr void await_resume() noexcept {
+  }
+  constexpr std::coroutine_handle<> await_suspend(std::coroutine_handle<>) const noexcept {
     if (root != this) {
-      root->current_worker = owner();
-      root->current_worker.promise().root = root;
-      return transfer_control_to{owner()};
+      skip_this_leaf();
+      return owner();
     }
     set_result(nullptr);
-    return transfer_control_to{std::noop_coroutine()};
+    return std::noop_coroutine();
+  }
+  const generator_promise& final_suspend() const noexcept {
+    return *this;
   }
   static constexpr void return_void() noexcept {
   }
   [[noreturn]] void unhandled_exception() {
     if (root != this)
-      (void)final_suspend();  // skip this leaf
+      skip_this_leaf();
     set_result(nullptr);
     throw;
   }
@@ -122,18 +138,23 @@ struct generator_iterator {
     return *self;
   }
 
-  constexpr bool operator==(std::default_sentinel_t) const noexcept {
+  KELCORO_PURE constexpr bool operator==(std::default_sentinel_t) const noexcept {
     return self->current_result == nullptr;
   }
   // * returns rvalue ref
   constexpr reference operator*() const noexcept {
-    assert(*this != std::default_sentinel);
+    KELCORO_ASSUME(*this != std::default_sentinel);
     return static_cast<reference>(*self->current_result);
   }
   // * after invoking references to value from operator* are invalidated
   generator_iterator& operator++() KELCORO_LIFETIMEBOUND {
-    assert(!self->empty());
+    KELCORO_ASSUME(!self->empty());
+    const auto* const self_before = self;
+    const auto* const top_address_before = self->top.address();
     self->top.promise().current_worker.resume();
+    KELCORO_ASSUME(self_before == self);
+    const auto* const top_address_after = self->top.address();
+    KELCORO_ASSUME(top_address_before == top_address_after);
     return *this;
   }
   void operator++(int) {
@@ -150,7 +171,6 @@ struct generator_iterator {
 //  * if exception was throwed from recursivelly co_yielded generator, then this leaf just skipped and caller
 //  can continue iterating after catch(requires new .begin call)
 //
-// about R - see 'with_resource'
 template <yieldable Yield>
 struct generator : enable_resource_deduction {
   using promise_type = generator_promise<Yield>;
@@ -208,8 +228,10 @@ struct generator : enable_resource_deduction {
   }
   // postcondition: .empty()
   constexpr void clear() noexcept {
-    if (top)
-      std::exchange(top, nullptr).destroy();
+    if (top) {
+      top.destroy();
+      top = nullptr;
+    }
   }
   constexpr ~generator() {
     clear();
@@ -217,7 +239,7 @@ struct generator : enable_resource_deduction {
 
   // observers
 
-  constexpr bool empty() const noexcept {
+  KELCORO_PURE constexpr bool empty() const noexcept {
     return !top || top.done();
   }
   constexpr explicit operator bool() const noexcept {
@@ -225,9 +247,9 @@ struct generator : enable_resource_deduction {
   }
 
   bool operator==(const generator& other) const noexcept {
-    if (empty())
-      return other.empty();
-    return this == &other;  // invariant: coro handle has only one owner
+    if (this == &other)  // invariant: coro handle has only one owner
+      return true;
+    return empty() && other.empty();
   }
 
   // * if .empty(), then begin() == end()
@@ -235,8 +257,11 @@ struct generator : enable_resource_deduction {
   // iterator invalidated only when generator dies
   iterator begin() & KELCORO_LIFETIMEBOUND {
     if (!empty()) [[likely]] {
-      top.promise()._current_result_ptr = &current_result;
+      top.promise()._consumer = this;
+      const auto* const top_address_before = top.address();
       top.promise().current_worker.resume();
+      const auto* const top_address_after = top.address();
+      KELCORO_ASSUME(top_address_before == top_address_after);
     }
     return iterator{*this};
   }

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstring>  // memcpy
 #include <utility>
 #include <type_traits>
 #include <cstddef>
@@ -19,6 +18,20 @@
 #define KELCORO_UNREACHABLE __assume(false)
 #else
 #define KELCORO_UNREACHABLE (void)0
+#endif
+
+#if !defined(NDEBUG)
+#define KELCORO_ASSUME(expr) assert(expr)
+#elif defined(_MSC_VER)
+#define KELCORO_ASSUME(expr) __assume((expr))
+#elif defined(__clang__)
+#define KELCORO_ASSUME(expr) __builtin_assume((expr))
+#elif defined(__GNUC__)
+#define KELCORO_ASSUME(expr) \
+  if (!(expr))               \
+  __builtin_unreachable()
+#else
+#define KELCORO_ASSUME(expr) (void)(expr)
 #endif
 
 #if defined(_MSC_VER) && !defined(__clang__)
