@@ -36,7 +36,7 @@ struct generator_promise : not_movable {
   };
 
   handle_type owner() const noexcept {
-    assert(root != this);
+    KELCORO_ASSUME(root != this);
     return _owner;
   }
   void set_result(Yield* v) const noexcept {
@@ -44,6 +44,13 @@ struct generator_promise : not_movable {
   }
   KELCORO_PURE handle_type self_handle() noexcept {
     return handle_type::from_promise(*this);
+  }
+  void skip_this_leaf() const noexcept {
+    KELCORO_ASSUME(root != this);
+    generator_promise& owner_p = _owner.promise();
+    KELCORO_ASSUME(&owner_p != this);
+    owner_p.root = root;
+    root->current_worker = _owner;
   }
 
  public:
@@ -78,20 +85,34 @@ struct generator_promise : not_movable {
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
-  transfer_control_to final_suspend() const noexcept {
-    if (root != this) {
-      root->current_worker = owner();
-      root->current_worker.promise().root = root;
-      return transfer_control_to{owner()};
+
+ private:
+  struct final_awaiter {
+    const generator_promise& self;
+    static constexpr bool await_ready() noexcept {
+      return false;
     }
-    set_result(nullptr);
-    return transfer_control_to{std::noop_coroutine()};
+    static constexpr void await_resume() noexcept {
+    }
+    constexpr std::coroutine_handle<> await_suspend(std::coroutine_handle<>) const noexcept {
+      if (self.root != &self) {
+        self.skip_this_leaf();
+        return self.owner();
+      }
+      self.set_result(nullptr);
+      return std::noop_coroutine();
+    }
+  };
+
+ public:
+  auto final_suspend() const noexcept {
+    return final_awaiter{*this};
   }
   static constexpr void return_void() noexcept {
   }
   [[noreturn]] void unhandled_exception() {
     if (root != this)
-      (void)final_suspend();  // skip this leaf
+      skip_this_leaf();
     set_result(nullptr);
     throw;
   }
@@ -127,12 +148,13 @@ struct generator_iterator {
   }
   // * returns rvalue ref
   constexpr reference operator*() const noexcept {
-    assert(*this != std::default_sentinel);
+    KELCORO_ASSUME(self->current_result != nullptr);
     return static_cast<reference>(*self->current_result);
   }
   // * after invoking references to value from operator* are invalidated
   generator_iterator& operator++() KELCORO_LIFETIMEBOUND {
-    assert(!self->empty());
+    const bool b = !self->empty();
+    KELCORO_ASSUME(b);
     const auto* const self_before = self;
     const auto* const top_address_before = self->top.address();
     self->top.promise().current_worker.resume();
@@ -224,7 +246,7 @@ struct generator : enable_resource_deduction {
 
   // observers
 
-  constexpr bool empty() const noexcept {
+  KELCORO_PURE constexpr bool empty() const noexcept {
     return !top || top.done();
   }
   constexpr explicit operator bool() const noexcept {
