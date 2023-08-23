@@ -202,7 +202,8 @@ TEST(zip_generator) {
   std::vector<size_t> vec;
   vec.resize(12, 20);
   std::string sz = "Hello world";
-  for (auto [a, b, c] : zip(vec, sz, std::string_view(sz))) {
+  std::string_view sz_view = sz;
+  for (auto [a, b, c] : zip(vec, sz, sz_view)) {
     error_if(a != 20);
   }
   return error_count;
