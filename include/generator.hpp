@@ -31,7 +31,7 @@ struct generator_promise : not_movable {
   generator_promise* root = this;
   handle_type current_worker = self_handle();
   union {
-    Yield** _current_result_ptr;  // setted only in root
+    generator<Yield>* _consumer;  // setted only in root
     handle_type _owner;           // setted only in leafs
   };
 
@@ -39,8 +39,8 @@ struct generator_promise : not_movable {
     KELCORO_ASSUME(root != this);
     return _owner;
   }
-  void set_result(Yield* v) const noexcept {
-    *root->_current_result_ptr = v;
+  void set_result(Yield* p) const noexcept {
+    root->_consumer->current_result = p;
   }
   KELCORO_PURE handle_type self_handle() noexcept {
     return handle_type::from_promise(*this);
@@ -257,7 +257,7 @@ struct generator : enable_resource_deduction {
   // iterator invalidated only when generator dies
   iterator begin() & KELCORO_LIFETIMEBOUND {
     if (!empty()) [[likely]] {
-      top.promise()._current_result_ptr = &current_result;
+      top.promise()._consumer = this;
       const auto* const top_address_before = top.address();
       top.promise().current_worker.resume();
       const auto* const top_address_after = top.address();
