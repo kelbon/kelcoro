@@ -86,27 +86,22 @@ struct generator_promise : not_movable {
     return {};
   }
 
- private:
-  struct final_awaiter {
-    const generator_promise& self;
-    static constexpr bool await_ready() noexcept {
-      return false;
+  // *this is an final awaiter for size optimization
+  static constexpr bool await_ready() noexcept {
+    return false;
+  }
+  static constexpr void await_resume() noexcept {
+  }
+  constexpr std::coroutine_handle<> await_suspend(std::coroutine_handle<>) const noexcept {
+    if (root != this) {
+      skip_this_leaf();
+      return owner();
     }
-    static constexpr void await_resume() noexcept {
-    }
-    constexpr std::coroutine_handle<> await_suspend(std::coroutine_handle<>) const noexcept {
-      if (self.root != &self) {
-        self.skip_this_leaf();
-        return self.owner();
-      }
-      self.set_result(nullptr);
-      return std::noop_coroutine();
-    }
-  };
-
- public:
-  final_awaiter final_suspend() const noexcept {
-    return final_awaiter{*this};
+    set_result(nullptr);
+    return std::noop_coroutine();
+  }
+  const generator_promise& final_suspend() const noexcept {
+    return *this;
   }
   static constexpr void return_void() noexcept {
   }
@@ -143,18 +138,17 @@ struct generator_iterator {
     return *self;
   }
 
-  constexpr bool operator==(std::default_sentinel_t) const noexcept {
+  KELCORO_PURE constexpr bool operator==(std::default_sentinel_t) const noexcept {
     return self->current_result == nullptr;
   }
   // * returns rvalue ref
   constexpr reference operator*() const noexcept {
-    KELCORO_ASSUME(self->current_result != nullptr);
+    KELCORO_ASSUME(*this != std::default_sentinel);
     return static_cast<reference>(*self->current_result);
   }
   // * after invoking references to value from operator* are invalidated
   generator_iterator& operator++() KELCORO_LIFETIMEBOUND {
-    const bool b = !self->empty();
-    KELCORO_ASSUME(b);
+    KELCORO_ASSUME(!self->empty());
     const auto* const self_before = self;
     const auto* const top_address_before = self->top.address();
     self->top.promise().current_worker.resume();
@@ -177,7 +171,6 @@ struct generator_iterator {
 //  * if exception was throwed from recursivelly co_yielded generator, then this leaf just skipped and caller
 //  can continue iterating after catch(requires new .begin call)
 //
-// about R - see 'with_resource'
 template <yieldable Yield>
 struct generator : enable_resource_deduction {
   using promise_type = generator_promise<Yield>;
