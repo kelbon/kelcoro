@@ -221,8 +221,10 @@ struct channel : enable_resource_deduction {
   }
   // postcondition: .empty()
   constexpr void clear() noexcept {
-    if (top)
-      std::exchange(top, nullptr).destroy();
+    if (top) {
+      top.destroy();
+      top = nullptr;
+    }
   }
   ~channel() {
     clear();
