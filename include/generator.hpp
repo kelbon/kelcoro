@@ -133,12 +133,7 @@ struct generator_iterator {
   // * after invoking references to value from operator* are invalidated
   generator_iterator& operator++() KELCORO_LIFETIMEBOUND {
     assert(!self->empty());
-    const auto* const self_before = self;
-    const auto* const top_address_before = self->top.address();
     self->top.promise().current_worker.resume();
-    KELCORO_ASSUME(self_before == self);
-    const auto* const top_address_after = self->top.address();
-    KELCORO_ASSUME(top_address_before == top_address_after);
     return *this;
   }
   void operator++(int) {
@@ -241,10 +236,7 @@ struct generator : enable_resource_deduction {
   iterator begin() & KELCORO_LIFETIMEBOUND {
     if (!empty()) [[likely]] {
       top.promise()._current_result_ptr = &current_result;
-      const auto* const top_address_before = top.address();
       top.promise().current_worker.resume();
-      const auto* const top_address_after = top.address();
-      KELCORO_ASSUME(top_address_before == top_address_after);
     }
     return iterator{*this};
   }
