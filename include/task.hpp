@@ -64,7 +64,8 @@ struct task : enable_resource_deduction {
       assert(task_handle != nullptr && !task_handle.done());
       return false;
     }
-    std::coroutine_handle<void> await_suspend(std::coroutine_handle<void> handle) const noexcept {
+    KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<void> await_suspend(
+        std::coroutine_handle<void> handle) const noexcept {
       task_handle.promise().who_waits = handle;
       // symmetric transfer control to task
       return task_handle;

@@ -93,7 +93,8 @@ struct channel_promise : not_movable {
   }
   static constexpr void await_resume() noexcept {
   }
-  constexpr std::coroutine_handle<> await_suspend(std::coroutine_handle<>) const noexcept {
+  KELCORO_ASSUME_NOONE_SEES constexpr std::coroutine_handle<> await_suspend(
+      std::coroutine_handle<>) const noexcept {
     if (root != this) {
       skip_this_leaf();
       return owner();
@@ -275,7 +276,8 @@ struct channel : enable_resource_deduction {
     bool await_ready() const noexcept {
       return self.empty();
     }
-    std::coroutine_handle<> await_suspend(std::coroutine_handle<> consumer) noexcept {
+    KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<> await_suspend(
+        std::coroutine_handle<> consumer) noexcept {
       self.handle = consumer;
       self.top.promise()._consumer = &self;
       return self.top.promise().current_worker;

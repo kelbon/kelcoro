@@ -92,7 +92,8 @@ struct generator_promise : not_movable {
   }
   static constexpr void await_resume() noexcept {
   }
-  constexpr std::coroutine_handle<> await_suspend(std::coroutine_handle<>) const noexcept {
+  KELCORO_ASSUME_NOONE_SEES constexpr std::coroutine_handle<> await_suspend(
+      std::coroutine_handle<>) const noexcept {
     if (root != this) {
       skip_this_leaf();
       return owner();

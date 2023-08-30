@@ -30,7 +30,7 @@ struct async_task_promise : return_block<Result> {
     bool await_ready() const noexcept {
       return is_consumer_dead;
     }
-    void await_suspend(std::coroutine_handle<void> handle) const noexcept {
+    KELCORO_ASSUME_NOONE_SEES void await_suspend(std::coroutine_handle<void> handle) const noexcept {
       task_state.exchange(state::ready, std::memory_order::acq_rel);
       task_state.notify_one();
     }

@@ -34,6 +34,17 @@
 #define KELCORO_ASSUME(expr) (void)(expr)
 #endif
 
+// its clang bug which is 'fixed' by noinline of 'await_suspend'
+// https://github.com/llvm/llvm-project/issues/64945
+// As workaround to not affect performance I explicitly mark 'await_suspend' as always inline
+// if no one can observe changes on coroutine frame after 'await_suspend' start until its end(including
+// returning)
+#ifdef __clang__
+#define KELCORO_ASSUME_NOONE_SEES [[clang::always_inline]]
+#else
+#define KELCORO_ASSUME_NOONE_SEES
+#endif
+
 #if defined(_MSC_VER) && !defined(__clang__)
 #define KELCORO_LIFETIMEBOUND [[msvc::lifetimebound]]
 #elif defined(__clang__)
@@ -360,7 +371,7 @@ struct [[nodiscard("co_await it!")]] transfer_control_to {
     assert(who_waits != nullptr);
     return false;
   }
-  std::coroutine_handle<> await_suspend(std::coroutine_handle<>) noexcept {
+  KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<> await_suspend(std::coroutine_handle<>) noexcept {
     return who_waits;  // symmetric transfer here
   }
   static constexpr void await_resume() noexcept {
@@ -430,7 +441,7 @@ struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
     static constexpr bool await_ready() noexcept {
       return false;
     }
-    bool await_suspend(std::coroutine_handle<> handle) noexcept {
+    KELCORO_ASSUME_NOONE_SEES bool await_suspend(std::coroutine_handle<> handle) noexcept {
       handle_ = handle;
       return false;
     }
@@ -520,7 +531,8 @@ struct attach_leaf {
     return leaf.empty();
   }
 
-  std::coroutine_handle<> await_suspend(typename Leaf::handle_type owner) const noexcept {
+  KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<> await_suspend(
+      typename Leaf::handle_type owner) const noexcept {
     assert(owner != leaf.top);
     auto& leaf_p = leaf.top.promise();
     auto& root_p = *owner.promise().root;
@@ -531,7 +543,8 @@ struct attach_leaf {
   }
   // support yielding generators with different resource
   template <memory_resource R>
-  auto await_suspend(std::coroutine_handle<resourced_promise<typename Leaf::promise_type, R>> handle) {
+  KELCORO_ASSUME_NOONE_SEES auto await_suspend(
+      std::coroutine_handle<resourced_promise<typename Leaf::promise_type, R>> handle) {
     return await_suspend(handle.promise().self_handle());
   }
   static constexpr void await_resume() noexcept {
@@ -607,20 +620,23 @@ struct hold_value_until_resume {
   static constexpr bool await_ready() noexcept {
     return false;
   }
-  void await_suspend(std::coroutine_handle<generator_promise<Yield>> handle) noexcept {
+  KELCORO_ASSUME_NOONE_SEES void await_suspend(
+      std::coroutine_handle<generator_promise<Yield>> handle) noexcept {
     handle.promise().set_result(std::addressof(value));
   }
-  std::coroutine_handle<> await_suspend(std::coroutine_handle<channel_promise<Yield>> handle) noexcept {
+  KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<> await_suspend(
+      std::coroutine_handle<channel_promise<Yield>> handle) noexcept {
     handle.promise().set_result(std::addressof(value));
     return handle.promise().consumer_handle();
   }
   template <memory_resource R>
-  void await_suspend(std::coroutine_handle<resourced_promise<generator_promise<Yield>, R>> handle) noexcept {
+  KELCORO_ASSUME_NOONE_SEES void await_suspend(
+      std::coroutine_handle<resourced_promise<generator_promise<Yield>, R>> handle) noexcept {
     // decay handle
     return await_suspend(handle.promise().self_handle());
   }
   template <memory_resource R>
-  std::coroutine_handle<> await_suspend(
+  KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<> await_suspend(
       std::coroutine_handle<resourced_promise<channel_promise<Yield>, R>> handle) noexcept {
     // decay handle
     return await_suspend(handle.promise().self_handle());
