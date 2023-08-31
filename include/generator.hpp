@@ -161,21 +161,22 @@ struct generator_iterator {
   void operator++(int) {
     ++(*this);
   }
+  // converts to iterator which can be used as output iterator
+  auto out() const&& noexcept;
+};
 
- private:
-  struct output_iterator : generator_iterator {
-    constexpr Yield& operator*() const noexcept {
-      Yield&& i = generator_iterator::operator*();
-      return i;
-    }
-  };
-
- public:
-  auto out() && noexcept {
-    return output_iterator{*this};
+template <yieldable Yield>
+struct generator_output_iterator : generator_iterator<Yield> {
+  constexpr Yield& operator*() const noexcept {
+    Yield&& i = generator_iterator<Yield>::operator*();
+    return i;
   }
 };
 
+template <yieldable Yield>
+auto generator_iterator<Yield>::out() const&& noexcept {
+  return generator_output_iterator<Yield>{*this};
+}
 // * produces first value when .begin called
 // * recursive (co_yield dd::elements_of(rng))
 // * default constructed generator is an empty range
