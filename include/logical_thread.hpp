@@ -84,7 +84,7 @@ struct logical_thread_promise {
     static bool await_ready() noexcept {
       return false;
     }
-    void await_suspend(std::coroutine_handle<void> handle) const noexcept {
+    KELCORO_ASSUME_NOONE_SEES void await_suspend(std::coroutine_handle<void> handle) const noexcept {
       if (!link.try_inform())
         handle.destroy();
     }
@@ -97,7 +97,8 @@ struct logical_thread_promise {
     static bool await_ready() noexcept {
       return false;
     }
-    bool await_suspend(std::coroutine_handle<logical_thread_promise> handle) noexcept {
+    KELCORO_ASSUME_NOONE_SEES bool await_suspend(
+        std::coroutine_handle<logical_thread_promise> handle) noexcept {
       stop_state = &handle.promise().stop_requested_;
       return false;  // never suspend rly
     }
@@ -133,7 +134,7 @@ struct logical_thread : enable_resource_deduction {
   // ctor/owning
 
   logical_thread() noexcept = default;
-  logical_thread(handle_type handle) : handle_(handle) {
+  logical_thread(handle_type handle) noexcept : handle_(handle) {
   }
 
   logical_thread(logical_thread&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {
