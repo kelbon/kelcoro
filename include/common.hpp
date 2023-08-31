@@ -34,7 +34,7 @@
 #define KELCORO_ASSUME(expr) (void)(expr)
 #endif
 
-// its clang bug which is 'fixed' by noinline of 'await_suspend'
+// for some implementation reasons clang adds noinline on 'await_suspend'
 // https://github.com/llvm/llvm-project/issues/64945
 // As workaround to not affect performance I explicitly mark 'await_suspend' as always inline
 // if no one can observe changes on coroutine frame after 'await_suspend' start until its end(including
