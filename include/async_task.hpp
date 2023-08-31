@@ -6,16 +6,14 @@
 
 namespace dd {
 
-namespace noexport {
-enum struct state : uint8_t { not_ready, ready, consumer_dead = ready };
-}
-
 template <typename>
 struct async_task;
 
 template <typename Result>
 struct async_task_promise : return_block<Result> {
-  std::atomic<noexport::state> task_state = noexport::state::not_ready;
+  std::atomic_bool ready = false;
+  // only owner and coroutine itself are owners
+  std::atomic_int8_t ref_count = 1;
 
   static constexpr std::suspend_never initial_suspend() noexcept {
     return {};
@@ -29,17 +27,16 @@ struct async_task_promise : return_block<Result> {
 
  private:
   struct destroy_if_consumer_dead_t {
-    std::atomic<noexport::state>& task_state;
-
     static bool await_ready() noexcept {
       return false;
     }
-    bool await_suspend(std::coroutine_handle<void> handle) const noexcept {
-      noexport::state before = task_state.exchange(noexport::state::ready, std::memory_order::acq_rel);
-      if (before == noexport::state::consumer_dead)
-        return false;
-      task_state.notify_one();
-      return true;
+    bool await_suspend(std::coroutine_handle<async_task_promise> handle) const noexcept {
+      auto& p = handle.promise();
+      p.ready.exchange(true, std::memory_order::acq_rel);
+      p.ready.notify_one();
+      // continue and destroy if ref count == 0
+      bool im_last_owner = p.ref_count.fetch_sub(1, std::memory_order::acq_rel) == 1;
+      return !im_last_owner;
     }
     static void await_resume() noexcept {
     }
@@ -47,7 +44,7 @@ struct async_task_promise : return_block<Result> {
 
  public:
   auto final_suspend() noexcept {
-    return destroy_if_consumer_dead_t{task_state};
+    return destroy_if_consumer_dead_t{};
   }
 };
 
@@ -62,6 +59,7 @@ struct async_task : enable_resource_deduction {
 
   friend promise_type;
   constexpr explicit async_task(handle_type handle) noexcept : handle_(handle) {
+    handle_.promise().ref_count.fetch_add(1, std::memory_order::acq_rel);
   }
 
  public:
@@ -83,32 +81,22 @@ struct async_task : enable_resource_deduction {
 
   // postcondition: if !empty(), then coroutine suspended and value produced
   void wait() const noexcept {
-    if (empty())
-      return;
-    auto& cur_state = handle_.promise().task_state;
-    noexport::state now = cur_state.load(std::memory_order::acquire);
-    while (now != noexport::state::ready) {
-      cur_state.wait(now, std::memory_order::acquire);
-      now = cur_state.load(std::memory_order::acquire);
-    }
-    return;
+    if (!empty())
+      handle_.promise().ready.wait(false, std::memory_order::acquire);
   }
   // returns true if 'get' is callable and will return immedially without wait
   bool ready() const noexcept {
     if (empty())
       return false;
-    return noexport::state::ready == handle_.promise().task_state.load(std::memory_order::acquire);
+    return handle_.promise().ready.load(std::memory_order::acquire);
   }
   // postcondition: empty()
   void detach() noexcept {
     if (empty())
       return;
-    noexport::state state_before =
-        handle_.promise().task_state.exchange(noexport::state::consumer_dead, std::memory_order::acq_rel);
-    if (state_before == noexport::state::ready)
+    if (handle_.promise().ref_count.fetch_sub(1, std::memory_order::acq_rel) == 1)
       handle_.destroy();
     handle_ = nullptr;
-    // otherwise frame destroys itself because consumer is dead
   }
 
   // precondition: !empty()
