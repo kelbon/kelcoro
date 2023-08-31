@@ -70,9 +70,8 @@ struct task : enable_resource_deduction {
       // symmetric transfer control to task
       return task_handle;
     }
-    [[nodiscard]] result_type await_resume() {
-      if constexpr (!std::is_void_v<result_type>)
-        return task_handle.promise().result();
+    [[nodiscard]] std::add_rvalue_reference_t<result_type> await_resume() {
+      return task_handle.promise().result();
     }
   };
 

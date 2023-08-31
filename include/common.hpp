@@ -342,8 +342,9 @@ struct return_block {
   constexpr void return_value(T value) noexcept(std::is_nothrow_move_constructible_v<T>) {
     storage.emplace(std::move(value));
   }
-  constexpr T result() noexcept(noexcept(*std::move(storage))) {
-    return *std::move(storage);
+  constexpr T&& result() noexcept KELCORO_LIFETIMEBOUND {
+    assert(storage.has_value());
+    return std::move(*storage);
   }
 };
 template <typename T>
@@ -361,6 +362,8 @@ struct return_block<T&> {
 template <>
 struct return_block<void> {
   constexpr void return_void() const noexcept {
+  }
+  static void result() noexcept {
   }
 };
 
@@ -516,8 +519,6 @@ template <yieldable>
 struct generator;
 template <yieldable>
 struct channel;
-template <typename>
-struct elements_of;
 
 }  // namespace dd
 

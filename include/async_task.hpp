@@ -113,16 +113,14 @@ struct async_task : enable_resource_deduction {
 
   // precondition: !empty()
   // must be invoked in one thread(one consumer)
-  std::add_rvalue_reference_t<Result> get() && noexcept KELCORO_LIFETIMEBOUND
-    requires(!std::is_void_v<Result>)
-  {
+  std::add_rvalue_reference_t<Result> get() && noexcept KELCORO_LIFETIMEBOUND {
     assert(!empty());
     wait();
     // result always exist, its setted or std::terminate called on exception.
-    return std::move(*handle_.promise().storage);
+    return handle_.promise().result();
   }
 
-  // return true if default constructed or value was already getted
+  // return true if call to 'get' will produce UB
   constexpr bool empty() const noexcept {
     return handle_ == nullptr;
   }
