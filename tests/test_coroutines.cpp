@@ -517,11 +517,31 @@ TEST(channel) {
   return error_count;
 }
 
+dd::async_task<int> small_task() {
+  co_await dd::jump_on(dd::new_thread_executor{});
+  co_return 1;
+}
+
+TEST(detached_tasks) {
+  std::vector<dd::async_task<int>> tasks;
+  for (int i = 0; i < 3'000; ++i) {
+    auto& t = tasks.emplace_back(small_task());
+    if (rand() % 2)
+      t.detach();
+  }
+  for (auto& x : tasks) {
+    if (x.empty())
+      continue;
+    error_if(std::move(x).get() != 1);
+  }
+  return error_count;
+}
 int main() {
+  srand(time(0));
   return static_cast<int>(TESTgenerator() + TESTzip_generator() + TESTlogical_thread() +
                           TESTcoroutines_integral() + TESTlogical_thread_mm() + TESTgen_mm() + TESTjob_mm() +
                           TESTthread_safety() + /*TESTwhen_any() + TESTwhen_all() +*/ TESTasync_tasks() +
-                          TESTvoid_async_task() + TESTchannel() + TESTallocations());
+                          TESTvoid_async_task() + TESTchannel() + TESTallocations() + TESTdetached_tasks());
 }
 #else
 int main() {

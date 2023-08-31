@@ -40,7 +40,7 @@
 // if no one can observe changes on coroutine frame after 'await_suspend' start until its end(including
 // returning)
 #ifdef __clang__
-#define KELCORO_ASSUME_NOONE_SEES [[clang::always_inline]]
+#define KELCORO_ASSUME_NOONE_SEES [[gnu::always_inline]]
 #else
 #define KELCORO_ASSUME_NOONE_SEES
 #endif

@@ -134,7 +134,7 @@ struct logical_thread : enable_resource_deduction {
   // ctor/owning
 
   logical_thread() noexcept = default;
-  logical_thread(handle_type handle) : handle_(handle) {
+  logical_thread(handle_type handle) noexcept : handle_(handle) {
   }
 
   logical_thread(logical_thread&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {
