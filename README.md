@@ -44,6 +44,8 @@ void pass_resource(std::pmr::memory_resource& m) noexcept;
 ## `generator<T>`
 interface:
 ```C++
+template <yieldable Yield>
+struct generator {
   // * if .empty(), then begin() == end()
   // * produces next value(often first)
   // iterator invalidated only when generator dies
@@ -72,6 +74,8 @@ interface:
   // postcondition: .empty()
   // its caller responsibility to correctly destroy handle
   handle_type release() noexcept;
+
+};
 ```
    * produces next/first value when .begin called
    * recursive (see co_yield dd::elements_of(rng))
@@ -82,7 +86,9 @@ interface:
   * tag `dd::elements_of(RNG)` accepts range(including other generator) and yields all elements of it more effectively, then for-loop
   * tag `by_ref` allows to yield lvalue referencnes, so caller may get reference from iterator's operator* and change value, so generator will observe changes.
 This allows usage generator as in-place output range, which may be very cose
-Example:
+
+
+usage as output iterator example:
 ```C++
 dd::generator<int> printer() {
   int i;
@@ -95,7 +101,6 @@ dd::generator<int> printer() {
 void print_foo(std::vector<int> values) {
   // prints all values
   std::copy(begin(values), end(values), printer().begin().out());
-  return error_count;
 }
 ```
   * operator* of iterator returns rvalue reference to value, so `for(std::string s : generator())` is effective code(one move from generator)
@@ -117,15 +122,18 @@ void use() {
 ```
 
 ## `logical_thread`
-interface(same as jthread):
+interface(similar to std::jthread):
 ```C++
+struct logical_thread {
+  logical_thread() noexcept = default;
+  logical_thread(logical_thread&&) noexcept;
   bool joinable();
   void join(); // block until coroutine is done
-  std::stop_source detach();
-  handle_type native_handle(); // returns coroutine_handle
+  void detach();
+  bool stop_possible() const noexcept;
   bool request_stop();
-  std::stop_token get_token();
-  std::stop_source get_stop_source();
+  // co_await dd::this_coro::stop_token will return dd::stop_token for coroutine
+};
 ```
 It is cancellable coroutine, which behavior similar to https://en.cppreference.com/w/cpp/thread/jthread (can be .request_stop(),
 automatically requested for stop and joined in destructor or when move assigned etc)
@@ -138,7 +146,7 @@ Lifetime: If not .detach(), then coroutine frame dies with coroutine object, els
 example :
 ```C++
 dd::logical_thread Bar() {
-// imagine that already C++47 and networking in the standard
+  // imagine that already C++47 and networking in the standard
   auto socket = co_await async_connect(endpoint);
   auto token = co_await dd::this_coro::stop_token; // cancellable coroutine can get stop token associated with it
   while (!token.stop_requested()) {
@@ -153,11 +161,31 @@ dd::logical_thread Bar() {
  
 Lifetime: same as detached dd::logical_thread
 ## `async_task<T>`
-```C++
+
 interface:
-  void wait() const; // blocks until result is ready
-  Result get() &&; // waits result and then returns it
+
+```C++
+template <typename Result>
+struct async_task {
+  async_task() noexcept = default;
+  async_task(async_task&& other) noexcept;
+
+  // postcondition: if !empty(), then coroutine suspended and value produced
+  void wait() const noexcept;
+
+  // returns true if 'get' is callable and will return immedially without wait
+  bool ready() const noexcept;
+
+  // postcondition: empty()
+  void detach() noexcept;
+
+  // precondition: !empty()
+  // must be invoked in one thread(one consumer)
+  std::add_rvalue_reference_t<Result> get() && noexcept;
+
+  // returns true if call to 'get' will produce UB
   bool empty() const noexcept;
+};
 ```
 If unhandled exception happens in async_task std::terminate is called
 Execution starts immediately when async_task created.
@@ -165,23 +193,15 @@ Execution starts immediately when async_task created.
 Result can be ignored, it is safe.
 
 example:
-```C++
-task<std::string> DoSmth() {
-  co_await jump_on(dd::new_thread_executor{});
-  co_return "hello from task";
-}
 
-async_task<void> TasksUser() {
-  std::vector<task<std::string>> vec;
-  for (int i = 0; i < 10; ++i)
-    vec.emplace_back(DoSmth());
-  for (int i = 0; i < 8; ++i) {
-    std::string result = co_await vec[i];
-    verify(result == "hello from task");
-  }
-  co_return;
+```C++
+async_task<int> future_int() {
+  co_await dd::jump_on(my_executor);
+  auto x = co_await foo();
+  co_return bar(x);
 }
 ```
+
 # Symmetric transfer between coroutines
 What is symmetric transfer? this is when the coroutine does not just suspended, but transfers control to another coroutine. Then, in the future, 
 the coroutine will be resumed. Thus, relative to the coroutine, this code looks absolutely synchronous, there is no synchronization and any overhead, 
@@ -222,7 +242,21 @@ It is just a channel between two coroutines for exactly one value(returned by co
 
 task is lazy (starts only when co_awaited)
 
-example: see async_task example =)
+example:
+
+```C++
+dd::task<std::string> foo() {
+  co_await dd::jump_on(my_executor);
+  std::string result = co_await something();
+  co_return std::move(result);  // move here not useless!
+}
+
+dd::async_task<std::string> foo_user() {
+  // task may be used only in other coroutine
+  co_return co_await foo();
+}
+
+```
 
 # Usefull
 
