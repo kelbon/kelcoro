@@ -55,18 +55,18 @@ struct async_task : enable_resource_deduction {
   using handle_type = std::coroutine_handle<promise_type>;
 
  private:
-  handle_type handle_ = nullptr;
+  handle_type handle = nullptr;
 
   friend promise_type;
-  constexpr explicit async_task(handle_type handle) noexcept : handle_(handle) {
-    handle_.promise().ref_count.fetch_add(1, std::memory_order::acq_rel);
+  constexpr explicit async_task(handle_type handle) noexcept : handle(handle) {
+    handle.promise().ref_count.fetch_add(1, std::memory_order::acq_rel);
   }
 
  public:
   constexpr async_task() noexcept = default;
 
   constexpr void swap(async_task& other) noexcept {
-    std::swap(handle_, other.handle_);
+    std::swap(handle, other.handle);
   }
   friend constexpr void swap(async_task& a, async_task& b) noexcept {
     a.swap(b);
@@ -82,21 +82,21 @@ struct async_task : enable_resource_deduction {
   // postcondition: if !empty(), then coroutine suspended and value produced
   void wait() const noexcept {
     if (!empty())
-      handle_.promise().ready.wait(false, std::memory_order::acquire);
+      handle.promise().ready.wait(false, std::memory_order::acquire);
   }
   // returns true if 'get' is callable and will return immedially without wait
   bool ready() const noexcept {
     if (empty())
       return false;
-    return handle_.promise().ready.load(std::memory_order::acquire);
+    return handle.promise().ready.load(std::memory_order::acquire);
   }
   // postcondition: empty()
   void detach() noexcept {
     if (empty())
       return;
-    if (handle_.promise().ref_count.fetch_sub(1, std::memory_order::acq_rel) == 1)
-      handle_.destroy();
-    handle_ = nullptr;
+    if (handle.promise().ref_count.fetch_sub(1, std::memory_order::acq_rel) == 1)
+      handle.destroy();
+    handle = nullptr;
   }
 
   // precondition: !empty()
@@ -105,12 +105,12 @@ struct async_task : enable_resource_deduction {
     assert(!empty());
     wait();
     // result always exist, its setted or std::terminate called on exception.
-    return handle_.promise().result();
+    return handle.promise().result();
   }
 
   // return true if call to 'get' will produce UB
   constexpr bool empty() const noexcept {
-    return handle_ == nullptr;
+    return handle == nullptr;
   }
 
   ~async_task() {
