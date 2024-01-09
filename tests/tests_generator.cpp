@@ -24,8 +24,10 @@ using dd::generator;
 #define error_if(Cond) error_count += static_cast<bool>((Cond))
 #define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
 #define CHANNEL_TEST(NAME) inline dd::async_task<size_t> NAME(size_t error_count = 0)
-#define CO_TEST(NAME) \
-  TEST(NAME) { return NAME().get(); }
+#define CO_TEST(NAME)    \
+  TEST(NAME) {           \
+    return NAME().get(); \
+  }
 #define CHAN_OR_GEN template <template <typename> typename G>
 #define RANDOM_CONTROL_FLOW                               \
   if constexpr (std::is_same_v<G<int>, dd::channel<int>>) \
@@ -765,7 +767,11 @@ int main() {
   {
     log_resource r;
     dd::pmr::pass_resource(r);
-    auto x = []() -> dd::generator_r<int, dd::pmr::polymorphic_resource> { co_yield 1; };
+    auto x = []() -> dd::generator<int> { co_yield 1; };
+    auto y_g = x();
+    auto y_g_it = y_g.begin();
+    if (1 != *y_g_it.operator->())
+      std::exit(-5);
     for (auto i : x())
       if (i != 1)
         std::exit(-1);

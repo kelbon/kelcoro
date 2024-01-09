@@ -2,7 +2,6 @@
 
 #include <iterator>
 #include <memory>
-#include <utility>
 
 #include "common.hpp"
 
@@ -115,7 +114,6 @@ struct generator_promise : not_movable {
 };
 
 // no default ctor, because its input iterator
-// behaves also as generator_view (has its own begin/end)
 template <yieldable Yield>
 struct generator_iterator {
  private:
@@ -123,7 +121,9 @@ struct generator_iterator {
   generator<Yield>* self;
 
  public:
-  constexpr explicit generator_iterator(generator<Yield>& g) noexcept : self(std::addressof(g)) {
+  // do not resumes 'g'
+  constexpr explicit generator_iterator(generator<Yield>& g KELCORO_LIFETIMEBOUND) noexcept
+      : self(std::addressof(g)) {
   }
 
   using iterator_category = std::input_iterator_tag;
@@ -131,7 +131,7 @@ struct generator_iterator {
   using reference = Yield&&;
   using difference_type = ptrdiff_t;
 
-  // return true if they are attached to same 'channel' object
+  // return true if they are attached to same 'generator' object
   constexpr bool equivalent(const generator_iterator& other) const noexcept {
     return self == other.self;
   }
@@ -147,6 +147,11 @@ struct generator_iterator {
     KELCORO_ASSUME(*this != std::default_sentinel);
     return static_cast<reference>(*self->current_result);
   }
+  constexpr Yield* operator->() const noexcept {
+    auto&& ref = operator*();
+    return std::addressof(ref);
+  }
+
   // * after invoking references to value from operator* are invalidated
   generator_iterator& operator++() KELCORO_LIFETIMEBOUND {
     KELCORO_ASSUME(!self->empty());
@@ -183,7 +188,7 @@ auto generator_iterator<Yield>::out() const&& noexcept {
 // notes:
 //  * generator ignores fact, that 'destroy' may throw exception from destructor of object in coroutine, it
 //  will lead to std::terminate
-//  * if exception was throwed from recursivelly co_yielded generator, then this leaf just skipped and caller
+//  * if exception was thrown from recursivelly co_yielded generator, then this leaf just skipped and caller
 //  can continue iterating after catch(requires new .begin call)
 //
 template <yieldable Yield>

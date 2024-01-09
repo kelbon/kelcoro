@@ -123,18 +123,23 @@ struct channel_promise : not_movable {
   }
 };
 
-// its pseudo iterator, requires co_awaits etc
+// its pseudo iterator, requires co_awaits on operator++
 template <yieldable Yield>
-struct channel_iterator : not_movable {
+struct channel_iterator {
  private:
-  channel<Yield>& chan;
-  friend channel<Yield>;
-
-  constexpr explicit channel_iterator(channel<Yield>& c) noexcept : chan(c) {
-  }
+  // invariant: != nullptr, ptr for trivial copy/move
+  channel<Yield>* chan;
 
  public:
+  // do not resumes 'c'
+  constexpr explicit channel_iterator(channel<Yield>& c KELCORO_LIFETIMEBOUND) noexcept
+      : chan(std::addressof(c)) {
+  }
+  // not really iterator, but it is useful for iterator_traits
+  using iterator_category = std::input_iterator_tag;
+  using value_type = Yield;
   using reference = Yield&&;
+  using difference_type = ptrdiff_t;
 
   // return true if they are attached to same 'channel' object
   constexpr bool equivalent(const channel_iterator& other) const noexcept {
@@ -145,25 +150,29 @@ struct channel_iterator : not_movable {
   }
 
   KELCORO_PURE constexpr bool operator==(std::default_sentinel_t) const noexcept {
-    return chan.current_result == nullptr;
+    return chan->current_result == nullptr;
   }
   // * returns rvalue ref
   reference operator*() const noexcept {
     KELCORO_ASSUME(*this != std::default_sentinel);
-    return static_cast<reference>(*chan.current_result);
+    return static_cast<reference>(*chan->current_result);
+  }
+  constexpr Yield* operator->() const noexcept {
+    auto&& ref = operator*();
+    return std::addressof(ref);
   }
   // * after invoking references to value from operator* are invalidated
   KELCORO_CO_AWAIT_REQUIRED transfer_control_to operator++() noexcept {
-    KELCORO_ASSUME(!chan.empty());
-    return transfer_control_to{chan.top.promise().current_worker};
+    KELCORO_ASSUME(!chan->empty());
+    return transfer_control_to{chan->top.promise().current_worker};
   }
 
   // on the end of loop, when current_value == nullptr reached
   // lifetime of this iterator ends and it checks for exception.
   // its for performance(no 'if' on each ++, only one for channel)
   ~channel_iterator() noexcept(false) {
-    if (chan.exception) [[unlikely]]
-      std::rethrow_exception(chan.take_exception());
+    if (chan->exception) [[unlikely]]
+      std::rethrow_exception(chan->take_exception());
   }
 };
 

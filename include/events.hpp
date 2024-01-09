@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <concepts>
 #include <variant>
 
 #include "job.hpp"
@@ -9,10 +8,9 @@
 namespace dd {
 
 template <typename T>
-concept singly_linked_node = !
-std::is_const_v<T>&& requires(T value) {
-                       { &T::next } -> std::same_as<T * T::*>;  // 'next' is a field with type T*
-                     };
+concept singly_linked_node = !std::is_const_v<T> && requires(T value) {
+  { &T::next } -> std::same_as<T * T::*>;  // 'next' is a field with type T*
+};
 
 template <singly_linked_node T>
 struct nonowner_lockfree_stack {
@@ -77,7 +75,7 @@ struct event {
     event* event_;
     std::coroutine_handle<void> handle;
     awaiter_t* next = nullptr;  // im a part of awaiters stack!
-    [[no_unique_address]] input_type input;
+    KELCORO_NO_UNIQUE_ADDRESS input_type input;
 
     static bool await_ready() noexcept {
       return false;
@@ -205,7 +203,7 @@ KELCORO_CO_AWAIT_REQUIRED constexpr auto when_all(event<Inputs>&... events) {
   struct subscribe_all_last_resumes_main_t {
     uint8_t count;
     std::tuple<event<Inputs>&...> events_;
-    [[no_unique_address]] storage_t input;
+    KELCORO_NO_UNIQUE_ADDRESS storage_t input;
 
     bool await_ready() const noexcept {
       return false;
@@ -252,7 +250,7 @@ KELCORO_CO_AWAIT_REQUIRED constexpr auto when_any(event<Inputs>&... events) {
   struct subscribe_all_first_resumes_main_t {
     // no monostate because default constructible always
     std::tuple<event<Inputs>&...> events_;
-    [[no_unique_address]] std::variant<typename event<Inputs>::input_type...> input;
+    KELCORO_NO_UNIQUE_ADDRESS std::variant<typename event<Inputs>::input_type...> input;
 
     bool await_ready() const noexcept {
       return false;

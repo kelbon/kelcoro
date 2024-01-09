@@ -12,7 +12,6 @@
 #include <string_view>
 #include <thread>
 #include <vector>
-#include <functional>
 #include <iostream>
 #include <array>
 #include <algorithm>

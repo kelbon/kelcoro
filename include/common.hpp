@@ -8,7 +8,6 @@
 #include <cassert>
 #include <thread>
 #include <memory_resource>
-#include <concepts>
 
 #define KELCORO_CO_AWAIT_REQUIRED [[nodiscard("forget co_await?")]]
 
@@ -40,7 +39,7 @@
 // if no one can observe changes on coroutine frame after 'await_suspend' start until its end(including
 // returning)
 #ifdef __clang__
-#define KELCORO_ASSUME_NOONE_SEES [[gnu::always_inline]]
+#define KELCORO_ASSUME_NOONE_SEES  // disabled, dont want to provoke clang bugs [[gnu::always_inline]]
 #else
 #define KELCORO_ASSUME_NOONE_SEES
 #endif
@@ -60,9 +59,19 @@
 #endif
 
 #ifdef _MSC_VER
-#define MSVC_EBO __declspec(empty_bases)
+#define KELCORO_MSVC_EBO __declspec(empty_bases)
 #else
-#define MSVC_EBO
+#define KELCORO_MSVC_EBO
+#endif
+
+#ifdef __has_cpp_attribute
+#if __has_cpp_attribute(no_unique_address)
+#define KELCORO_NO_UNIQUE_ADDRESS [[no_unique_address]]
+#else
+#define KELCORO_NO_UNIQUE_ADDRESS
+#endif
+#else
+#define KELCORO_NO_UNIQUE_ADDRESS
 #endif
 
 namespace dd {
@@ -88,14 +97,14 @@ concept ambigious_co_await_lookup = has_global_co_await<T> && has_member_co_awai
 
 template <typename T>
 concept co_awaiter = requires(T value) {
-                       { value.await_ready() } -> std::same_as<bool>;
-                       // cant check await_suspend here because:
-                       // case: value.await_suspend(coroutine_handle<>{}) - may be non convertible to concrete
-                       // T in signature of await_suspend case: value.await_suspend(nullptr) - may be template
-                       // signature, compilation error(cant deduct type) another case - signature with
-                       // requires, impossible to know how to call it
-                       value.await_resume();
-                     };
+  { value.await_ready() } -> std::same_as<bool>;
+  // cant check await_suspend here because:
+  // case: value.await_suspend(coroutine_handle<>{}) - may be non convertible to concrete
+  // T in signature of await_suspend case: value.await_suspend(nullptr) - may be template
+  // signature, compilation error(cant deduct type) another case - signature with
+  // requires, impossible to know how to call it
+  value.await_resume();
+};
 
 // CONCEPT co_awaitable
 
@@ -109,14 +118,13 @@ template <typename T>
 concept yieldable = std::same_as<std::decay_t<T>, T> && (!std::is_void_v<T>);
 
 template <typename T>
-concept memory_resource = (!std::is_reference_v<T>) &&
-                          requires(T value, size_t sz, size_t align, void* ptr) {
-                            { value.allocate(sz, align) } -> std::convertible_to<void*>;
-                            { value.deallocate(ptr, sz, align) } noexcept -> std::same_as<void>;
-                            requires std::is_nothrow_move_constructible_v<T>;
-                            requires alignof(T) <= alignof(std::max_align_t);
-                            requires !(std::is_empty_v<T> && !std::default_initializable<T>);
-                          };
+concept memory_resource = (!std::is_reference_v<T>)&&requires(T value, size_t sz, size_t align, void* ptr) {
+  { value.allocate(sz, align) } -> std::convertible_to<void*>;
+  { value.deallocate(ptr, sz, align) } noexcept -> std::same_as<void>;
+  requires std::is_nothrow_move_constructible_v<T>;
+  requires alignof(T) <= alignof(std::max_align_t);
+  requires !(std::is_empty_v<T> && !std::default_initializable<T>);
+};
 
 namespace noexport {
 
@@ -189,7 +197,7 @@ consteval size_t coroframe_align() {
 // when passed into coroutine coro will allocate/deallocate memory using this resource
 template <memory_resource R>
 struct with_resource {
-  [[no_unique_address]] R resource;
+  KELCORO_NO_UNIQUE_ADDRESS R resource;
 };
 template <typename X>
 with_resource(X&&) -> with_resource<std::remove_cvref_t<X>>;
@@ -291,7 +299,7 @@ struct enable_resource_deduction {};
 // for not duplicating code and not changing signature with default constructible resources
 // see dd::pmr::generator as example
 template <typename Coro, memory_resource R>
-struct MSVC_EBO resourced : Coro {
+struct KELCORO_MSVC_EBO resourced : Coro {
   using resource_type = R;
 
   using Coro::Coro;
@@ -317,7 +325,7 @@ struct MSVC_EBO resourced : Coro {
 };
 
 template <typename Promise, memory_resource R>
-struct MSVC_EBO resourced_promise : Promise, overload_new_delete<R> {
+struct KELCORO_MSVC_EBO resourced_promise : Promise, overload_new_delete<R> {
   using Promise::Promise;
   using Promise::operator=;
 
@@ -383,7 +391,7 @@ struct [[nodiscard("co_await it!")]] transfer_control_to {
 
 template <std::invocable<> F>
 struct [[nodiscard("Dont forget to name it!")]] scope_exit {
-  [[no_unique_address]] F todo;
+  KELCORO_NO_UNIQUE_ADDRESS F todo;
 
   scope_exit(F todo) : todo(std::move(todo)) {
   }
@@ -419,7 +427,7 @@ struct new_thread_executor {
 
 template <executor E>
 struct KELCORO_CO_AWAIT_REQUIRED jump_on {
-  [[no_unique_address]] E e;
+  KELCORO_NO_UNIQUE_ADDRESS E e;
 #if __cpp_aggregate_paren_init < 201902L
   constexpr jump_on(std::type_identity_t<E> e) noexcept : e(static_cast<E&&>(e)) {
   }
@@ -481,7 +489,7 @@ constexpr decltype(auto) build_awaiter(T&& value) {
 
 template <typename R>
 struct elements_of {
-  [[no_unique_address]] R rng;
+  KELCORO_NO_UNIQUE_ADDRESS R rng;
 
 #if __cpp_aggregate_paren_init < 201902L
   // may be clang will never support aggregate () initialization...
