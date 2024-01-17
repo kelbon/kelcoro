@@ -761,6 +761,8 @@ TEST(generator_as_output_range) {
   return error_count;
 }
 
+static_assert(std::output_iterator<dd::generator_output_iterator<int>, int>);
+
 int main() {
   static_assert(::dd::memory_resource<new_delete_resource>);
   (void)flip();  // initalize random

@@ -172,9 +172,21 @@ struct generator_iterator {
 
 template <yieldable Yield>
 struct generator_output_iterator : generator_iterator<Yield> {
+  using base_t = generator_iterator<Yield>;
   constexpr Yield& operator*() const noexcept {
-    Yield&& i = generator_iterator<Yield>::operator*();
-    return i;
+    static_assert(std::is_rvalue_reference_v<decltype(base_t::operator*())>);
+    Yield&& i = base_t::operator*();
+    // avoid C++23 automove in return expression
+    Yield& j = i;
+    return j;
+  }
+  constexpr generator_output_iterator& operator++() {
+    base_t::operator++();
+    return *this;
+  }
+  constexpr generator_output_iterator& operator++(int) {
+    base_t::operator++();
+    return *this;
   }
 };
 
