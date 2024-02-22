@@ -9,6 +9,8 @@
 #include <thread>
 #include <memory_resource>
 
+#include "operation_hash.hpp"
+
 #define KELCORO_CO_AWAIT_REQUIRED [[nodiscard("forget co_await?")]]
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -16,7 +18,7 @@
 #elif defined(_MSC_VER)
 #define KELCORO_UNREACHABLE __assume(false)
 #else
-#define KELCORO_UNREACHABLE (void)0
+#define KELCORO_UNREACHABLE assert(false)
 #endif
 
 #if !defined(NDEBUG)
@@ -342,6 +344,15 @@ struct KELCORO_MSVC_EBO resourced_promise : Promise, overload_new_delete<R> {
   // standard wording goes wrong
 };
 
+template <typename Promise, memory_resource R>
+struct operation_hash<std::coroutine_handle<resourced_promise<Promise, R>>> {
+  size_t operator()(std::coroutine_handle<resourced_promise<Promise, R>> h) const {
+    return operation_hash<std::coroutine_handle<Promise>>()(
+        // assume addresses are same (dirty hack for supporting allocators)
+        std::coroutine_handle<Promise>::from_address(h.address()));
+  }
+};
+
 // 'teaches' promise to return
 template <typename T>
 struct return_block {
@@ -467,10 +478,49 @@ struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
   }
 };
 
+// destroys coroutine in which awaited for
+struct KELCORO_CO_AWAIT_REQUIRED destroy_coro_t {
+  static bool await_ready() noexcept {
+    return false;
+  }
+  static void await_suspend(std::coroutine_handle<> handle) noexcept {
+    handle.destroy();
+  }
+  static void await_resume() noexcept {
+    KELCORO_UNREACHABLE;
+  }
+};
+
+template <typename F>
+struct suspend_and_t {
+  KELCORO_NO_UNIQUE_ADDRESS F fn;
+
+  constexpr static bool await_ready() noexcept {
+    return false;
+  }
+  template <typename P>
+  constexpr auto await_suspend(std::coroutine_handle<P> handle) noexcept {
+    return fn(handle);
+  }
+  constexpr static void await_resume() noexcept {
+  }
+};
+
+template <typename F>
+suspend_and_t(F&&) -> suspend_and_t<std::remove_cvref_t<F>>;
+
 namespace this_coro {
 
 // provides access to inner handle of coroutine
 constexpr inline get_handle_t handle = {};
+
+constexpr inline destroy_coro_t destroy = {};
+
+// co_awaiting on this function suspends coroutine and invokes 'fn' with coroutine handle.
+// await suspend returns what 'fn' returns!
+constexpr auto suspend_and(auto&& fn) {
+  return suspend_and_t(std::forward<decltype(fn)>(fn));
+}
 
 }  // namespace this_coro
 

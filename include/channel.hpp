@@ -9,7 +9,7 @@
 namespace dd {
 
 // behavior very similar to generator, but channel may suspend before co_yield
-
+// TODO добавить контекст и итератор по контекстам канала снизу вверх для создания асинхронного стека
 template <yieldable Yield>
 struct channel_promise : not_movable {
   using handle_type = std::coroutine_handle<channel_promise>;
@@ -61,7 +61,12 @@ struct channel_promise : not_movable {
  public:
   constexpr channel_promise() noexcept {
   }
-
+  // TODO~channel_promise() {
+  // TODO  // TODO
+  // TODO  if (skipped final suspend)
+  // TODO    (==.destroy on handle called) skip_this_leaf();
+  // TODO} AND GOOD TESTS FOR THIS (destroy only last frame and check its correct)
+  // also for generator... Главное не забыть достать хендл с разрушаемой корутины
   channel<Yield> get_return_object() noexcept {
     return channel<Yield>(self_handle());
   }
@@ -316,6 +321,13 @@ template <yieldable Y>
 using channel = ::dd::channel_r<Y, polymorphic_resource>;
 
 }
+
+template <yieldable Y>
+struct operation_hash<std::coroutine_handle<channel_promise<Y>>> {
+  size_t operator()(std::coroutine_handle<channel_promise<Y>> handle) const noexcept {
+    return std::hash<const void*>()(handle.promise().root);
+  }
+};
 
 // usage example:
 //  co_foreach(std::string s, mychannel) use(s);

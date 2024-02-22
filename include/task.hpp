@@ -91,4 +91,7 @@ using task = ::dd::task_r<Ret, polymorphic_resource>;
 
 }
 
+// TODO operation hash (owner)
+// TODO возможность запускать таску однопоточно, тогда она должна овнера ставить noop_coroutine
+
 }  // namespace dd
