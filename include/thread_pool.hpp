@@ -86,9 +86,14 @@ void execute_parallel(co_executor auto& executor, auto&& f, auto&&... foos) noex
 }
 
 template <typename E>
-struct KELCORO_CO_AWAIT_REQUIRED create_task_node_and_execute {
+struct KELCORO_CO_AWAIT_REQUIRED create_task_node_and_attach {
+ protected:
   E& e;
   task_node node;
+
+ public:
+  explicit create_task_node_and_attach(E& e) noexcept : e(e) {
+  }
 
   static bool await_ready() noexcept {
     return false;
@@ -104,13 +109,20 @@ struct KELCORO_CO_AWAIT_REQUIRED create_task_node_and_execute {
 };
 
 template <typename E>
-struct KELCORO_CO_AWAIT_REQUIRED create_task_node_and_execute_with_operation_hash
-    : create_task_node_and_execute<E> {
+struct KELCORO_CO_AWAIT_REQUIRED create_task_node_and_attach_with_operation_hash
+    : private create_task_node_and_attach<E> {
+ private:
   operation_hash_t hash = 0;
 
-  create_task_node_and_execute_with_operation_hash(E& e KELCORO_LIFETIMEBOUND, operation_hash_t hash) noexcept
-      : create_task_node_and_execute<E>(e), hash(hash) {
+  using base_t = create_task_node_and_attach<E>;
+
+ public:
+  create_task_node_and_attach_with_operation_hash(E& e KELCORO_LIFETIMEBOUND, operation_hash_t hash) noexcept
+      : create_task_node_and_attach<E>(e), hash(hash) {
   }
+  using base_t::await_ready;
+  using base_t::await_resume;
+
   void await_suspend(std::coroutine_handle<> handle) noexcept {
     // set task before it is attached
     this->node.task = handle;
@@ -225,13 +237,13 @@ struct strand {
   }
 
  public:
-  // TODO same interface as thread
+  // TODO same interface as thread pool
   void execute(task_node* node) noexcept {
     w->queue.push(node);
   }
 
   co_awaiter auto transition() noexcept {
-    return create_task_node_and_execute<strand>{*this};
+    return create_task_node_and_attach<strand>{*this};
   }
 
   void execute(auto&& foo) {
@@ -289,10 +301,10 @@ struct thread_pool {
   }
 
   co_awaiter auto transition() noexcept {
-    return create_task_node_and_execute<thread_pool>{*this};
+    return create_task_node_and_attach<thread_pool>{*this};
   }
   co_awaiter auto transition(operation_hash_t hash) noexcept {
-    return create_task_node_and_execute_with_operation_hash<thread_pool>{*this, hash};
+    return create_task_node_and_attach_with_operation_hash<thread_pool>{*this, hash};
   }
 
   [[maybe_unused]] job execute(std::invocable auto foo, operation_hash_t hash) KELCORO_LIFETIMEBOUND {
@@ -347,9 +359,9 @@ struct thread_pool {
 };
 
 template <>
-struct KELCORO_CO_AWAIT_REQUIRED jump_on<thread_pool> : create_task_node_and_execute<thread_pool> {};
+struct KELCORO_CO_AWAIT_REQUIRED jump_on<thread_pool> : create_task_node_and_attach<thread_pool> {};
 
 template <>
-struct KELCORO_CO_AWAIT_REQUIRED jump_on<strand> : create_task_node_and_execute<strand> {};
+struct KELCORO_CO_AWAIT_REQUIRED jump_on<strand> : create_task_node_and_attach<strand> {};
 
 }  // namespace dd
