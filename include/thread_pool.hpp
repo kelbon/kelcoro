@@ -2,6 +2,8 @@
 
 #include <deque>
 #include <latch>
+#include <mutex>
+#include <condition_variable>
 
 #include "job.hpp"
 
@@ -9,13 +11,35 @@
 // можно по сути т.е. можно просто для канала сделать эту операцию и автоматически готово! Проход по циклу
 // вверх
 // + на каждом участке взять контекст! (и иметь контекст...)
+// TODO сделать combine_event_pools, которое из различных источников типа нетворк ивенты, файл систем ивенты
+// таймеры и проч проч поллит и предоставляет как генератор ивентов просто
+// TODO any executor (ref), for unifying strand/executor with diffrent template args
+// TODO операцию спавн? Чтобы начать корутину, дальше переехать на другой тред, передать управление корутине
+
 namespace dd {
 
+#ifdef __cpp_lib_hardware_interference_size
+using std::hardware_constructive_interference_size;
+using std::hardware_destructive_interference_size;
+#else
+// 64 bytes on x86-64 │ L1_CACHE_BYTES │ L1_CACHE_SHIFT │ __cacheline_aligned │ ...
+constexpr std::size_t hardware_constructive_interference_size = 64;
+constexpr std::size_t hardware_destructive_interference_size = 64;
+#endif
+
+// TODO специальный эксепшн завершающий тред выкидывать, т.е. вместо кучи ифов обойтись одним
+// вызовом try / catch получается, но если без исключений, то..?
 struct task_node {
   task_node* next = nullptr;
   std::coroutine_handle<> task;
 };
-
+// TODO добавить (дебажную? информацию о нагрузке тредпула,
+// как минимум просто число исполненных/запушенных задач)
+// Под дефайном "метрики" (если не придумаю как применить по другому информацию)
+// сделать
+// 1. количество исполненных задач
+// 2. задание имени потока (на разных ос...) (типа pool # X worker # Y )
+//
 template <typename T>
 concept co_executor = executor<T> && requires(T& w, task_node* node) { w.execute(node); };
 
@@ -23,41 +47,46 @@ concept co_executor = executor<T> && requires(T& w, task_node* node) { w.execute
 template <memory_resource R>
 job execute_sequentially(co_executor auto& executor KELCORO_LIFETIMEBOUND, with_resource<R>, auto... foos) {
   // accepts by value, because tasks need to be alive
-  ((co_await executor.execute(), foos()), ...);
+  ((co_await executor.transition(), foos()), ...);
 }
 
-job execute_sequentially(co_executor auto& executor KELCORO_LIFETIMEBOUND, auto... foos) {
+inline job execute_sequentially(co_executor auto& executor KELCORO_LIFETIMEBOUND, auto... foos) {
   // accepts by value, because tasks need to be alive
-  ((co_await executor.execute(), foos()), ...);
+  ((co_await executor.transition(), foos()), ...);
 }
 
-// waits all
+static void cancel_tasks(task_node* top) noexcept {
+  // cancel tasks
+  // there are assumption, that .destroy on handle correctly releases all resources associated with
+  // coroutine and will not lead to double .destroy
+  // (assume good code)
+  while (top) {
+    std::coroutine_handle task = top->task;
+    assert(task && "dead pill must be consumed by worker");
+    top = top->next;
+    task.destroy();
+  }
+}
+
+// blocks until all functions are executed waits all
 // if exception thrown, std::terminate called
-void execute_parallel(co_executor auto& executor, auto&& f, auto&&... foos) {
-  static_assert(sizeof...(foos) > 0);
-  std::latch all_done(sizeof...(foos) - 1);
-  operation_hash_t hash = 62;
-  auto execute_one = [&all_done](auto& task) {
-    task();
-    all_done.count_down();
+void execute_parallel(co_executor auto& executor, auto&& f, auto&&... foos) noexcept {
+  std::latch all_done(sizeof...(foos));
+  operation_hash_t hash = 62;  // because why not 62?)
+  auto execute_one = [&](auto& task) {
+    return [&all_done, &task]() {
+      task();  // terminate on exception
+      all_done.count_down();
+    };
   };
-  // TODO? собрать исключения(со всех тредов...) и результаты.. и вернуть видимо массив из них или как то
-  // так... ну да, видимо нужно возвращать тупл юнионов из ексепшна и результата...
-  // но если так делать, то в последовательном исполнении тоже это нужно.. Честно говоря нахуй надо...
-  ((++hash, executor.execute(foos, hash)), ...);
-  [&]() noexcept { f(); }();  // last one executed on this thread
+  // different hash for each fn, max parallel
+  ((++hash, executor.execute(execute_one(foos), hash)), ...);
+  f();  // last one executed on this thread
   all_done.wait();
 }
-void execute_parallel(co_executor auto&, auto&& f) {
-  // TODO? собрать исключения(со всех тредов...) и результаты.. и вернуть видимо массив из них или как то
-  // так... ну да, ивдимо нужно возвращать тупл юнионов из ексепшна и результата...
-  [&]() noexcept { f(); }();
-}
 
-// TODO эту логику так то нужно добавить в jump on
 template <typename E>
 struct KELCORO_CO_AWAIT_REQUIRED create_task_node_and_execute {
-  // invariant: != nullptr
   E& e;
   task_node node;
 
@@ -68,9 +97,24 @@ struct KELCORO_CO_AWAIT_REQUIRED create_task_node_and_execute {
   void await_suspend(std::coroutine_handle<P> handle) noexcept {
     // set task before it is attached
     node.task = handle;
-    e.execute(&node, calculate_operation_hash(handle));
+    e.attach(&node, calculate_operation_hash(handle));
   }
   static void await_resume() noexcept {
+  }
+};
+
+template <typename E>
+struct KELCORO_CO_AWAIT_REQUIRED create_task_node_and_execute_with_operation_hash
+    : create_task_node_and_execute<E> {
+  operation_hash_t hash = 0;
+
+  create_task_node_and_execute_with_operation_hash(E& e KELCORO_LIFETIMEBOUND, operation_hash_t hash) noexcept
+      : create_task_node_and_execute<E>(e), hash(hash) {
+  }
+  void await_suspend(std::coroutine_handle<> handle) noexcept {
+    // set task before it is attached
+    this->node.task = handle;
+    this->e.attach(&this->node, hash);
   }
 };
 
@@ -86,78 +130,61 @@ struct KELCORO_CO_AWAIT_REQUIRED create_task_node_and_execute {
   return prev;
 }
 
-// TODO сделать combine_event_pools, которое из различных источников типа нетворк ивенты, файл систем ивенты
-// таймеры и проч проч поллит и предоставляет как генератор ивентов просто
-// TODO !! ПИЗДЕЦ, кажется всё это не рабочая схема вообще. т.к. один тред загрузил топ
-// потом второй снял все значения и удалил (вызвал)
-// первый продолжил исполнение и пошёл сравнивать одно с другим - получил сегфот (удалённая память)
-// TODO написать на мьютексе очередь
-struct task_queue {
+struct alignas(hardware_destructive_interference_size) task_queue {
  private:
+  // TODO hmm, как оптимизировать доступ, хотя бы для треда который ждёт...
+  // ХММ, можно после исполнения каждой задачи делать try_lock, если получилось - забирать задачи!
+  // впринципе - выглядит очень логично. Если try lock вообще имеет смысл...
   task_node* top = nullptr;
   std::mutex mtx;
   std::condition_variable pushed;
+
+  friend struct thread_pool;
+
+  void push_nolock(task_node* node) noexcept {
+    node->next = std::exchange(top, node);
+  }
+  [[nodiscard]] task_node* pop_all_nolock() noexcept {
+    return std::exchange(top, nullptr);
+  }
 
  public:
   // precondition: node != nullptr
   void push(task_node* node) {
     {
       std::lock_guard l(mtx);
-      node->next = std::exchange(top, node);
+      push_nolock(node);
     }
     pushed.notify_one();
   }
 
-  task_node* try_pop_all() {
+  [[nodiscard]] task_node* pop_all() {
     task_node* tasks;
     {
       std::lock_guard l(mtx);
-      tasks = std::exchange(top, nullptr);
+      tasks = pop_all_nolock();
     }
     return reverse(tasks);
   }
 
-  // waitfree, exactly one atomic operation, but O(N) time
-  [[nodiscard]] task_node* pop_all() {
+  // blocking
+  // postcondition: task_node != nulptr
+  [[nodiscard]] task_node* pop_all_not_empty() {
     task_node* nodes;
     {
       std::unique_lock l(mtx);
       pushed.wait(l, [&] { return top != nullptr; });
       nodes = std::exchange(top, nullptr);
     }
-    // Хм, получается в пуше нужно исполнять самому треду который пушит, если уже началось разрушение?..
-    // хмм, по сути если стренд и пушится новая задача, НА САМОМ ТРЕДЕ, то он её и должен СРАЗУ исполнять?
-    // хотя тогда нарушается порядок же потенциально...
-    // нужно подумать либо сделать unordered_strand хех, тогда действительно можно в обход очередей и
-    // всего начать исполнять на месте если тред тот же самый
-    //  В случае если пуш происходит и пушит один из тредов тредпула, ТО... впринципе кажется сейфовым
-    // сразу начать исполнение там же, разве нет? Хотя кажется может начаться рекурсия внутри пуша
-    // вызов пуша и так далее до бесконечности
-    // можно внутри рабочего треда другой интерфейс использовать, хотя нет, это же юзер код...
-    // ну и да, можно использовать тредлокалы и туда положить bool, хотя некая хеш таблица с идеальным
-    // хешом выглядит лучше вероятно
-    // ах да, у меня же есть ещё один сценарий! Я могу напрямую вызывать .destroy хендлов при отмене!
-    // блин, а ведь это правильная стратегия так-то, только у меня дедпил и я уже исполнил остальное
-    // * новых операций не пушится
-    // * дедпил пришла
-    // * нужно забрать все оперцаии из очереди и разрушить через .destroy
-    // * потом выйти
-    // важно чтобы тредпул не оказался на одной из этих корутин, хех. Тогда реально проблема может
-    // получится
-    // но известно, что деструктор уже запущен, значит дело на другом потоке происходит.... Хм...
-    // т.е. либо мы дошли до конца корутины и вызвали деструктор, тогда будить корутину которая окончилась
-    // это уб, либо деструктор запущен через .destroy(), но тогда это второй destroy, это уб
-    // Может ли такая стратегия привести к двойному вызову destroy в нормальном коде?
-    // never blocks forewer, because dead pill sometime will be pushed (and it will be last
-    // push)
     assert(!!nodes);
+    // TODO обойтись без реверса
     return reverse(nodes);
   }
 };
 
 void worker_job(task_queue*) noexcept;
-// let 64 == hardware hashline size
-struct alignas(64) worker_t {
+
+struct worker_t {
   task_queue queue;
   std::thread thread;
   worker_t() : thread(worker_job, &queue) {
@@ -165,42 +192,32 @@ struct alignas(64) worker_t {
 };
 
 inline void worker_job(task_queue* queue) noexcept {
-  assert(!!queue);
+  assert(queue);
+  task_node* top;
+  std::coroutine_handle task;
   while (true) {
-    task_node* top = queue->pop_all();
+    top = queue->pop_all_not_empty();
     assert(top);
-    while (top) {
-      // grab task from memory which will be invalidated after call to task
-      std::coroutine_handle task = top->task;
+    do {
+      // grab task from memory which will be invalidated after task.resume()
+      task = top->task;
       // ++ before invoking a task
       top = top->next;
       if (!task) [[unlikely]]
         goto work_end;  // dead pill
       // if exception thrown, std::terminate called
-      task();
-    }
+      task.resume();
+    } while (top);
   }
 work_end:
-  // cancel tasks
-  // there are assumption, that .destroy on handle correctly releases all resources associated with
-  // coroutine and will not lead to double .destroy
-  // (assume good code)
-  task_node* top = queue->try_pop_all();
-  while (top) {
-    std::coroutine_handle task = top->task;
-    assert(task);
-    top = top->next;
-    task.destroy();
-  }
-  // thread pool should stop push
-  assert(queue->try_pop_all() == nullptr);
+  // after this point .stop in thread pool cancels all pending tasks in queues for all workers
+  cancel_tasks(top);
 }
 
-// TODO any executor (ref), for unifying strand/executor with diffrent template args
-// TODO операцию спавн? Чтобы начать корутину, дальше переехать на другой тред, передать управление корутине
+// TODO interface
 struct strand {
  private:
-  // invariant: != nullptr
+  // invariant: != nullptr, ptr for trivial copy/move
   worker_t* w = nullptr;
 
   friend struct thread_pool;
@@ -208,11 +225,12 @@ struct strand {
   }
 
  public:
+  // TODO same interface as thread
   void execute(task_node* node) noexcept {
     w->queue.push(node);
   }
 
-  co_awaiter auto execute() noexcept {
+  co_awaiter auto transition() noexcept {
     return create_task_node_and_execute<strand>{*this};
   }
 
@@ -250,68 +268,51 @@ struct thread_pool {
 
   thread_pool(thread_pool&&) = delete;
   void operator=(thread_pool&&) = delete;
-  // TODO и все execute сводятся к созданию ноды, считанию хеша, вызову execute от этого...
-  // TODO есть ли какой-то смысл в подмножестве тредов, т.е. strand на N тредов, а не 1?
 
   // precondition: node && node->task
-  void execute(task_node* node, operation_hash_t hash) noexcept {
-    // хм, получается я нашёл источник рандома - указатели...
-    // TODO operation_hash<> специализированный под разные типы задач, например coroutine_handle<void>
-    // и тд!!!
-    // TODO сверху - возможность ассоциировать таску с какой то операцией (явно передать хеШ)
-    // TODO счётчики, чтобы была возможность отслеживать нагрузку на разные воркеры тредпула хотя бы
-    // TODO для операций с одного треда имеет смысл иметь увеличивающийся счётчик, чтобы один тред раскладывал
-    // операции как раз по разным тредам, т.к. это максимально выгодно (как кажется) (параллельное исполнение)
-    // TODO тредлокал счётчик для этого
-    // TODO можно сделать некую таблицу из адресов воркеров, чем больше адресов воркера в ней, тем вероятнее
-    // его попадание и наоборот, т.е. балансировку за счёт такого странного механизма можно сделать...
-
-    // эвристика №2 - один и тот же тред пушит на один и тот же тред?.. Причём желательно сам на себя,
-    // если если это тред тредпула
-    // ну вот это кстати хуйня, с одного потока как раз таски должны пойти на разные для скорости обработки
+  void attach(task_node* node, operation_hash_t hash) noexcept {
     assert(node && node->task);
-    // if destructor started, then it is undefined behavior to push tasks here
+    // if destructor started, then it is undefined behavior to push tasks
     // because its data race (between destruction and accessing to 'this' for calling 'execute')
     //
     // But there is special case - workers, which may invoke task, which .execute next task
-    // in this case, workers when get a dead pills grab all operations from queue and cancel them
-    // (handle.destroy) and thread_pool waits them in 'stop'
-    //
+    // in this case, .stop waits for workers consume dead pill, grab all operations from all queues
+    // and cancel them(handle.destroy)
     // So, no one pushes and all what was pushed by tasks executed on workers is now destroyed,
     // no memory leak, profit!
 
     worker_t& w = select_worker(hash);
     w.queue.push(node);
   }
-  void execute(task_node* node) noexcept {
-    return execute(node, calculate_operation_hash(node->task));
+  void attach(task_node* node) noexcept {
+    return attach(node, calculate_operation_hash(node->task));
   }
 
-  co_awaiter auto execute() noexcept {
+  co_awaiter auto transition() noexcept {
     return create_task_node_and_execute<thread_pool>{*this};
   }
-
-  void execute(auto&& foo, operation_hash_t hash) {
-    [](thread_pool* pool, operation_hash_t hash, auto f) -> job {
-      task_node node;
-      co_await this_coro::suspend_and([&](std::coroutine_handle<> self_handle) {
-        node.task = self_handle;
-        pool->execute(&node, hash);
-      });
-      f();
-    }(this, hash, std::forward<decltype(foo)>(foo));
+  co_awaiter auto transition(operation_hash_t hash) noexcept {
+    return create_task_node_and_execute_with_operation_hash<thread_pool>{*this, hash};
   }
-  void execute(auto&& foo) {
+
+  [[maybe_unused]] job execute(std::invocable auto foo, operation_hash_t hash) KELCORO_LIFETIMEBOUND {
+    co_await transition(hash);
+    foo();
+  }
+  [[maybe_unused]] job execute(std::invocable auto&& foo) {
     return execute(std::forward<decltype(foo)>(foo), calculate_operation_hash(foo));
   }
 
+  // this value dont changed after thread_pool creation
+  KELCORO_PURE size_t workers_count() const noexcept {
+    return workers.size();
+  }
   // TODO std::ranges::range auto workers() noexcept KELCORO_LIFETIMEBOUND {
   // TODO   return workers | std::views::transform(to strand);
   // TODO }
 
   // TODO? хм, может просто назвать это worker_ref?
-  strand get_strand(operation_hash_t op_hash = rand()) KELCORO_LIFETIMEBOUND {
-    // TODO srand(time(0)) ???
+  strand get_strand(operation_hash_t op_hash) KELCORO_LIFETIMEBOUND {
     // TODO как-то специально выбирать мб, чтобы равномерно хотя бы было. Ну или тредлокал переменная номерок
     return strand(select_worker(op_hash));
   }
@@ -326,6 +327,7 @@ struct thread_pool {
     // его
     return workers[op_hash % workers.size()];
   }
+
   // should be called exactly once
   void stop() noexcept {
     task_node pill{.next = nullptr, .task = nullptr};
@@ -335,7 +337,19 @@ struct thread_pool {
       KELCORO_ASSUME(w.thread.joinable());
       w.thread.join();
     }
+    // here all workers stopped, cancel tasks
+    for (worker_t& w : workers) {
+      assert(w.queue.mtx.try_lock() && "no one should lock this mutex now!");
+      assert((w.queue.mtx.unlock(), true));
+      cancel_tasks(w.queue.pop_all_nolock());
+    }
   }
 };
+
+template <>
+struct KELCORO_CO_AWAIT_REQUIRED jump_on<thread_pool> : create_task_node_and_execute<thread_pool> {};
+
+template <>
+struct KELCORO_CO_AWAIT_REQUIRED jump_on<strand> : create_task_node_and_execute<strand> {};
 
 }  // namespace dd

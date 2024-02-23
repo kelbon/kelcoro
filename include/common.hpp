@@ -418,27 +418,31 @@ concept executor = requires(T& value) { value.execute([] {}); };
 
 struct noop_executor {
   template <std::invocable F>
-  void execute(F&&) const noexcept {
+  static void execute(F&&) noexcept {
   }
 };
 
 struct this_thread_executor {
   template <std::invocable F>
-  void execute(F&& f) const noexcept(std::is_nothrow_invocable_v<F&&>) {
+  static void execute(F&& f) noexcept(std::is_nothrow_invocable_v<F&&>) {
     (void)std::forward<F>(f)();
   }
 };
 
 struct new_thread_executor {
   template <std::invocable F>
-  void execute(F&& f) const {
+  static void execute(F&& f) {
     std::thread([foo = std::forward<F>(f)]() mutable { (void)std::forward<F>(foo)(); }).detach();
   }
 };
 
 template <executor E>
 struct KELCORO_CO_AWAIT_REQUIRED jump_on {
-  KELCORO_NO_UNIQUE_ADDRESS E e;
+  KELCORO_NO_UNIQUE_ADDRESS
+  std::conditional_t<std::is_empty_v<E>, E, E&> e;
+
+  static_assert(std::is_same_v<std::decay_t<E>, E>);
+
 #if __cpp_aggregate_paren_init < 201902L
   constexpr jump_on(std::type_identity_t<E> e) noexcept : e(static_cast<E&&>(e)) {
   }
@@ -453,7 +457,7 @@ struct KELCORO_CO_AWAIT_REQUIRED jump_on {
   }
 };
 template <typename E>
-jump_on(E&&) -> jump_on<E>;
+jump_on(E&&) -> jump_on<std::remove_cvref_t<E>>;
 
 struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
  private:
@@ -492,7 +496,7 @@ struct KELCORO_CO_AWAIT_REQUIRED destroy_coro_t {
 };
 
 template <typename F>
-struct suspend_and_t {
+struct KELCORO_CO_AWAIT_REQUIRED suspend_and_t {
   KELCORO_NO_UNIQUE_ADDRESS F fn;
 
   constexpr static bool await_ready() noexcept {
@@ -509,12 +513,30 @@ struct suspend_and_t {
 template <typename F>
 suspend_and_t(F&&) -> suspend_and_t<std::remove_cvref_t<F>>;
 
+struct KELCORO_CO_AWAIT_REQUIRED op_hash_t {
+  operation_hash_t hash;
+
+  static constexpr bool await_ready() noexcept {
+    return false;
+  }
+  template <typename P>
+  constexpr bool await_suspend(std::coroutine_handle<P> handle) noexcept {
+    calculate_operation_hash(handle);
+    return false;
+  }
+  constexpr operation_hash_t await_resume() noexcept {
+    return hash;
+  }
+};
+
 namespace this_coro {
 
 // provides access to inner handle of coroutine
 constexpr inline get_handle_t handle = {};
 
 constexpr inline destroy_coro_t destroy = {};
+
+constexpr inline op_hash_t operation_hash = {};
 
 // co_awaiting on this function suspends coroutine and invokes 'fn' with coroutine handle.
 // await suspend returns what 'fn' returns!
