@@ -43,17 +43,11 @@ struct task_node {
 template <typename T>
 concept co_executor = executor<T> && requires(T& w, task_node* node) { w.execute(node); };
 
-// if 'foos' throw exception, std::terminate called
-template <memory_resource R>
-job execute_sequentially(co_executor auto& executor KELCORO_LIFETIMEBOUND, with_resource<R>, auto... foos) {
-  // accepts by value, because tasks need to be alive
-  ((co_await executor.transition(), foos()), ...);
-}
+struct thread_pool;
 
-inline job execute_sequentially(co_executor auto& executor KELCORO_LIFETIMEBOUND, auto... foos) {
-  // accepts by value, because tasks need to be alive
-  ((co_await executor.transition(), foos()), ...);
-}
+}  // namespace dd
+
+namespace dd::noexport {
 
 static void cancel_tasks(task_node* top) noexcept {
   // cancel tasks
@@ -66,23 +60,6 @@ static void cancel_tasks(task_node* top) noexcept {
     top = top->next;
     task.destroy();
   }
-}
-
-// blocks until all functions are executed waits all
-// if exception thrown, std::terminate called
-void execute_parallel(co_executor auto& executor, auto&& f, auto&&... foos) noexcept {
-  std::latch all_done(sizeof...(foos));
-  operation_hash_t hash = 62;  // because why not 62?)
-  auto execute_one = [&](auto& task) {
-    return [&all_done, &task]() {
-      task();  // terminate on exception
-      all_done.count_down();
-    };
-  };
-  // different hash for each fn, max parallel
-  ((++hash, executor.execute(execute_one(foos), hash)), ...);
-  f();  // last one executed on this thread
-  all_done.wait();
 }
 
 template <typename E>
@@ -130,39 +107,34 @@ struct KELCORO_CO_AWAIT_REQUIRED create_task_node_and_attach_with_operation_hash
   }
 };
 
-// returns new begin
-// TODO нормальную очередь на мьютексе и это не нужно тогда
-[[nodiscard]] constexpr task_node* reverse(task_node* node) noexcept {
-  task_node* prev = nullptr;
-  task_node* cur = node;
-  while (cur) {
-    task_node* next = std::exchange(cur->next, prev);
-    prev = std::exchange(cur, next);
-  }
-  return prev;
-}
-
 struct alignas(hardware_destructive_interference_size) task_queue {
  private:
-  // TODO hmm, как оптимизировать доступ, хотя бы для треда который ждёт...
-  // ХММ, можно после исполнения каждой задачи делать try_lock, если получилось - забирать задачи!
-  // впринципе - выглядит очень логично. Если try lock вообще имеет смысл...
-  task_node* top = nullptr;
+  task_node* first = nullptr;
+  // if !first, 'last' value unspecified
+  // if first, then 'last' present too
+  task_node* last = nullptr;
   std::mutex mtx;
   std::condition_variable pushed;
 
-  friend struct thread_pool;
+  friend struct dd::thread_pool;
 
+  // precondition: node && node->next
   void push_nolock(task_node* node) noexcept {
-    node->next = std::exchange(top, node);
+    if (first) {
+      last->next = node;
+      last = node;
+    } else {
+      first = last = node;
+    }
   }
   [[nodiscard]] task_node* pop_all_nolock() noexcept {
-    return std::exchange(top, nullptr);
+    return std::exchange(first, nullptr);
   }
 
  public:
-  // precondition: node != nullptr
+  // precondition: node != nullptr, node is not contained in queue
   void push(task_node* node) {
+    node->next = nullptr;
     {
       std::lock_guard l(mtx);
       push_nolock(node);
@@ -176,21 +148,21 @@ struct alignas(hardware_destructive_interference_size) task_queue {
       std::lock_guard l(mtx);
       tasks = pop_all_nolock();
     }
-    return reverse(tasks);
+    return tasks;
   }
 
   // blocking
-  // postcondition: task_node != nulptr
+  // postcondition: task_node != nullptr
   [[nodiscard]] task_node* pop_all_not_empty() {
     task_node* nodes;
     {
       std::unique_lock l(mtx);
-      pushed.wait(l, [&] { return top != nullptr; });
-      nodes = std::exchange(top, nullptr);
+      while (!first)
+        pushed.wait(l);
+      nodes = pop_all_nolock();
     }
     assert(!!nodes);
-    // TODO обойтись без реверса
-    return reverse(nodes);
+    return nodes;
   }
 };
 
@@ -226,14 +198,35 @@ work_end:
   cancel_tasks(top);
 }
 
+}  // namespace dd::noexport
+
+namespace dd {
+
+// blocks until all 'foos' executed
+// if exception thrown, std::terminate called
+void execute_parallel(co_executor auto& executor, auto&& f, auto&&... foos) noexcept {
+  std::latch all_done(sizeof...(foos));
+  operation_hash_t hash = 62;  // because why not 62?)
+  auto execute_one = [&](auto& task) {
+    return [&all_done, &task]() {
+      task();  // terminate on exception
+      all_done.count_down();
+    };
+  };
+  // different hash for each fn, max parallel
+  ((++hash, executor.execute(execute_one(foos), hash)), ...);
+  f();  // last one executed on this thread
+  all_done.wait();
+}
+
 // TODO interface
 struct strand {
  private:
   // invariant: != nullptr, ptr for trivial copy/move
-  worker_t* w = nullptr;
+  noexport::worker_t* w = nullptr;
 
   friend struct thread_pool;
-  explicit strand(worker_t& w KELCORO_LIFETIMEBOUND) : w(&w) {
+  explicit strand(noexport::worker_t& w KELCORO_LIFETIMEBOUND) : w(&w) {
   }
 
  public:
@@ -243,7 +236,7 @@ struct strand {
   }
 
   co_awaiter auto transition() noexcept {
-    return create_task_node_and_attach<strand>{*this};
+    return noexport::create_task_node_and_attach<strand>{*this};
   }
 
   void execute(auto&& foo) {
@@ -254,7 +247,7 @@ struct strand {
 struct thread_pool {
  private:
   // invariant: .size never changed, .size > 0
-  std::deque<worker_t> workers;
+  std::deque<noexport::worker_t> workers;
 
  public:
   static size_t default_thread_count() {
@@ -293,7 +286,7 @@ struct thread_pool {
     // So, no one pushes and all what was pushed by tasks executed on workers is now destroyed,
     // no memory leak, profit!
 
-    worker_t& w = select_worker(hash);
+    auto& w = select_worker(hash);
     w.queue.push(node);
   }
   void attach(task_node* node) noexcept {
@@ -301,10 +294,10 @@ struct thread_pool {
   }
 
   co_awaiter auto transition() noexcept {
-    return create_task_node_and_attach<thread_pool>{*this};
+    return noexport::create_task_node_and_attach<thread_pool>{*this};
   }
   co_awaiter auto transition(operation_hash_t hash) noexcept {
-    return create_task_node_and_attach_with_operation_hash<thread_pool>{*this, hash};
+    return noexport::create_task_node_and_attach_with_operation_hash<thread_pool>{*this, hash};
   }
 
   [[maybe_unused]] job execute(std::invocable auto foo, operation_hash_t hash) KELCORO_LIFETIMEBOUND {
@@ -330,7 +323,7 @@ struct thread_pool {
   }
 
  private:
-  worker_t& select_worker(operation_hash_t op_hash) noexcept {
+  noexport::worker_t& select_worker(operation_hash_t op_hash) noexcept {
     // TODO автобалансировка через изменение чиселки и проверку нагрузки (через какую то хрень типа среднее
     //  квадартичное отклонение количества тасок на воркерах и тд). Если точнее - КОЭФФИЦИЕНТ ДЖИННИ!))
     // прибавление просто числа здесь это просто сдвиг нагрузки без смены распределения (который тоже имеет
@@ -343,25 +336,25 @@ struct thread_pool {
   // should be called exactly once
   void stop() noexcept {
     task_node pill{.next = nullptr, .task = nullptr};
-    for (worker_t& w : workers)
+    for (auto& w : workers)
       w.queue.push(&pill);
-    for (worker_t& w : workers) {
+    for (auto& w : workers) {
       KELCORO_ASSUME(w.thread.joinable());
       w.thread.join();
     }
     // here all workers stopped, cancel tasks
-    for (worker_t& w : workers) {
+    for (auto& w : workers) {
       assert(w.queue.mtx.try_lock() && "no one should lock this mutex now!");
       assert((w.queue.mtx.unlock(), true));
-      cancel_tasks(w.queue.pop_all_nolock());
+      noexport::cancel_tasks(w.queue.pop_all_nolock());
     }
   }
 };
 
 template <>
-struct KELCORO_CO_AWAIT_REQUIRED jump_on<thread_pool> : create_task_node_and_attach<thread_pool> {};
+struct KELCORO_CO_AWAIT_REQUIRED jump_on<thread_pool> : noexport::create_task_node_and_attach<thread_pool> {};
 
 template <>
-struct KELCORO_CO_AWAIT_REQUIRED jump_on<strand> : create_task_node_and_attach<strand> {};
+struct KELCORO_CO_AWAIT_REQUIRED jump_on<strand> : noexport::create_task_node_and_attach<strand> {};
 
 }  // namespace dd
