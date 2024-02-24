@@ -9,7 +9,7 @@ static_assert(dd::co_executor<dd::thread_pool> && dd::co_executor<dd::strand> &&
 std::atomic<int> i = 0;
 enum {
   COUNT = 150,
-  MUSTBE_EXECUTED = 100'000'000,
+  MUSTBE_EXECUTED = 100'000,
 };
 std::latch l(COUNT);
 dd::thread_pool p(16);

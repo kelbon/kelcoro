@@ -12,8 +12,8 @@ using any_executor_ref = thread_pool&;
 // same as std::latch, but for coroutines
 struct latch {
  private:
-  alignas(std::hardware_destructive_interference_size) mutable nonowner_lockfree_stack<task_node> stack;
-  alignas(std::hardware_destructive_interference_size) std::atomic_ptrdiff_t counter;
+  alignas(hardware_destructive_interference_size) mutable nonowner_lockfree_stack<task_node> stack;
+  alignas(hardware_destructive_interference_size) std::atomic_ptrdiff_t counter;
   any_executor_ref exe;
 
   struct wait_awaiter {
