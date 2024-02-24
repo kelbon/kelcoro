@@ -432,7 +432,7 @@ inline void thread_pool::stop(worker* w, size_t count) noexcept {
   for (auto& w : workers)
     w.queue.push(&pill);
   for (auto& w : workers) {
-    KELCORO_ASSUME(w.thread.joinable());
+    assert(w.thread.joinable());
     w.thread.join();
   }
   // here all workers stopped, cancel tasks

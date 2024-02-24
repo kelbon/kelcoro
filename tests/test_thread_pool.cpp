@@ -34,10 +34,11 @@ int main() {
   l.wait();
   if (i.load() < MUSTBE_EXECUTED)
     return -1;
-  // нужно метрику сколько раз тред засыпал из попов
+#ifdef KELCORO_ENABLE_THREADPOOL_MONITORING
   for (const dd::worker& w : p.workers_range()) {
     w.get_moniroting().print(std::cout);
     std::cout << '\n';
   }
+#endif
   return 0;
 }
