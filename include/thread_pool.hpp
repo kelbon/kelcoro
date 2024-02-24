@@ -7,6 +7,11 @@
 
 #include "job.hpp"
 
+#if !defined(NDEBUG) && !defined(KELCORO_DISABLE_MONITORING)
+#define KELCORO_ENABLE_THREADPOOL_MONITORING
+#include <format>  // print monitoring
+#endif
+
 // TODO соединить таски в асинхронный стек + контекст каждой, чтобы можно было пройти?.. По каналу уже так
 // можно по сути т.е. можно просто для канала сделать эту операцию и автоматически готово! Проход по циклу
 // вверх
@@ -19,40 +24,51 @@
 // это в тредлокалах вероятно
 //
 // план такой:
-// мониторинг для отслеживания наскоько что хорошо делается
 // тесты, бенчмарк, дальше улучшать/менять и смотреть на бенч
 
 namespace dd {
-
-#if !defined(NDEBUG) && !defined(KELCORO_DISABLE_MONITORING)
-#define KELCORO_ENABLE_THREADPOOL_MONITORING
-#endif
 
 #ifdef KELCORO_ENABLE_THREADPOOL_MONITORING
 
 struct monitoring_t {
   // all values only grow
-
+  // TODO хм, убрать атомики вообще, забирать значения только когда воркер остановлен?
   std::atomic_size_t pushed = 0;
   std::atomic_size_t finished = 0;
   std::atomic_size_t strands_count = 0;
   // count of pop_all from queue
   std::atomic_size_t pop_count = 0;
+  std::atomic_size_t sleep_count = 0;
 
   // all calculations approximate
   using enum std::memory_order;
 
-  size_t average_tasks_popped() const noexcept {
-    size_t c = pop_count.load(relaxed);
-    if (!c)
+  static size_t average_tasks_popped(size_t pop_count, size_t finished) noexcept {
+    if (!pop_count)
       return 0;
-    return finished.load(relaxed) / c;
+    return finished / pop_count;
   }
-  size_t pending_count() const noexcept {
-    size_t f = finished.load(relaxed);
-    size_t p = pushed.load(relaxed);
+  static size_t pending_count(size_t pushed, size_t finished) noexcept {
     // order to never produce value < 0
-    return p - f;
+    return pushed - finished;
+  }
+  static float sleep_percent(size_t pop_count, size_t sleep_count) noexcept {
+    assert(pop_count >= sleep_count);
+    return static_cast<float>(sleep_count) / pop_count;
+  }
+  [[nodiscard]] std::string print() const {
+    size_t p = pushed, f = finished, sc = strands_count, pc = pop_count, slc = sleep_count,
+           slp = sleep_percent(pc, slc), avr_tp = average_tasks_popped(pc, f), pending = pending_count(p, f);
+    return std::format(R"(
+      pushed:               {},
+      finished:             {},
+      strands_count:        {},
+      pop_count:            {},
+      sleep_count:          {},
+      sleep%:               {},
+      average tasks popped: {},
+      pending count:        {})",
+                       p, f, sc, pc, slc, slp, avr_tp, pending);
   }
 };
 
@@ -67,7 +83,6 @@ struct monitoring_t {
 using std::hardware_constructive_interference_size;
 using std::hardware_destructive_interference_size;
 #else
-// 64 bytes on x86-64 │ L1_CACHE_BYTES │ L1_CACHE_SHIFT │ __cacheline_aligned │ ...
 constexpr std::size_t hardware_constructive_interference_size = 64;
 constexpr std::size_t hardware_destructive_interference_size = 64;
 #endif
@@ -80,7 +95,10 @@ struct task_node {
 };
 
 template <typename T>
-concept co_executor = executor<T> && requires(T& w, task_node* node) { w.execute(node); };
+concept co_executor = executor<T> && requires(T& w, task_node* node) {
+  w.attach(node);
+  { w.transition() } -> co_awaiter;
+};
 
 struct thread_pool;
 
@@ -121,28 +139,6 @@ struct KELCORO_CO_AWAIT_REQUIRED create_task_node_and_attach {
     e.attach(&node, calculate_operation_hash(handle));
   }
   static void await_resume() noexcept {
-  }
-};
-
-template <typename E>
-struct KELCORO_CO_AWAIT_REQUIRED create_task_node_and_attach_with_operation_hash
-    : private create_task_node_and_attach<E> {
- private:
-  operation_hash_t hash = 0;
-
-  using base_t = create_task_node_and_attach<E>;
-
- public:
-  create_task_node_and_attach_with_operation_hash(E& e KELCORO_LIFETIMEBOUND, operation_hash_t hash) noexcept
-      : create_task_node_and_attach<E>(e), hash(hash) {
-  }
-  using base_t::await_ready;
-  using base_t::await_resume;
-
-  void await_suspend(std::coroutine_handle<> handle) noexcept {
-    // set task before it is attached
-    this->node.task = handle;
-    this->e.attach(&this->node, hash);
   }
 };
 
@@ -192,10 +188,11 @@ struct alignas(hardware_destructive_interference_size) task_queue {
 
   // blocking
   // postcondition: task_node != nullptr
-  [[nodiscard]] task_node* pop_all_not_empty() {
+  [[nodiscard]] task_node* pop_all_not_empty(KELCORO_MONITORING(bool& sleeped)) {
     task_node* nodes;
     {
       std::unique_lock l(mtx);
+      KELCORO_MONITORING(sleeped = !first);
       while (!first)
         pushed.wait(l);
       nodes = pop_all_nolock();
@@ -204,43 +201,46 @@ struct alignas(hardware_destructive_interference_size) task_queue {
     return nodes;
   }
 };
+
 }  // namespace dd::noexport
 
 namespace dd {
 
-struct worker_t {
-  // order of fields important, because thread must be initialized after queue and 'mon'
-  // because worker_job using them
+// executes tasks on one thread, not movable
+// expensive to create
+struct worker {
+ private:
   noexport::task_queue queue;
   KELCORO_MONITORING(monitoring_t mon);
   std::thread thread;
-};
 
-inline void worker_job(worker_t* worker) noexcept {
-  assert(worker);
-  task_node* top;
-  std::coroutine_handle task;
-  noexport::task_queue* queue = &worker->queue;
-  while (true) {
-    top = queue->pop_all_not_empty();
-    KELCORO_MONITORING_INC(worker->mon.pop_count);
-    assert(top);
-    do {
-      // grab task from memory which will be invalidated after task.resume()
-      task = top->task;
-      // ++ before invoking a task
-      top = top->next;
-      if (!task) [[unlikely]]
-        goto work_end;  // dead pill
-      // if exception thrown, std::terminate called
-      task.resume();
-      KELCORO_MONITORING_INC(worker->mon.finished);
-    } while (top);
+  friend struct strand;
+  friend thread_pool;
+  static void worker_job(worker* w) noexcept;
+
+ public:
+  worker() : queue(), thread(&worker_job, this) {
   }
-work_end:
-  // after this point .stop in thread pool cancels all pending tasks in queues for all workers
-  noexport::cancel_tasks(top);
-}
+  // precondition: node && node->task
+  void attach(task_node* node) noexcept {
+    assert(node && node->task);
+    queue.push(node);
+    KELCORO_MONITORING_INC(mon.pushed);
+  }
+
+  KELCORO_MONITORING(const monitoring_t& get_moniroting() const noexcept { return mon; })
+
+  // schedules coroutine to be executed on thread pool
+  co_awaiter auto transition() noexcept {
+    return noexport::create_task_node_and_attach<worker>{*this};
+  }
+
+  // creates coroutine with will invoke 'foo' on thread pool
+  [[maybe_unused]] job execute(std::invocable auto foo) KELCORO_LIFETIMEBOUND {
+    co_await transition();
+    foo();
+  }
+};
 
 // blocks until all 'foos' executed
 // if exception thrown, std::terminate called
@@ -259,50 +259,41 @@ void execute_parallel(co_executor auto& executor, auto&& f, auto&&... foos) noex
   all_done.wait();
 }
 
+// executes tasks on one thread
+// works as lightweight worker ref
+// very cheap to create and copy
 struct strand {
  private:
   // invariant: != nullptr, ptr for trivial copy/move
-  worker_t* w = nullptr;
+  worker* w = nullptr;
 
   friend thread_pool;
 
  public:
-  // precondition: 'w' belongs to some thread_pool
-  explicit strand(worker_t& w KELCORO_LIFETIMEBOUND) : w(&w) {
+  explicit strand(worker& wo KELCORO_LIFETIMEBOUND) : w(&wo) {
+    KELCORO_MONITORING_INC(w->mon.strands_count);
   }
 
-  void attach(task_node* node, operation_hash_t hash) noexcept {
-    assert(node && node->task);
-    w->queue.push(node);
-    KELCORO_MONITORING_INC(w->mon.pushed);
-  }
   // precondition: node && node->task
   void attach(task_node* node) noexcept {
-    return attach(node, calculate_operation_hash(node->task));
+    w->attach(node);
   }
 
   // schedules coroutine to be executed on thread pool
   co_awaiter auto transition() noexcept {
-    return noexport::create_task_node_and_attach<strand>{*this};
-  }
-  co_awaiter auto transition(operation_hash_t hash) noexcept {
-    return noexport::create_task_node_and_attach_with_operation_hash<strand>{*this, hash};
+    return w->transition();
   }
 
   // creates coroutine with will invoke 'foo' on thread pool
-  [[maybe_unused]] job execute(std::invocable auto foo, operation_hash_t hash) KELCORO_LIFETIMEBOUND {
-    co_await transition(hash);
-    foo();
-  }
-  [[maybe_unused]] job execute(std::invocable auto&& foo) {
-    return execute(std::forward<decltype(foo)>(foo), calculate_operation_hash(foo));
+  [[maybe_unused]] job execute(std::invocable auto&& foo) KELCORO_LIFETIMEBOUND {
+    return w->execute(std::forward<decltype(foo)>(foo));
   }
 };
 
 struct thread_pool {
  private:
   // invariant: .size never changed, .size > 0
-  worker_t* workers;
+  worker* workers;
   size_t workers_size;
   std::pmr::memory_resource* resource;
 
@@ -313,23 +304,7 @@ struct thread_pool {
   }
 
   explicit thread_pool(size_t thread_count = default_thread_count(),
-                       std::pmr::memory_resource* r = std::pmr::new_delete_resource()) {
-    resource = r;
-    workers_size = std::max<size_t>(1, thread_count);
-    workers = (worker_t*)r->allocate(sizeof(worker_t) * workers_size, alignof(worker_t));
-
-    bool exception = true;
-    size_t i = 0;
-    scope_exit _([&] {
-      if (exception)
-        stop(workers, i);
-    });
-    for (; i < workers_size; ++i) {
-      worker_t* ptr = &workers[i];
-      new (ptr) worker_t{noexport::task_queue{}, KELCORO_MONITORING({}, ) std::thread(&worker_job, ptr)};
-    }
-    exception = false;
-  }
+                       std::pmr::memory_resource* r = std::pmr::new_delete_resource());
 
   ~thread_pool() {
     stop(workers, workers_size);
@@ -340,7 +315,6 @@ struct thread_pool {
 
   // precondition: node && node->task
   void attach(task_node* node, operation_hash_t hash) noexcept {
-    assert(node && node->task);
     // if destructor started, then it is undefined behavior to push tasks
     // because its data race (between destruction and accessing to 'this' for calling 'execute')
     //
@@ -351,8 +325,7 @@ struct thread_pool {
     // no memory leak, profit!
 
     auto& w = select_worker(hash);
-    w.queue.push(node);
-    KELCORO_MONITORING_INC(w.mon.pushed);
+    w.attach(node);
   }
   // precondition: node && node->task
   void attach(task_node* node) noexcept {
@@ -364,13 +337,14 @@ struct thread_pool {
     return noexport::create_task_node_and_attach<thread_pool>{*this};
   }
   co_awaiter auto transition(operation_hash_t hash) noexcept {
-    return noexport::create_task_node_and_attach_with_operation_hash<thread_pool>{*this, hash};
+    worker& w = select_worker(hash);
+    return w.transition();
   }
 
   // creates coroutine with will invoke 'foo' on thread pool
-  [[maybe_unused]] job execute(std::invocable auto foo, operation_hash_t hash) KELCORO_LIFETIMEBOUND {
-    co_await transition(hash);
-    foo();
+  [[maybe_unused]] job execute(std::invocable auto&& foo, operation_hash_t hash) KELCORO_LIFETIMEBOUND {
+    worker& w = select_worker(hash);
+    return w.execute(std::forward<decltype(foo)>(foo));
   }
   [[maybe_unused]] job execute(std::invocable auto&& foo) {
     return execute(std::forward<decltype(foo)>(foo), calculate_operation_hash(foo));
@@ -381,49 +355,21 @@ struct thread_pool {
     return workers_size;
   }
 
-  std::span<const worker_t> workers_range() noexcept KELCORO_LIFETIMEBOUND {
+  std::span<const worker> workers_range() noexcept KELCORO_LIFETIMEBOUND {
     return std::span(workers, workers_size);
   }
 
-  // TODO? хм, может просто назвать это worker_ref?
   strand get_strand(operation_hash_t op_hash) KELCORO_LIFETIMEBOUND {
-    // TODO как-то специально выбирать мб, чтобы равномерно хотя бы было. Ну или тредлокал переменная номерок
-
-    strand s(select_worker(op_hash));
-    KELCORO_MONITORING_INC(s.w->mon.strands_count);
-    return s;
+    return strand(select_worker(op_hash));
   }
 
  private:
-  worker_t& select_worker(operation_hash_t op_hash) noexcept {
-    // TODO автобалансировка через изменение чиселки и проверку нагрузки (через какую то хрень типа среднее
-    //  квадартичное отклонение количества тасок на воркерах и тд). Если точнее - КОЭФФИЦИЕНТ ДЖИННИ!))
-    // прибавление просто числа здесь это просто сдвиг нагрузки без смены распределения (который тоже имеет
-    // смысл) если на какой то тред попало несколько стрендов (т.к. нагрузка стрендов не сдвигается)
-    // Но можно придумать преобразование, которое будет менять распределение нагрузки как-нибудь и подбирать
-    // его
+  worker& select_worker(operation_hash_t op_hash) noexcept {
     return workers[op_hash % workers_size];
   }
 
   // should be called exactly once
-  void stop(worker_t* w, size_t count) noexcept {
-    task_node pill{.next = nullptr, .task = nullptr};
-    std::span workers(w, count);
-    for (auto& w : workers)
-      w.queue.push(&pill);
-    for (auto& w : workers) {
-      KELCORO_ASSUME(w.thread.joinable());
-      w.thread.join();
-    }
-    // here all workers stopped, cancel tasks
-    for (auto& w : workers) {
-      assert(w.queue.mtx.try_lock() && "no one should lock this mutex now!");
-      assert((w.queue.mtx.unlock(), true));
-      noexport::cancel_tasks(w.queue.pop_all_nolock());
-    }
-    std::destroy(begin(workers), end(workers));
-    resource->deallocate(this->workers, sizeof(worker_t) * workers_size, alignof(worker_t));
-  }
+  void stop(worker* w, size_t count) noexcept;
 };
 
 template <>
@@ -431,6 +377,74 @@ struct KELCORO_CO_AWAIT_REQUIRED jump_on<thread_pool> : noexport::create_task_no
 
 template <>
 struct KELCORO_CO_AWAIT_REQUIRED jump_on<strand> : noexport::create_task_node_and_attach<strand> {};
+
+template <>
+struct KELCORO_CO_AWAIT_REQUIRED jump_on<worker> : noexport::create_task_node_and_attach<worker> {};
+
+inline void worker::worker_job(worker* w) noexcept {
+  assert(w);
+  task_node* top;
+  std::coroutine_handle task;
+  noexport::task_queue* queue = &w->queue;
+  KELCORO_MONITORING(bool sleeped);
+  while (true) {
+    top = queue->pop_all_not_empty(KELCORO_MONITORING(sleeped));
+    KELCORO_MONITORING(if (sleeped) KELCORO_MONITORING_INC(w->mon.sleep_count));
+    KELCORO_MONITORING_INC(w->mon.pop_count);
+    assert(top);
+    do {
+      // grab task from memory which will be invalidated after task.resume()
+      task = top->task;
+      // ++ before invoking a task
+      top = top->next;
+      if (!task) [[unlikely]]
+        goto work_end;  // dead pill
+      // if exception thrown, std::terminate called
+      task.resume();
+      KELCORO_MONITORING_INC(w->mon.finished);
+    } while (top);
+  }
+work_end:
+  // after this point .stop in thread pool cancels all pending tasks in queues for all workers
+  noexport::cancel_tasks(top);
+}
+
+inline thread_pool::thread_pool(size_t thread_count, std::pmr::memory_resource* r) {
+  resource = r;
+  workers_size = std::max<size_t>(1, thread_count);
+  workers = (worker*)r->allocate(sizeof(worker) * workers_size, alignof(worker));
+
+  bool exception = true;
+  size_t i = 0;
+  scope_exit _([&] {
+    if (exception)
+      stop(workers, i);
+  });
+  for (; i < workers_size; ++i) {
+    worker* ptr = &workers[i];
+    new (ptr) worker;
+  }
+  exception = false;
+}
+
+inline void thread_pool::stop(worker* w, size_t count) noexcept {
+  task_node pill{.next = nullptr, .task = nullptr};
+  std::span workers(w, count);
+  for (auto& w : workers)
+    w.queue.push(&pill);
+  for (auto& w : workers) {
+    KELCORO_ASSUME(w.thread.joinable());
+    w.thread.join();
+  }
+  // here all workers stopped, cancel tasks
+  for (auto& w : workers) {
+    assert(w.queue.mtx.try_lock() && "no one should lock this mutex now!");
+    assert((w.queue.mtx.unlock(), true));
+    noexport::cancel_tasks(w.queue.pop_all_nolock());
+  }
+  std::destroy(begin(workers), end(workers));
+  resource->deallocate(this->workers, sizeof(worker) * workers_size, alignof(worker));
+}
 
 }  // namespace dd
 
