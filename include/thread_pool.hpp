@@ -9,7 +9,6 @@
 
 #if !defined(NDEBUG) && !defined(KELCORO_DISABLE_MONITORING)
 #define KELCORO_ENABLE_THREADPOOL_MONITORING
-#include <format>  // print monitoring
 #endif
 
 // TODO соединить таски в асинхронный стек + контекст каждой, чтобы можно было пройти?.. По каналу уже так
@@ -56,19 +55,19 @@ struct monitoring_t {
     assert(pop_count >= sleep_count);
     return static_cast<float>(sleep_count) / pop_count;
   }
-  [[nodiscard]] std::string print() const {
+  void print(auto&& out) const {
     size_t p = pushed, f = finished, sc = strands_count, pc = pop_count, slc = sleep_count,
            slp = sleep_percent(pc, slc), avr_tp = average_tasks_popped(pc, f), pending = pending_count(p, f);
-    return std::format(R"(
-      pushed:               {},
-      finished:             {},
-      strands_count:        {},
-      pop_count:            {},
-      sleep_count:          {},
-      sleep%:               {},
-      average tasks popped: {},
-      pending count:        {})",
-                       p, f, sc, pc, slc, slp, avr_tp, pending);
+    // clang-format off
+    out << "pushed:               " << p;
+    out << "finished:             " << f;
+    out << "strands_count:        " << sc;
+    out << "pop_count:            " << pc;
+    out << "sleep_count:          " << slc;
+    out << "sleep%:               " << slp;
+    out << "average tasks popped: " << avr_tp;
+    out << "pending count:        " << pending;
+    // clang-format on
   }
 };
 

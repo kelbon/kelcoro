@@ -36,7 +36,8 @@ int main() {
     return -1;
   // нужно метрику сколько раз тред засыпал из попов
   for (const dd::worker& w : p.workers_range()) {
-    std::cout << w.get_moniroting().print() << '\n';
+    w.get_moniroting().print(std::cout);
+    std::cout << '\n';
   }
   return 0;
 }
