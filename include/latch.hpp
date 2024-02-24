@@ -94,14 +94,14 @@ struct latch {
   // suspends the calling coroutine until the internal counter reaches ​0​.
   // If it is zero already, returns immediately
   KELCORO_CO_AWAIT_REQUIRED co_awaiter auto wait() const noexcept {
-    return wait_awaiter(*this);
+    return wait_awaiter{*this};
   }
 
   // precondition: n >= 0 && n <= internal counter
   // logical equivalent to count_down(n); wait() (but atomicaly, really count down + wait is rata race)
   KELCORO_CO_AWAIT_REQUIRED co_awaiter auto arrive_and_wait(std::ptrdiff_t n = 1) noexcept {
     assert(n >= 0 && n <= counter.load(std::memory_order::relaxed));
-    return arrive_and_wait_awaiter(*this, n);
+    return arrive_and_wait_awaiter{*this, n};
   }
 
  private:
