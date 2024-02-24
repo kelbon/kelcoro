@@ -78,13 +78,7 @@ struct task_node {
   task_node* next = nullptr;
   std::coroutine_handle<> task;
 };
-// TODO добавить (дебажную? информацию о нагрузке тредпула,
-// как минимум просто число исполненных/запушенных задач)
-// Под дефайном "метрики" (если не придумаю как применить по другому информацию)
-// сделать
-// 1. количество исполненных задач
-// 2. задание имени потока (на разных ос...) (типа pool # X worker # Y )
-//
+
 template <typename T>
 concept co_executor = executor<T> && requires(T& w, task_node* node) { w.execute(node); };
 
@@ -210,11 +204,14 @@ struct alignas(hardware_destructive_interference_size) task_queue {
     return nodes;
   }
 };
+}  // namespace dd::noexport
+
+namespace dd {
 
 struct worker_t {
   // order of fields important, because thread must be initialized after queue and 'mon'
   // because worker_job using them
-  task_queue queue;
+  noexport::task_queue queue;
   KELCORO_MONITORING(monitoring_t mon);
   std::thread thread;
 };
@@ -223,7 +220,7 @@ inline void worker_job(worker_t* worker) noexcept {
   assert(worker);
   task_node* top;
   std::coroutine_handle task;
-  task_queue* queue = &worker->queue;
+  noexport::task_queue* queue = &worker->queue;
   while (true) {
     top = queue->pop_all_not_empty();
     KELCORO_MONITORING_INC(worker->mon.pop_count);
@@ -242,12 +239,8 @@ inline void worker_job(worker_t* worker) noexcept {
   }
 work_end:
   // after this point .stop in thread pool cancels all pending tasks in queues for all workers
-  cancel_tasks(top);
+  noexport::cancel_tasks(top);
 }
-
-}  // namespace dd::noexport
-
-namespace dd {
 
 // blocks until all 'foos' executed
 // if exception thrown, std::terminate called
@@ -269,13 +262,15 @@ void execute_parallel(co_executor auto& executor, auto&& f, auto&&... foos) noex
 struct strand {
  private:
   // invariant: != nullptr, ptr for trivial copy/move
-  noexport::worker_t* w = nullptr;
+  worker_t* w = nullptr;
 
-  friend struct thread_pool;
-  explicit strand(noexport::worker_t& w KELCORO_LIFETIMEBOUND) : w(&w) {
-  }
+  friend thread_pool;
 
  public:
+  // precondition: 'w' belongs to some thread_pool
+  explicit strand(worker_t& w KELCORO_LIFETIMEBOUND) : w(&w) {
+  }
+
   void attach(task_node* node, operation_hash_t hash) noexcept {
     assert(node && node->task);
     w->queue.push(node);
@@ -307,7 +302,7 @@ struct strand {
 struct thread_pool {
  private:
   // invariant: .size never changed, .size > 0
-  noexport::worker_t* workers;
+  worker_t* workers;
   size_t workers_size;
   std::pmr::memory_resource* resource;
 
@@ -319,8 +314,6 @@ struct thread_pool {
 
   explicit thread_pool(size_t thread_count = default_thread_count(),
                        std::pmr::memory_resource* r = std::pmr::new_delete_resource()) {
-    using noexport::worker_t;
-
     resource = r;
     workers_size = std::max<size_t>(1, thread_count);
     workers = (worker_t*)r->allocate(sizeof(worker_t) * workers_size, alignof(worker_t));
@@ -333,8 +326,7 @@ struct thread_pool {
     });
     for (; i < workers_size; ++i) {
       worker_t* ptr = &workers[i];
-      new (ptr)
-          worker_t{noexport::task_queue{}, KELCORO_MONITORING({}), std::thread(noexport::worker_job, ptr)};
+      new (ptr) worker_t{noexport::task_queue{}, KELCORO_MONITORING({}, ) std::thread(&worker_job, ptr)};
     }
     exception = false;
   }
@@ -388,9 +380,10 @@ struct thread_pool {
   KELCORO_PURE size_t workers_count() const noexcept {
     return workers_size;
   }
-  // TODO std::ranges::range auto workers() noexcept KELCORO_LIFETIMEBOUND {
-  // TODO   return workers | std::views::transform(to strand);
-  // TODO }
+
+  std::span<const worker_t> workers_range() noexcept KELCORO_LIFETIMEBOUND {
+    return std::span(workers, workers_size);
+  }
 
   // TODO? хм, может просто назвать это worker_ref?
   strand get_strand(operation_hash_t op_hash) KELCORO_LIFETIMEBOUND {
@@ -402,7 +395,7 @@ struct thread_pool {
   }
 
  private:
-  noexport::worker_t& select_worker(operation_hash_t op_hash) noexcept {
+  worker_t& select_worker(operation_hash_t op_hash) noexcept {
     // TODO автобалансировка через изменение чиселки и проверку нагрузки (через какую то хрень типа среднее
     //  квадартичное отклонение количества тасок на воркерах и тд). Если точнее - КОЭФФИЦИЕНТ ДЖИННИ!))
     // прибавление просто числа здесь это просто сдвиг нагрузки без смены распределения (который тоже имеет
@@ -413,8 +406,7 @@ struct thread_pool {
   }
 
   // should be called exactly once
-  void stop(noexport::worker_t* w, size_t count) noexcept {
-    using noexport::worker_t;
+  void stop(worker_t* w, size_t count) noexcept {
     task_node pill{.next = nullptr, .task = nullptr};
     std::span workers(w, count);
     for (auto& w : workers)
