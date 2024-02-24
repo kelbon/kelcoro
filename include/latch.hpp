@@ -50,7 +50,7 @@ struct latch {
       l.stack.push(&node);
       // copy logic from count down but never resume
       assert(n >= 0 && n <= l.counter.load(std::memory_order::relaxed));
-      ptrdiff_t c = l.counter.fetch_sub(n, std::memory_order::memory_order_acq_rel) - n;
+      ptrdiff_t c = l.counter.fetch_sub(n, std::memory_order::acq_rel) - n;
       if (c != 0) [[likely]] {
         assert(c >= 0 && "precondition violated");
         return;
@@ -77,7 +77,7 @@ struct latch {
   // precondition: n >= 0 && n <= internal counter
   void count_down(std::ptrdiff_t n = 1) noexcept {
     assert(n >= 0 && n <= counter.load(std::memory_order::relaxed));
-    ptrdiff_t c = counter.fetch_sub(n, std::memory_order::memory_order_acq_rel) - n;
+    ptrdiff_t c = counter.fetch_sub(n, std::memory_order::acq_rel) - n;
     if (c != 0) [[likely]] {
       assert(c >= 0 && "precondition violated");
       return;
