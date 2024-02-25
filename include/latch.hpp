@@ -6,15 +6,15 @@
 
 namespace dd {
 
-// TODO
-using any_executor_ref = thread_pool&;
-
 // same as std::latch, but for coroutines
+template <co_executor E>
 struct latch {
+  static_assert(std::is_same_v<std::decay_t<E>, E>);
+
  private:
   alignas(hardware_destructive_interference_size) mutable nonowner_lockfree_stack<task_node> stack;
   alignas(hardware_destructive_interference_size) std::atomic_ptrdiff_t counter;
-  any_executor_ref exe;
+  E& exe;
 
   struct wait_awaiter {
     const latch& l;
@@ -63,7 +63,7 @@ struct latch {
 
  public:
   // precondition: count >= 0 and <= max, task will be executed on 'e'
-  constexpr explicit latch(ptrdiff_t count, any_executor_ref e) noexcept : counter(count), exe(e) {
+  constexpr explicit latch(ptrdiff_t count, E& e) noexcept : counter(count), exe(e) {
     assert(count >= 0 && count <= max());
   }
   latch(latch&&) = delete;

@@ -11,20 +11,6 @@
 #define KELCORO_ENABLE_THREADPOOL_MONITORING
 #endif
 
-// TODO соединить таски в асинхронный стек + контекст каждой, чтобы можно было пройти?.. По каналу уже так
-// можно по сути т.е. можно просто для канала сделать эту операцию и автоматически готово! Проход по циклу
-// вверх
-// + на каждом участке взять контекст! (и иметь контекст...)
-// TODO сделать combine_event_pools, которое из различных источников типа нетворк ивенты, файл систем ивенты
-// таймеры и проч проч поллит и предоставляет как генератор ивентов просто
-// TODO any executor (ref)
-// TODO hmm, нужно использовать ресурс и при аллокации тасок?..
-// TODO специаилизированный под корутины ресурсы, который имеет внутри таблицу размер-алигн и фри листы, всё
-// это в тредлокалах вероятно
-//
-// план такой:
-// тесты, бенчмарк, дальше улучшать/менять и смотреть на бенч
-
 namespace dd {
 
 #ifdef KELCORO_ENABLE_THREADPOOL_MONITORING
@@ -106,10 +92,8 @@ struct thread_pool;
 namespace dd::noexport {
 
 static void cancel_tasks(task_node* top) noexcept {
-  // cancel tasks
   // there are assumption, that .destroy on handle correctly releases all resources associated with
-  // coroutine and will not lead to double .destroy
-  // (assume good code)
+  // coroutine and will not lead to double .destroy (assume good code)
   while (top) {
     std::coroutine_handle task = top->task;
     assert(task && "dead pill must be consumed by worker");
@@ -225,6 +209,9 @@ struct worker {
     assert(node && node->task);
     queue.push(node);
     KELCORO_MONITORING_INC(mon.pushed);
+  }
+  void attach(task_node* node, operation_hash_t) noexcept {
+    attach(node);
   }
 
   KELCORO_MONITORING(const monitoring_t& get_moniroting() const noexcept { return mon; })

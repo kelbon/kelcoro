@@ -14,8 +14,6 @@ enum {
 std::latch l(COUNT);
 dd::thread_pool p(16);
 dd::latch start(COUNT, p);
-// TODO
-// дальше видимо барьер, мьютекс, сигнал... Хм Семафор, короче всё что есть в стд но для корутин
 dd::job foo(dd::thread_pool& p) {
   co_await start.arrive_and_wait();
   while (true) {
