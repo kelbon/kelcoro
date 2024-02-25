@@ -1,82 +1,14 @@
 #pragma once
 
 #include <span>
-#include <latch>
 #include <mutex>
 #include <condition_variable>
 
 #include "job.hpp"
-
-#if !defined(NDEBUG) && !defined(KELCORO_DISABLE_MONITORING)
-#define KELCORO_ENABLE_THREADPOOL_MONITORING
-#endif
+#include "noexport/thread_pool_monitoring.hpp"
 
 namespace dd {
 
-#ifdef KELCORO_ENABLE_THREADPOOL_MONITORING
-
-struct monitoring_t {
-  // all values only grow
-  // TODO хм, убрать атомики вообще, забирать значения только когда воркер остановлен?
-  std::atomic_size_t pushed = 0;
-  std::atomic_size_t finished = 0;
-  std::atomic_size_t cancelled = 0;
-  std::atomic_size_t strands_count = 0;
-  // count of pop_all from queue
-  std::atomic_size_t pop_count = 0;
-  std::atomic_size_t sleep_count = 0;
-
-  // all calculations approximate
-  using enum std::memory_order;
-
-  static size_t average_tasks_popped(size_t pop_count, size_t finished) noexcept {
-    if (!pop_count)
-      return 0;
-    return finished / pop_count;
-  }
-  static size_t pending_count(size_t pushed, size_t finished) noexcept {
-    // order to never produce value < 0
-    return pushed - finished;
-  }
-  static float sleep_percent(size_t pop_count, size_t sleep_count) noexcept {
-    assert(pop_count >= sleep_count);
-    return static_cast<float>(sleep_count) / pop_count;
-  }
-  void print(auto&& out) const {
-    size_t p = pushed, f = finished, sc = strands_count, pc = pop_count, slc = sleep_count,
-           slp = sleep_percent(pc, slc), avr_tp = average_tasks_popped(pc, f), pending = pending_count(p, f),
-           cld = cancelled;
-    // clang-format off
-    out << "pushed:               " << p << '\n';
-    out << "finished:             " << f << '\n';
-    out << "cancelled:            " << cld << '\n';
-    out << "strands_count:        " << sc << '\n';
-    out << "pop_count:            " << pc << '\n';
-    out << "sleep_count:          " << slc << '\n';
-    out << "sleep%:               " << slp << '\n';
-    out << "average tasks popped: " << avr_tp << '\n';
-    out << "pending count:        " << pending << '\n';
-    // clang-format on
-  }
-};
-
-#define KELCORO_MONITORING(...) __VA_ARGS__
-#define KELCORO_MONITORING_INC(x) KELCORO_MONITORING(x.fetch_add(1, ::std::memory_order::relaxed))
-#else
-#define KELCORO_MONITORING(...)
-#define KELCORO_MONITORING_INC(x)
-#endif
-
-#ifdef __cpp_lib_hardware_interference_size
-using std::hardware_constructive_interference_size;
-using std::hardware_destructive_interference_size;
-#else
-constexpr std::size_t hardware_constructive_interference_size = 64;
-constexpr std::size_t hardware_destructive_interference_size = 64;
-#endif
-
-// TODO специальный эксепшн завершающий тред выкидывать, т.е. вместо кучи ифов обойтись одним
-// вызовом try / catch получается, но если без исключений, то..?
 struct task_node {
   task_node* next = nullptr;
   std::coroutine_handle<> task;
@@ -131,7 +63,7 @@ struct KELCORO_CO_AWAIT_REQUIRED create_task_node_and_attach {
   }
 };
 
-struct alignas(hardware_destructive_interference_size) task_queue {
+struct task_queue {
  private:
   task_node* first = nullptr;
   // if !first, 'last' value unspecified
@@ -210,6 +142,13 @@ struct worker {
  public:
   worker() : queue(), thread(&worker_job, this) {
   }
+  worker(worker&&) = delete;
+  void operator=(worker&&) = delete;
+
+  ~worker() {
+    stop();
+  }
+
   // precondition: node && node->task
   void attach(task_node* node) noexcept {
     assert(node && node->task);
@@ -232,24 +171,16 @@ struct worker {
     co_await transition();
     foo();
   }
-};
 
-// blocks until all 'foos' executed
-// if exception thrown, std::terminate called
-void execute_parallel(co_executor auto& executor, auto&& f, auto&&... foos) noexcept {
-  std::latch all_done(sizeof...(foos));
-  operation_hash_t hash = 62;  // because why not 62?)
-  auto execute_one = [&](auto& task) {
-    return [&all_done, &task]() {
-      task();  // terminate on exception
-      all_done.count_down();
-    };
-  };
-  // different hash for each fn, max parallel
-  ((++hash, executor.execute(execute_one(foos), hash)), ...);
-  f();  // last one executed on this thread
-  all_done.wait();
-}
+ private:
+  void stop() noexcept {
+    if (!thread.joinable())
+      return;
+    task_node pill{.next = nullptr, .task = nullptr};
+    queue.push(&pill);
+    thread.join();
+  }
+};
 
 // executes tasks on one thread
 // works as lightweight worker ref
@@ -443,6 +374,11 @@ inline void thread_pool::stop(worker* w, size_t count) noexcept {
     assert((w.queue.mtx.unlock(), true));
     KELCORO_MONITORING(w.mon.cancelled +=) noexport::cancel_tasks(w.queue.pop_all_nolock());
   }
+#ifdef KELCORO_ENABLE_THREADPOOL_MONITORING
+  monitorings.clear();
+  for (auto& w : workers)
+    monitorings.emplace_back(w.get_moniroting());
+#endif
   std::destroy(begin(workers), end(workers));
   resource->deallocate(this->workers, sizeof(worker) * workers_size, alignof(worker));
 }

@@ -3,6 +3,7 @@
 #include "thread_pool.hpp"
 #include "latch.hpp"
 
+#include <latch>
 #include <iostream>
 
 static_assert(dd::co_executor<dd::thread_pool> && dd::co_executor<dd::strand> && dd::co_executor<dd::worker>);
@@ -70,9 +71,10 @@ TEST(thread_pool) {
   l.wait();
   if (i.load() < MUSTBE_EXECUTED)
     return -1;
+// use global varialbe where stored metrics from thread pool
+// (to see metrics only after full stop)
 #ifdef KELCORO_ENABLE_THREADPOOL_MONITORING
-  for (const dd::worker& w : p.workers_range()) {
-    auto& m = w.get_moniroting();
+  for (auto& m : dd::monitorings) {
     error_if(m.finished + m.cancelled != m.pushed);
     m.print(std::cout);
     std::cout << std::endl;
