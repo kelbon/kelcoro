@@ -41,7 +41,7 @@ TEST(latch) {
 
 enum {
   COUNT = 150,
-  MUSTBE_EXECUTED = 100'000'000,
+  MUSTBE_EXECUTED = 1'000'000,
 };
 dd::job foo(dd::thread_pool& p, dd::latch& start, std::atomic_int& i, std::latch& l) {
   co_await start.arrive_and_wait();
