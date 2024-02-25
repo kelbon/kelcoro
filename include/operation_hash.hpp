@@ -30,7 +30,7 @@ struct operation_hash<std::coroutine_handle<P>> {
 };
 
 template <typename O>
-operation_hash_t calculate_operation_hash(const O& operation) noexcept {
+[[gnu::pure]] constexpr operation_hash_t calculate_operation_hash(const O& operation) noexcept {
   return operation_hash<std::decay_t<O>>()(operation);
 }
 

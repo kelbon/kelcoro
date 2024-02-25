@@ -20,6 +20,7 @@ struct monitoring_t {
   // TODO хм, убрать атомики вообще, забирать значения только когда воркер остановлен?
   std::atomic_size_t pushed = 0;
   std::atomic_size_t finished = 0;
+  std::atomic_size_t cancelled = 0;
   std::atomic_size_t strands_count = 0;
   // count of pop_all from queue
   std::atomic_size_t pop_count = 0;
@@ -43,16 +44,18 @@ struct monitoring_t {
   }
   void print(auto&& out) const {
     size_t p = pushed, f = finished, sc = strands_count, pc = pop_count, slc = sleep_count,
-           slp = sleep_percent(pc, slc), avr_tp = average_tasks_popped(pc, f), pending = pending_count(p, f);
+           slp = sleep_percent(pc, slc), avr_tp = average_tasks_popped(pc, f), pending = pending_count(p, f),
+           cld = cancelled;
     // clang-format off
-    out << "pushed:               " << p;
-    out << "finished:             " << f;
-    out << "strands_count:        " << sc;
-    out << "pop_count:            " << pc;
-    out << "sleep_count:          " << slc;
-    out << "sleep%:               " << slp;
-    out << "average tasks popped: " << avr_tp;
-    out << "pending count:        " << pending;
+    out << "pushed:               " << p << '\n';
+    out << "finished:             " << f << '\n';
+    out << "cancelled:            " << cld << '\n';
+    out << "strands_count:        " << sc << '\n';
+    out << "pop_count:            " << pc << '\n';
+    out << "sleep_count:          " << slc << '\n';
+    out << "sleep%:               " << slp << '\n';
+    out << "average tasks popped: " << avr_tp << '\n';
+    out << "pending count:        " << pending << '\n';
     // clang-format on
   }
 };
@@ -91,15 +94,18 @@ struct thread_pool;
 
 namespace dd::noexport {
 
-static void cancel_tasks(task_node* top) noexcept {
+static auto cancel_tasks(task_node* top) noexcept {
   // there are assumption, that .destroy on handle correctly releases all resources associated with
   // coroutine and will not lead to double .destroy (assume good code)
+  KELCORO_MONITORING(size_t count = 0;)
   while (top) {
     std::coroutine_handle task = top->task;
     assert(task && "dead pill must be consumed by worker");
     top = top->next;
     task.destroy();
+    KELCORO_MONITORING(++count);
   }
+  KELCORO_MONITORING(return count);
 }
 
 template <typename E>
@@ -359,13 +365,22 @@ struct thread_pool {
 };
 
 template <>
-struct KELCORO_CO_AWAIT_REQUIRED jump_on<thread_pool> : noexport::create_task_node_and_attach<thread_pool> {};
+struct KELCORO_CO_AWAIT_REQUIRED jump_on<thread_pool> : noexport::create_task_node_and_attach<thread_pool> {
+  explicit jump_on(thread_pool& e) noexcept : noexport::create_task_node_and_attach<thread_pool>{e} {
+  }
+};
 
 template <>
-struct KELCORO_CO_AWAIT_REQUIRED jump_on<strand> : noexport::create_task_node_and_attach<strand> {};
+struct KELCORO_CO_AWAIT_REQUIRED jump_on<strand> : noexport::create_task_node_and_attach<strand> {
+  explicit jump_on(strand& e) noexcept : noexport::create_task_node_and_attach<strand>{e} {
+  }
+};
 
 template <>
-struct KELCORO_CO_AWAIT_REQUIRED jump_on<worker> : noexport::create_task_node_and_attach<worker> {};
+struct KELCORO_CO_AWAIT_REQUIRED jump_on<worker> : noexport::create_task_node_and_attach<worker> {
+  explicit jump_on(worker& e) noexcept : noexport::create_task_node_and_attach<worker>{e} {
+  }
+};
 
 inline void worker::worker_job(worker* w) noexcept {
   assert(w);
@@ -392,7 +407,7 @@ inline void worker::worker_job(worker* w) noexcept {
   }
 work_end:
   // after this point .stop in thread pool cancels all pending tasks in queues for all workers
-  noexport::cancel_tasks(top);
+  KELCORO_MONITORING(w->mon.cancelled +=) noexport::cancel_tasks(top);
 }
 
 inline thread_pool::thread_pool(size_t thread_count, std::pmr::memory_resource* r) {
@@ -426,7 +441,7 @@ inline void thread_pool::stop(worker* w, size_t count) noexcept {
   for (auto& w : workers) {
     assert(w.queue.mtx.try_lock() && "no one should lock this mutex now!");
     assert((w.queue.mtx.unlock(), true));
-    noexport::cancel_tasks(w.queue.pop_all_nolock());
+    KELCORO_MONITORING(w.mon.cancelled +=) noexport::cancel_tasks(w.queue.pop_all_nolock());
   }
   std::destroy(begin(workers), end(workers));
   resource->deallocate(this->workers, sizeof(worker) * workers_size, alignof(worker));
