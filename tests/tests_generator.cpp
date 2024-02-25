@@ -37,7 +37,6 @@ using dd::generator;
 static bool flip() {
   static thread_local std::mt19937 rng = [] {
     auto seed = std::random_device{}();
-    std::clog << "SEED: " << seed << std::endl;
     return std::mt19937{seed};
   }();
   return std::bernoulli_distribution(0.5)(rng);
