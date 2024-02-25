@@ -1,6 +1,5 @@
 #pragma once
 
-#include <functional>
 #include <coroutine>
 
 namespace dd {
@@ -9,6 +8,30 @@ namespace dd {
 // from different tasks, its used to improve thread pool performance
 using operation_hash_t = size_t;
 
+namespace noexport {
+
+// copy from one of stdlibcs, because hash for void* on linux gcc/clang really bad
+
+#if UINTPTR_MAX > UINT_LEAST32_MAX
+constexpr inline size_t fnv_offset_basis = 14695981039346656037ULL;
+constexpr inline size_t fnv_prime = 1099511628211ULL;
+#else  // 32 bit or smth like
+constexpr inline size_t fnv_offset_basis = 2166136261U;
+constexpr inline size_t fnv_prime = 16777619U;
+#endif
+
+static size_t do_hash(const void* ptr) noexcept {
+  size_t val = fnv_offset_basis;
+  const unsigned char* bytes = reinterpret_cast<const unsigned char*>(&ptr);
+  for (int i = 0; i < sizeof(void*); ++i) {
+    val ^= static_cast<size_t>(bytes[i]);
+    val *= fnv_prime;
+  }
+  return val;
+}
+
+}  // namespace noexport
+
 // precondition: opeation can be executed
 // e.g. it is not empty coroutine handle or empty std::function
 template <typename T>
@@ -16,7 +39,7 @@ struct operation_hash {
   static_assert(std::is_same_v<T, std::decay_t<T>>);
   // default version
   operation_hash_t operator()(const T& op) const noexcept {
-    return std::hash<const void*>()(std::addressof(op));
+    return noexport::do_hash(std::addressof(op));
   }
 };
 
@@ -25,7 +48,7 @@ struct operation_hash<std::coroutine_handle<P>> {
   operation_hash_t operator()(std::coroutine_handle<P> handle) const noexcept {
     // heuristic #1 - the same coroutine is executed on the same thread
     // and same coroutine produces max 1 task at one time
-    return std::hash<const void*>()(handle.address());
+    return noexport::do_hash(handle.address());
   }
 };
 
