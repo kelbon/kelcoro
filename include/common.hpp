@@ -168,6 +168,8 @@ struct polymorphic_resource {
       passed = std::pmr::get_default_resource();
     assert(passed != nullptr);
   }
+  polymorphic_resource(std::pmr::memory_resource& m) noexcept : passed(&m) {
+  }
   void* allocate(size_t sz, size_t align) {
     return passed->allocate(sz, align);
   }
@@ -211,6 +213,7 @@ struct with_resource {
 };
 template <typename X>
 with_resource(X&&) -> with_resource<std::remove_cvref_t<X>>;
+with_resource(std::pmr::memory_resource&) -> with_resource<pmr::polymorphic_resource>;
 
 namespace noexport {
 
@@ -220,6 +223,26 @@ template <typename R, typename... Args>
 struct find_resource_tag<with_resource<R>, Args...> : std::type_identity<R> {};
 template <typename Head, typename... Tail>
 struct find_resource_tag<Head, Tail...> : find_resource_tag<Tail...> {};
+
+template <typename E>
+struct default_jump_on {
+  using stored_t = std::conditional_t<std::is_empty_v<E>, E, E&>;
+  KELCORO_NO_UNIQUE_ADDRESS
+  stored_t e;
+
+  static_assert(std::is_same_v<std::decay_t<E>, E>);
+
+  constexpr default_jump_on(stored_t e) noexcept : e(static_cast<E&&>(e)) {
+  }
+  static constexpr bool await_ready() noexcept {
+    return false;
+  }
+  constexpr void await_suspend(std::coroutine_handle<> handle) const {
+    e.execute(handle);
+  }
+  static constexpr void await_resume() noexcept {
+  }
+};
 
 }  // namespace noexport
 
@@ -419,53 +442,38 @@ struct [[nodiscard("Dont forget to name it!")]] scope_exit {
   }
 };
 
-template <typename T>
-concept executor = requires(T& value) { value.execute([] {}); };
+// ADL customization point, may be overloaded for your executor type, should return awaitable which
+// schedules execution of coroutine to 'e'
+KELCORO_CO_AWAIT_REQUIRED constexpr co_awaiter auto jump_on(auto& e) noexcept {
+  return noexport::default_jump_on<std::remove_cvref_t<decltype(e)>>(e);
+}
 
 // DEFAULT EXECUTORS
 
-struct noop_executor {
+struct noop_executor_t {
   template <std::invocable F>
   static void execute(F&&) noexcept {
   }
 };
 
-struct this_thread_executor {
+constexpr inline noop_executor_t noop_executor;
+
+struct this_thread_executor_t {
   template <std::invocable F>
   static void execute(F&& f) noexcept(std::is_nothrow_invocable_v<F&&>) {
     (void)std::forward<F>(f)();
   }
 };
+constexpr inline this_thread_executor_t this_thread_executor;
 
-struct new_thread_executor {
+struct new_thread_executor_t {
   template <std::invocable F>
   static void execute(F&& f) {
     std::thread([foo = std::forward<F>(f)]() mutable { (void)std::forward<F>(foo)(); }).detach();
   }
 };
 
-template <executor E>
-struct KELCORO_CO_AWAIT_REQUIRED jump_on {
-  KELCORO_NO_UNIQUE_ADDRESS
-  std::conditional_t<std::is_empty_v<E>, E, E&> e;
-
-  static_assert(std::is_same_v<std::decay_t<E>, E>);
-
-#if __cpp_aggregate_paren_init < 201902L
-  constexpr jump_on(std::type_identity_t<E> e) noexcept : e(static_cast<E&&>(e)) {
-  }
-#endif
-  static constexpr bool await_ready() noexcept {
-    return false;
-  }
-  constexpr void await_suspend(std::coroutine_handle<> handle) const {
-    e.execute(handle);
-  }
-  static constexpr void await_resume() noexcept {
-  }
-};
-template <typename E>
-jump_on(E&&) -> jump_on<std::remove_cvref_t<E>>;
+constexpr inline new_thread_executor_t new_thread_executor;
 
 struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
  private:

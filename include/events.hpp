@@ -63,7 +63,7 @@ struct event {
 
   // returns false if no one has been woken up
   // clang-format off
-  template<executor Executor>
+  template<typename Executor>
   requires(std::is_void_v<Input>)
   bool notify_all(Executor&& exe) {
     // clang-format on
@@ -92,7 +92,7 @@ struct event {
   // copies input for all recievers(all coros returns to waiting if copy constructor throws)
   // returns false if no one has been woken up
   // clang-format off
-  template <executor Executor>
+  template <typename Executor>
   requires(!std::is_void_v<Input>)
   bool notify_all(Executor&& exe, input_type input) {
     // clang-format on

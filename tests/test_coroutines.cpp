@@ -213,7 +213,7 @@ inline dd::logical_thread multithread(std::atomic<int32_t>& value) {
   (void)handle;
   auto token = co_await dd::this_coro::stop_token;
   (void)token.stop_requested();
-  co_await dd::jump_on(dd::new_thread_executor{});
+  co_await dd::jump_on(dd::new_thread_executor);
   for (auto i : std::views::iota(0, 100))
     ++value, (void)i;
 }
@@ -237,7 +237,7 @@ TEST(logical_thread) {
 dd::logical_thread bar(bool& requested) {
   auto handle = co_await dd::this_coro::handle;
   (void)handle;
-  co_await dd::jump_on(dd::new_thread_executor{});
+  co_await dd::jump_on(dd::new_thread_executor);
   auto token = co_await dd::this_coro::stop_token;
   while (true) {
     std::this_thread::sleep_for(std::chrono::microseconds(5));
@@ -305,7 +305,7 @@ TEST(job_mm) {
   std::atomic<size_t> err_c = 0;
   auto job_creator = [&](std::atomic<int32_t>& value) -> dd::job {
     auto th_id = std::this_thread::get_id();
-    co_await dd::jump_on(dd::new_thread_executor{});
+    co_await dd::jump_on(dd::new_thread_executor);
     if (th_id == std::this_thread::get_id())
       ++err_c;
     value.fetch_add(1, std::memory_order::release);
@@ -337,7 +337,7 @@ dd::job sub(std::atomic<int>& count) {
 }
 
 dd::logical_thread writer(std::atomic<int>& count) {
-  co_await dd::jump_on(dd::new_thread_executor{});
+  co_await dd::jump_on(dd::new_thread_executor);
   dd::stop_token tok = co_await dd::this_coro::stop_token;
   for (auto i : std::views::iota(0, 1000)) {
     (void)i;
@@ -348,10 +348,10 @@ dd::logical_thread writer(std::atomic<int>& count) {
 }
 
 dd::logical_thread reader() {
-  co_await dd::jump_on(dd::new_thread_executor{});
+  co_await dd::jump_on(dd::new_thread_executor);
   dd::stop_token tok = co_await dd::this_coro::stop_token;
   for (;;) {
-    e1.notify_all(dd::this_thread_executor{}, 1);
+    e1.notify_all(dd::this_thread_executor, 1);
     if (tok.stop_requested())
       co_return;
   }
@@ -366,7 +366,7 @@ TEST(thread_safety) {
   while (count.load() < 2000000)
     count.wait(count.load());
   stop(_2, _4, _5, _3);
-  e1.notify_all(dd::this_thread_executor{}, 0);
+  e1.notify_all(dd::this_thread_executor, 0);
   return error_count;
 }
 
@@ -376,7 +376,7 @@ inline dd::event<std::vector<std::string>> three;
 inline dd::event<void> four;
 
 dd::async_task<void> waiter_any(uint32_t& count) {
-  co_await dd::jump_on(dd::new_thread_executor{});
+  co_await dd::jump_on(dd::new_thread_executor);
   std::mutex m;
   int32_t i = 0;
   while (i < 100000) {
@@ -387,7 +387,7 @@ dd::async_task<void> waiter_any(uint32_t& count) {
   }
 }
 dd::async_task<void> waiter_all(uint32_t& count) {
-  co_await dd::jump_on(dd::new_thread_executor{});
+  co_await dd::jump_on(dd::new_thread_executor);
   for (int32_t i : std::views::iota(0, 100000)) {
     (void)i;
     auto tuple = co_await dd::when_all(one, two, three, four);
@@ -400,20 +400,20 @@ dd::async_task<void> waiter_all(uint32_t& count) {
 }
 
 dd::logical_thread notifier(auto& event) {
-  co_await dd::jump_on(dd::new_thread_executor{});
+  co_await dd::jump_on(dd::new_thread_executor);
   dd::stop_token token = co_await dd::this_coro::stop_token;
   while (true) {
-    event.notify_all(dd::this_thread_executor{});
+    event.notify_all(dd::this_thread_executor);
     if (token.stop_requested())
       co_return;
   }
 }
 
 dd::logical_thread notifier(auto& pool, auto input) {
-  co_await dd::jump_on(dd::new_thread_executor{});
+  co_await dd::jump_on(dd::new_thread_executor);
   dd::stop_token token = co_await dd::this_coro::stop_token;
   while (true) {
-    pool.notify_all(dd::this_thread_executor{}, input);
+    pool.notify_all(dd::this_thread_executor, input);
     if (token.stop_requested())
       co_return;
   }
@@ -427,10 +427,10 @@ dd::logical_thread notifier(auto& pool, auto input) {
 //   auto anyx = waiter_any(count);
 //   anyx.wait();
 //   stop(_1, _2, _3, _4);
-//   one.notify_all(dd::this_thread_executor{});
-//   two.notify_all(dd::this_thread_executor{}, 5);
-//   three.notify_all(dd::this_thread_executor{}, std::vector<std::string>(3, "hello world"));
-//   four.notify_all(dd::this_thread_executor{});
+//   one.notify_all(dd::this_thread_executor);
+//   two.notify_all(dd::this_thread_executor, 5);
+//   three.notify_all(dd::this_thread_executor, std::vector<std::string>(3, "hello world"));
+//   four.notify_all(dd::this_thread_executor);
 //   error_if(count != 100000);
 //   return error_count;
 // }
@@ -443,16 +443,16 @@ dd::logical_thread notifier(auto& pool, auto input) {
 //  auto allx = waiter_all(count);
 //  allx.wait();
 //  stop(_1, _2, _3, _4);
-//  one.notify_all(dd::this_thread_executor{});
-//  two.notify_all(dd::this_thread_executor{}, 5);
-//  three.notify_all(dd::this_thread_executor{}, std::vector<std::string>(3, "hello world"));
-//  four.notify_all(dd::this_thread_executor{});
+//  one.notify_all(dd::this_thread_executor);
+//  two.notify_all(dd::this_thread_executor, 5);
+//  three.notify_all(dd::this_thread_executor, std::vector<std::string>(3, "hello world"));
+//  four.notify_all(dd::this_thread_executor);
 //  error_if(count != 100000);
 //  return error_count;
 //}
 
 dd::async_task<std::string> afoo() {
-  co_await dd::jump_on(dd::new_thread_executor{});
+  co_await dd::jump_on(dd::new_thread_executor);
   co_return "hello world";
 }
 
@@ -475,7 +475,7 @@ TEST(void_async_task) {
 }
 
 dd::task<std::string> do_smth() {
-  co_await dd::jump_on(dd::new_thread_executor{});
+  co_await dd::jump_on(dd::new_thread_executor);
   co_return "hello from task";
 }
 
@@ -493,7 +493,7 @@ dd::async_task<void> tasks_user() {
 
 dd::channel<std::tuple<int, double, float>> creator() {
   for (int i = 0; i < 100; ++i) {
-    co_await dd::jump_on(dd::new_thread_executor{});
+    co_await dd::jump_on(dd::new_thread_executor);
     std::this_thread::sleep_for(std::chrono::microseconds(3));
     co_yield std::tuple{i, static_cast<double>(i), static_cast<float>(i)};
   }
@@ -517,7 +517,7 @@ TEST(channel) {
 }
 
 dd::async_task<int> small_task() {
-  co_await dd::jump_on(dd::new_thread_executor{});
+  co_await dd::jump_on(dd::new_thread_executor);
   co_return 1;
 }
 

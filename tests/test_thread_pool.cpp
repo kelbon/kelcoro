@@ -6,8 +6,6 @@
 #include <latch>
 #include <iostream>
 
-static_assert(dd::co_executor<dd::thread_pool> && dd::co_executor<dd::strand> && dd::co_executor<dd::worker>);
-
 #define error_if(Cond) error_count += static_cast<bool>((Cond));
 #define TEST(NAME) size_t test_##NAME(size_t error_count = 0)
 
@@ -48,10 +46,10 @@ dd::job foo(dd::thread_pool& p, dd::latch& start, std::atomic_int& i, std::latch
   co_await start.arrive_and_wait();
   while (true) {
     auto x = i.fetch_add(1, std::memory_order::acq_rel);
-    p.execute([&] { ++i; });
+    p.schedule([&] { ++i; });
     if (x >= MUSTBE_EXECUTED)
       break;
-    co_await p.transition();
+    co_await dd::jump_on(p);
   }
   l.count_down();
 }
@@ -63,10 +61,10 @@ TEST(thread_pool) {
 
   for (int ind = 0; ind < COUNT; ++ind) {
     foo(p, start, i, l);
-    p.execute([&] { ++i; });
-    p.execute([&] { ++i; });
-    p.execute([&] { ++i; });
-    p.execute([&] { ++i; });
+    p.schedule([&] { ++i; });
+    p.schedule([&] { ++i; });
+    p.schedule([&] { ++i; });
+    p.schedule([&] { ++i; });
   }
   l.wait();
   if (i.load() < MUSTBE_EXECUTED)

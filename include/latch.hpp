@@ -9,6 +9,7 @@ namespace dd {
 using any_executor_ref = dd::thread_pool&;
 
 // same as std::latch, but for coroutines
+// when completed, starts all waiters on passed executor
 struct latch {
  private:
   alignas(hardware_destructive_interference_size) mutable nonowner_lockfree_stack<task_node> stack;
@@ -106,10 +107,12 @@ struct latch {
  private:
   void wakeup_all() noexcept {
     task_node* top = stack.try_pop_all(std::memory_order::relaxed);
+    operation_hash_t hash = 0;
     while (top) {
       // save top to be not invalidated by .resume()
       task_node* next = top->next;
-      exe.attach(top);
+      worker& w = exe.select_worker(hash++);
+      w.attach(top);
       top = next;
     }
   }

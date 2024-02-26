@@ -14,7 +14,6 @@ namespace dd {
 
 struct monitoring_t {
   // all values only grow
-  // TODO хм, убрать атомики вообще, забирать значения только когда воркер остановлен?
   std::atomic_size_t pushed = 0;
   std::atomic_size_t finished = 0;
   std::atomic_size_t cancelled = 0;

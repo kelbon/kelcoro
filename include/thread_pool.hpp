@@ -14,12 +14,6 @@ struct task_node {
   std::coroutine_handle<> task;
 };
 
-template <typename T>
-concept co_executor = executor<T> && requires(T& w, task_node* node) {
-  w.attach(node);
-  { w.transition() } -> co_awaiter;
-};
-
 struct thread_pool;
 
 }  // namespace dd
@@ -39,29 +33,6 @@ static auto cancel_tasks(task_node* top) noexcept {
   }
   KELCORO_MONITORING(return count);
 }
-
-template <typename E>
-struct KELCORO_CO_AWAIT_REQUIRED create_task_node_and_attach {
- protected:
-  E& e;
-  task_node node;
-
- public:
-  explicit create_task_node_and_attach(E& e) noexcept : e(e) {
-  }
-
-  static bool await_ready() noexcept {
-    return false;
-  }
-  template <typename P>
-  void await_suspend(std::coroutine_handle<P> handle) noexcept {
-    // set task before it is attached
-    node.task = handle;
-    e.attach(&node, calculate_operation_hash(handle));
-  }
-  static void await_resume() noexcept {
-  }
-};
 
 struct task_queue {
  private:
@@ -127,6 +98,17 @@ struct task_queue {
 
 namespace dd {
 
+// schedules execution of 'foo' to executor 'e'
+[[maybe_unused]] job schedule_to(auto& e KELCORO_LIFETIMEBOUND, auto foo) {
+  co_await jump_on(e);
+  foo();
+}
+// same but allocates memory with resource
+template <memory_resource R>
+[[maybe_unused]] job schedule_to(auto& e KELCORO_LIFETIMEBOUND, auto foo, with_resource<R>) {
+  co_await jump_on(e);
+  foo();
+}
 // executes tasks on one thread, not movable
 // expensive to create
 struct worker {
@@ -148,6 +130,7 @@ struct worker {
   ~worker() {
     stop();
   }
+  // use co_await jump_on(worker) to schedule coroutine
 
   // precondition: node && node->task
   void attach(task_node* node) noexcept {
@@ -155,21 +138,11 @@ struct worker {
     queue.push(node);
     KELCORO_MONITORING_INC(mon.pushed);
   }
-  void attach(task_node* node, operation_hash_t) noexcept {
-    attach(node);
-  }
 
   KELCORO_MONITORING(const monitoring_t& get_moniroting() const noexcept { return mon; })
 
-  // schedules coroutine to be executed on thread pool
-  co_awaiter auto transition() noexcept {
-    return noexport::create_task_node_and_attach<worker>{*this};
-  }
-
-  // creates coroutine with will invoke 'foo' on thread pool
-  [[maybe_unused]] job execute(std::invocable auto foo) KELCORO_LIFETIMEBOUND {
-    co_await transition();
-    foo();
+  std::thread::id get_id() const noexcept {
+    return thread.get_id();
   }
 
  private:
@@ -196,29 +169,20 @@ struct strand {
   explicit strand(worker& wo KELCORO_LIFETIMEBOUND) : w(&wo) {
     KELCORO_MONITORING_INC(w->mon.strands_count);
   }
+  // use co_await jump_on(strand) to schedule coroutine
 
-  // precondition: node && node->task
-  void attach(task_node* node) noexcept {
-    w->attach(node);
-  }
-
-  // schedules coroutine to be executed on thread pool
-  co_awaiter auto transition() noexcept {
-    return w->transition();
-  }
-
-  // creates coroutine with will invoke 'foo' on thread pool
-  [[maybe_unused]] job execute(std::invocable auto&& foo) KELCORO_LIFETIMEBOUND {
-    return w->execute(std::forward<decltype(foo)>(foo));
+  worker& get_worker() const noexcept {
+    return *w;
   }
 };
 
+// schedules operations to workers
+// co_await jump_on(pool) schedules coroutine to thread pool
 struct thread_pool {
  private:
-  // invariant: .size never changed, .size > 0
-  worker* workers;
-  size_t workers_size;
-  std::pmr::memory_resource* resource;
+  worker* workers;                      // invariant: != 0
+  size_t workers_size;                  // invariant: > 0
+  std::pmr::memory_resource* resource;  // invariant: != 0
 
  public:
   static size_t default_thread_count() {
@@ -230,14 +194,6 @@ struct thread_pool {
                        std::pmr::memory_resource* r = std::pmr::new_delete_resource());
 
   ~thread_pool() {
-    stop(workers, workers_size);
-  }
-
-  thread_pool(thread_pool&&) = delete;
-  void operator=(thread_pool&&) = delete;
-
-  // precondition: node && node->task
-  void attach(task_node* node, operation_hash_t hash) noexcept {
     // if destructor started, then it is undefined behavior to push tasks
     // because its data race (between destruction and accessing to 'this' for calling 'execute')
     //
@@ -246,72 +202,92 @@ struct thread_pool {
     // and cancel them(handle.destroy)
     // So, no one pushes and all what was pushed by tasks executed on workers is now destroyed,
     // no memory leak, profit!
-
-    auto& w = select_worker(hash);
-    w.attach(node);
-  }
-  // precondition: node && node->task
-  void attach(task_node* node) noexcept {
-    return attach(node, calculate_operation_hash(node->task));
+    stop(workers, workers_size);
   }
 
-  // schedules coroutine to be executed on thread pool
-  co_awaiter auto transition() noexcept {
-    return noexport::create_task_node_and_attach<thread_pool>{*this};
-  }
-  co_awaiter auto transition(operation_hash_t hash) noexcept {
+  thread_pool(thread_pool&&) = delete;
+  void operator=(thread_pool&&) = delete;
+
+  // use co_await jump_on(pool) to schedule coroutine
+
+  // same as schedule_to(pool), but uses pool memory resource to allocate tasks
+  void schedule(std::invocable auto&& foo, operation_hash_t hash) {
     worker& w = select_worker(hash);
-    return w.transition();
+    schedule_to(w, std::forward<decltype(foo)>(foo), with_resource(*resource));
+  }
+  void schedule(std::invocable auto&& foo) {
+    schedule(std::forward<decltype(foo)>(foo), calculate_operation_hash(foo));
   }
 
-  // creates coroutine with will invoke 'foo' on thread pool
-  [[maybe_unused]] job execute(std::invocable auto&& foo, operation_hash_t hash) KELCORO_LIFETIMEBOUND {
-    worker& w = select_worker(hash);
-    return w.execute(std::forward<decltype(foo)>(foo));
-  }
-  [[maybe_unused]] job execute(std::invocable auto&& foo) {
-    return execute(std::forward<decltype(foo)>(foo), calculate_operation_hash(foo));
-  }
-
-  // this value dont changed after thread_pool creation
-  KELCORO_PURE size_t workers_count() const noexcept {
-    return workers_size;
-  }
-
-  std::span<const worker> workers_range() noexcept KELCORO_LIFETIMEBOUND {
+  KELCORO_PURE std::span<const worker> workers_range() noexcept KELCORO_LIFETIMEBOUND {
     return std::span(workers, workers_size);
   }
 
   strand get_strand(operation_hash_t op_hash) KELCORO_LIFETIMEBOUND {
     return strand(select_worker(op_hash));
   }
-
- private:
-  worker& select_worker(operation_hash_t op_hash) noexcept {
+  worker& select_worker(operation_hash_t op_hash) noexcept KELCORO_LIFETIMEBOUND {
     return workers[op_hash % workers_size];
   }
+  std::pmr::memory_resource& get_resource() const noexcept {
+    assert(resource);
+    return *resource;
+  }
 
+ private:
   // should be called exactly once
   void stop(worker* w, size_t count) noexcept;
 };
 
-template <>
-struct KELCORO_CO_AWAIT_REQUIRED jump_on<thread_pool> : noexport::create_task_node_and_attach<thread_pool> {
-  explicit jump_on(thread_pool& e) noexcept : noexport::create_task_node_and_attach<thread_pool>{e} {
+struct jump_on_thread_pool : task_node {
+ private:
+  thread_pool& tp;
+
+ public:
+  explicit jump_on_thread_pool(thread_pool& e) noexcept : tp(e), task_node(nullptr, nullptr) {
+  }
+  static bool await_ready() noexcept {
+    return false;
+  }
+  template <typename P>
+  void await_suspend(std::coroutine_handle<P> handle) noexcept {
+    // set task before it is attached
+    task = handle;
+    worker& w = tp.select_worker(calculate_operation_hash(handle));
+    w.attach(this);
+  }
+  static void await_resume() noexcept {
   }
 };
 
-template <>
-struct KELCORO_CO_AWAIT_REQUIRED jump_on<strand> : noexport::create_task_node_and_attach<strand> {
-  explicit jump_on(strand& e) noexcept : noexport::create_task_node_and_attach<strand>{e} {
+struct jump_on_worker : task_node {
+  worker& w;
+  // creates task node and attaches it
+  explicit jump_on_worker(worker& w) noexcept : task_node(nullptr, nullptr), w(w) {
+  }
+
+  static bool await_ready() noexcept {
+    return false;
+  }
+
+  void await_suspend(std::coroutine_handle<> handle) noexcept {
+    // set task before it is attached
+    task = handle;
+    w.attach(this);
+  }
+  static void await_resume() noexcept {
   }
 };
 
-template <>
-struct KELCORO_CO_AWAIT_REQUIRED jump_on<worker> : noexport::create_task_node_and_attach<worker> {
-  explicit jump_on(worker& e) noexcept : noexport::create_task_node_and_attach<worker>{e} {
-  }
-};
+KELCORO_CO_AWAIT_REQUIRED inline co_awaiter auto jump_on(worker& w KELCORO_LIFETIMEBOUND) noexcept {
+  return jump_on_worker(w);
+}
+KELCORO_CO_AWAIT_REQUIRED inline co_awaiter auto jump_on(strand& s) noexcept {
+  return jump_on(s.get_worker());
+}
+KELCORO_CO_AWAIT_REQUIRED inline co_awaiter auto jump_on(thread_pool& tp KELCORO_LIFETIMEBOUND) noexcept {
+  return jump_on_thread_pool(tp);
+}
 
 inline void worker::worker_job(worker* w) noexcept {
   assert(w);
@@ -342,7 +318,7 @@ work_end:
 }
 
 inline thread_pool::thread_pool(size_t thread_count, std::pmr::memory_resource* r) {
-  resource = r;
+  resource = r ? r : std::pmr::new_delete_resource();
   workers_size = std::max<size_t>(1, thread_count);
   workers = (worker*)r->allocate(sizeof(worker) * workers_size, alignof(worker));
 
