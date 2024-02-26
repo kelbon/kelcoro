@@ -9,9 +9,25 @@
 
 namespace dd {
 
+enum struct schedule_errc : int {
+  ok,
+  cancelled,          // if task awaited with this code, it should not produce new tasks
+  timed_out,          // not used now
+  executor_overload,  // not used now
+};
+
+struct schedule_status {
+  schedule_errc what = schedule_errc::ok;
+
+  constexpr explicit operator bool() const noexcept {
+    return what == schedule_errc::ok;
+  }
+};
+
 struct task_node {
   task_node* next = nullptr;
   std::coroutine_handle<> task = nullptr;
+  schedule_errc status = schedule_errc::ok;
 };
 
 struct thread_pool;
@@ -21,14 +37,15 @@ struct thread_pool;
 namespace dd::noexport {
 
 static auto cancel_tasks(task_node* top) noexcept {
-  // there are assumption, that .destroy on handle correctly releases all resources associated with
-  // coroutine and will not lead to double .destroy (assume good code)
+  // set status and invoke tasks once,
+  // assume after getting 'cancelled' status task do not produce new tasks
   KELCORO_MONITORING(size_t count = 0;)
   while (top) {
     std::coroutine_handle task = top->task;
     assert(task && "dead pill must be consumed by worker");
+    top->status = schedule_errc::cancelled;
     top = top->next;
-    task.destroy();
+    task.resume();
     KELCORO_MONITORING(++count);
   }
   KELCORO_MONITORING(return count);
@@ -59,7 +76,7 @@ struct task_queue {
   }
 
  public:
-  // precondition: node != nullptr, node is not contained in queue
+  // precondition: node != nullptr && node is not contained in queue
   void push(task_node* node) {
     node->next = nullptr;
     {
@@ -100,13 +117,15 @@ namespace dd {
 
 // schedules execution of 'foo' to executor 'e'
 [[maybe_unused]] job schedule_to(auto& e KELCORO_LIFETIMEBOUND, auto foo) {
-  co_await jump_on(e);
+  if (!co_await jump_on(e)) [[unlikely]]
+    co_return;
   foo();
 }
 // same but allocates memory with resource
 template <memory_resource R>
 [[maybe_unused]] job schedule_to(auto& e KELCORO_LIFETIMEBOUND, auto foo, with_resource<R>) {
-  co_await jump_on(e);
+  if (!co_await jump_on(e)) [[unlikely]]
+    co_return;
   foo();
 }
 // executes tasks on one thread, not movable
@@ -128,13 +147,18 @@ struct worker {
   void operator=(worker&&) = delete;
 
   ~worker() {
-    stop();
+    if (!thread.joinable())
+      return;
+    task_node pill{.next = nullptr, .task = nullptr};
+    queue.push(&pill);
+    thread.join();
+    noexport::cancel_tasks(queue.pop_all());
   }
   // use co_await jump_on(worker) to schedule coroutine
 
-  // precondition: node && node->task
+  // precondition: node && node->task && node.status == ok
   void attach(task_node* node) noexcept {
-    assert(node && node->task);
+    assert(node && node->task && node->status == schedule_errc::ok);
     queue.push(node);
     KELCORO_MONITORING_INC(mon.pushed);
   }
@@ -143,15 +167,6 @@ struct worker {
 
   std::thread::id get_id() const noexcept {
     return thread.get_id();
-  }
-
- private:
-  void stop() noexcept {
-    if (!thread.joinable())
-      return;
-    task_node pill{.next = nullptr, .task = nullptr};
-    queue.push(&pill);
-    thread.join();
   }
 };
 
@@ -162,8 +177,6 @@ struct strand {
  private:
   // invariant: != nullptr, ptr for trivial copy/move
   worker* w = nullptr;
-
-  friend thread_pool;
 
  public:
   explicit strand(worker& wo KELCORO_LIFETIMEBOUND) : w(&wo) {
@@ -176,8 +189,9 @@ struct strand {
   }
 };
 
-// schedules operations to workers
+// distributes tasks among workers
 // co_await jump_on(pool) schedules coroutine to thread pool
+// note: when thread pool dies, all pending tasks invoked with errc::cancelled
 struct thread_pool {
  private:
   worker* workers;                      // invariant: != 0
@@ -195,12 +209,12 @@ struct thread_pool {
 
   ~thread_pool() {
     // if destructor started, then it is undefined behavior to push tasks
-    // because its data race (between destruction and accessing to 'this' for calling 'execute')
+    // because its data race (between destruction and accessing to 'this' for scheduling new task)
     //
-    // But there is special case - workers, which may invoke task, which .execute next task
+    // But there is special case - workers, which may invoke task, which schedules next task
     // in this case, .stop waits for workers consume dead pill, grab all operations from all queues
-    // and cancel them(handle.destroy)
-    // So, no one pushes and all what was pushed by tasks executed on workers is now destroyed,
+    // and cancel them (resume with special errc)
+    // So, no one pushes and all what was pushed by tasks executed on workers is cancelled,
     // no memory leak, profit!
     stop(workers, workers_size);
   }
@@ -256,7 +270,8 @@ struct jump_on_thread_pool : task_node {
     worker& w = tp.select_worker(calculate_operation_hash(handle));
     w.attach(this);
   }
-  static void await_resume() noexcept {
+  [[nodiscard]] schedule_status await_resume() noexcept {
+    return schedule_status{status};
   }
 };
 
@@ -275,7 +290,8 @@ struct jump_on_worker : task_node {
     task = handle;
     w.attach(this);
   }
-  static void await_resume() noexcept {
+  schedule_status await_resume() noexcept {
+    return schedule_status{status};
   }
 };
 

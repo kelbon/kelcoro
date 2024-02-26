@@ -12,7 +12,8 @@
 TEST(latch) {
   auto run_task = [](dd::thread_pool& p, std::atomic_int& i, dd::latch& start,
                      dd::latch& done) -> dd::task<void> {
-    co_await dd::jump_on(p);
+    if (!co_await dd::jump_on(p))
+      co_return;
     ++i;
     start.count_down();
   };
@@ -49,7 +50,8 @@ dd::job foo(dd::thread_pool& p, dd::latch& start, std::atomic_int& i, std::latch
     p.schedule([&] { ++i; });
     if (x >= MUSTBE_EXECUTED)
       break;
-    co_await dd::jump_on(p);
+    if (!co_await dd::jump_on(p))
+      co_return;
   }
   l.count_down();
 }
