@@ -11,7 +11,7 @@ namespace dd {
 
 struct task_node {
   task_node* next = nullptr;
-  std::coroutine_handle<> task;
+  std::coroutine_handle<> task = nullptr;
 };
 
 struct thread_pool;
@@ -213,7 +213,7 @@ struct thread_pool {
   // same as schedule_to(pool), but uses pool memory resource to allocate tasks
   void schedule(std::invocable auto&& foo, operation_hash_t hash) {
     worker& w = select_worker(hash);
-    schedule_to(w, std::forward<decltype(foo)>(foo), with_resource(*resource));
+    schedule_to(w, std::forward<decltype(foo)>(foo), with_resource{*resource});
   }
   void schedule(std::invocable auto&& foo) {
     schedule(std::forward<decltype(foo)>(foo), calculate_operation_hash(foo));
@@ -244,7 +244,7 @@ struct jump_on_thread_pool : task_node {
   thread_pool& tp;
 
  public:
-  explicit jump_on_thread_pool(thread_pool& e) noexcept : tp(e), task_node(nullptr, nullptr) {
+  explicit jump_on_thread_pool(thread_pool& e) noexcept : tp(e) {
   }
   static bool await_ready() noexcept {
     return false;
@@ -263,7 +263,7 @@ struct jump_on_thread_pool : task_node {
 struct jump_on_worker : task_node {
   worker& w;
   // creates task node and attaches it
-  explicit jump_on_worker(worker& w) noexcept : task_node(nullptr, nullptr), w(w) {
+  explicit jump_on_worker(worker& w) noexcept : w(w) {
   }
 
   static bool await_ready() noexcept {
