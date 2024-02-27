@@ -9,6 +9,8 @@
 #include <thread>
 #include <memory_resource>
 
+#include "operation_hash.hpp"
+
 #define KELCORO_CO_AWAIT_REQUIRED [[nodiscard("forget co_await?")]]
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -16,7 +18,7 @@
 #elif defined(_MSC_VER)
 #define KELCORO_UNREACHABLE __assume(false)
 #else
-#define KELCORO_UNREACHABLE (void)0
+#define KELCORO_UNREACHABLE assert(false)
 #endif
 
 #if !defined(NDEBUG)
@@ -75,6 +77,14 @@
 #endif
 
 namespace dd {
+
+#ifdef __cpp_lib_hardware_interference_size
+using std::hardware_constructive_interference_size;
+using std::hardware_destructive_interference_size;
+#else
+constexpr std::size_t hardware_constructive_interference_size = 64;
+constexpr std::size_t hardware_destructive_interference_size = 64;
+#endif
 
 struct not_movable {
   constexpr not_movable() noexcept = default;
@@ -158,6 +168,8 @@ struct polymorphic_resource {
       passed = std::pmr::get_default_resource();
     assert(passed != nullptr);
   }
+  polymorphic_resource(std::pmr::memory_resource& m) noexcept : passed(&m) {
+  }
   void* allocate(size_t sz, size_t align) {
     return passed->allocate(sz, align);
   }
@@ -201,6 +213,7 @@ struct with_resource {
 };
 template <typename X>
 with_resource(X&&) -> with_resource<std::remove_cvref_t<X>>;
+with_resource(std::pmr::memory_resource&) -> with_resource<pmr::polymorphic_resource>;
 
 namespace noexport {
 
@@ -210,6 +223,26 @@ template <typename R, typename... Args>
 struct find_resource_tag<with_resource<R>, Args...> : std::type_identity<R> {};
 template <typename Head, typename... Tail>
 struct find_resource_tag<Head, Tail...> : find_resource_tag<Tail...> {};
+
+template <typename E>
+struct default_jump_on {
+  using stored_t = std::conditional_t<std::is_empty_v<E>, E, E&>;
+  KELCORO_NO_UNIQUE_ADDRESS
+  stored_t e;
+
+  static_assert(std::is_same_v<std::decay_t<E>, E>);
+
+  constexpr default_jump_on(stored_t e) noexcept : e(static_cast<E&&>(e)) {
+  }
+  static constexpr bool await_ready() noexcept {
+    return false;
+  }
+  constexpr void await_suspend(std::coroutine_handle<> handle) const {
+    e.execute(handle);
+  }
+  static constexpr void await_resume() noexcept {
+  }
+};
 
 }  // namespace noexport
 
@@ -342,6 +375,15 @@ struct KELCORO_MSVC_EBO resourced_promise : Promise, overload_new_delete<R> {
   // standard wording goes wrong
 };
 
+template <typename Promise, memory_resource R>
+struct operation_hash<std::coroutine_handle<resourced_promise<Promise, R>>> {
+  size_t operator()(std::coroutine_handle<resourced_promise<Promise, R>> h) const {
+    return operation_hash<std::coroutine_handle<Promise>>()(
+        // assume addresses are same (dirty hack for supporting allocators)
+        std::coroutine_handle<Promise>::from_address(h.address()));
+  }
+};
+
 // 'teaches' promise to return
 template <typename T>
 struct return_block {
@@ -400,49 +442,38 @@ struct [[nodiscard("Dont forget to name it!")]] scope_exit {
   }
 };
 
-template <typename T>
-concept executor = requires(T& value) { value.execute([] {}); };
+// ADL customization point, may be overloaded for your executor type, should return awaitable which
+// schedules execution of coroutine to 'e'
+KELCORO_CO_AWAIT_REQUIRED constexpr co_awaiter auto jump_on(auto& e) noexcept {
+  return noexport::default_jump_on<std::remove_cvref_t<decltype(e)>>(e);
+}
 
 // DEFAULT EXECUTORS
 
-struct noop_executor {
+struct noop_executor_t {
   template <std::invocable F>
-  void execute(F&&) const noexcept {
+  static void execute(F&&) noexcept {
   }
 };
 
-struct this_thread_executor {
+constexpr inline noop_executor_t noop_executor;
+
+struct this_thread_executor_t {
   template <std::invocable F>
-  void execute(F&& f) const noexcept(std::is_nothrow_invocable_v<F&&>) {
+  static void execute(F&& f) noexcept(std::is_nothrow_invocable_v<F&&>) {
     (void)std::forward<F>(f)();
   }
 };
+constexpr inline this_thread_executor_t this_thread_executor;
 
-struct new_thread_executor {
+struct new_thread_executor_t {
   template <std::invocable F>
-  void execute(F&& f) const {
+  static void execute(F&& f) {
     std::thread([foo = std::forward<F>(f)]() mutable { (void)std::forward<F>(foo)(); }).detach();
   }
 };
 
-template <executor E>
-struct KELCORO_CO_AWAIT_REQUIRED jump_on {
-  KELCORO_NO_UNIQUE_ADDRESS E e;
-#if __cpp_aggregate_paren_init < 201902L
-  constexpr jump_on(std::type_identity_t<E> e) noexcept : e(static_cast<E&&>(e)) {
-  }
-#endif
-  static constexpr bool await_ready() noexcept {
-    return false;
-  }
-  constexpr void await_suspend(std::coroutine_handle<> handle) const {
-    e.execute(handle);
-  }
-  static constexpr void await_resume() noexcept {
-  }
-};
-template <typename E>
-jump_on(E&&) -> jump_on<E>;
+constexpr inline new_thread_executor_t new_thread_executor;
 
 struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
  private:
@@ -467,10 +498,67 @@ struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
   }
 };
 
+// destroys coroutine in which awaited for
+struct KELCORO_CO_AWAIT_REQUIRED destroy_coro_t {
+  static bool await_ready() noexcept {
+    return false;
+  }
+  static void await_suspend(std::coroutine_handle<> handle) noexcept {
+    handle.destroy();
+  }
+  static void await_resume() noexcept {
+    KELCORO_UNREACHABLE;
+  }
+};
+
+template <typename F>
+struct KELCORO_CO_AWAIT_REQUIRED suspend_and_t {
+  KELCORO_NO_UNIQUE_ADDRESS F fn;
+
+  constexpr static bool await_ready() noexcept {
+    return false;
+  }
+  template <typename P>
+  constexpr auto await_suspend(std::coroutine_handle<P> handle) noexcept {
+    return fn(handle);
+  }
+  constexpr static void await_resume() noexcept {
+  }
+};
+
+template <typename F>
+suspend_and_t(F&&) -> suspend_and_t<std::remove_cvref_t<F>>;
+
+struct KELCORO_CO_AWAIT_REQUIRED op_hash_t {
+  operation_hash_t hash;
+
+  static constexpr bool await_ready() noexcept {
+    return false;
+  }
+  template <typename P>
+  constexpr bool await_suspend(std::coroutine_handle<P> handle) noexcept {
+    calculate_operation_hash(handle);
+    return false;
+  }
+  constexpr operation_hash_t await_resume() noexcept {
+    return hash;
+  }
+};
+
 namespace this_coro {
 
 // provides access to inner handle of coroutine
 constexpr inline get_handle_t handle = {};
+
+constexpr inline destroy_coro_t destroy = {};
+
+constexpr inline op_hash_t operation_hash = {};
+
+// co_awaiting on this function suspends coroutine and invokes 'fn' with coroutine handle.
+// await suspend returns what 'fn' returns!
+constexpr auto suspend_and(auto&& fn) {
+  return suspend_and_t(std::forward<decltype(fn)>(fn));
+}
 
 }  // namespace this_coro
 

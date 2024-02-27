@@ -36,3 +36,8 @@ add_test(NAME generator_tests COMMAND generator_tests)
 
 add_test(NAME test_kelcorotest COMMAND kelcorotest)
 
+add_executable(thread_pool_tests ${CMAKE_CURRENT_SOURCE_DIR}/test_thread_pool.cpp)
+
+target_link_libraries(thread_pool_tests PUBLIC kelcorolib)
+
+add_test(NAME test_thread_pool COMMAND thread_pool_tests)

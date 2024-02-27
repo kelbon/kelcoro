@@ -1,54 +1,11 @@
 #pragma once
 
-#include <atomic>
 #include <variant>
 
 #include "job.hpp"
+#include "nonowner_lockfree_stack.hpp"
 
 namespace dd {
-
-template <typename T>
-concept singly_linked_node = !std::is_const_v<T> && requires(T value) {
-  { &T::next } -> std::same_as<T * T::*>;  // 'next' is a field with type T*
-};
-
-template <singly_linked_node T>
-struct nonowner_lockfree_stack {
- private:
-  using enum std::memory_order;
-
-  std::atomic<T*> top_ = nullptr;
-
- public:
-  using value_type = T;
-  // may be may be using multithread_category = lock_free_tag;
-
-  void push(T* value_ptr) noexcept {
-    // any other push works with another value_ptr
-    assert(value_ptr != nullptr);
-    value_ptr->next = top_.load(relaxed);
-
-    // after this loop this->top_ == value_ptr, value_ptr->next == previous value of this->top_
-    while (!top_.compare_exchange_weak(value_ptr->next, value_ptr, acq_rel, acquire)) {
-    }
-  }
-
-  // returns top_ of the stack
-  [[nodiscard]] T* try_pop_all() noexcept {
-    return top_.exchange(nullptr, acq_rel);
-  }
-  // other_top must be a top of other stack ( for example from try_pop_all() )
-  void push_stack(T* other_top) noexcept {
-    if (other_top == nullptr)
-      return;
-    auto* last = other_top;
-    while (last->next != nullptr)
-      last = last->next;
-    last->next = top_.load(relaxed);
-    while (!top_.compare_exchange_weak(last->next, other_top, acq_rel, acquire)) {
-    }
-  }
-};
 
 struct nullstruct {};
 
@@ -106,7 +63,7 @@ struct event {
 
   // returns false if no one has been woken up
   // clang-format off
-  template<executor Executor>
+  template<typename Executor>
   requires(std::is_void_v<Input>)
   bool notify_all(Executor&& exe) {
     // clang-format on
@@ -135,7 +92,7 @@ struct event {
   // copies input for all recievers(all coros returns to waiting if copy constructor throws)
   // returns false if no one has been woken up
   // clang-format off
-  template <executor Executor>
+  template <typename Executor>
   requires(!std::is_void_v<Input>)
   bool notify_all(Executor&& exe, input_type input) {
     // clang-format on

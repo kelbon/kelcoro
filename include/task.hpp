@@ -91,4 +91,11 @@ using task = ::dd::task_r<Ret, polymorphic_resource>;
 
 }
 
+template <typename R>
+struct operation_hash<std::coroutine_handle<task_promise<R>>> {
+  operation_hash_t operator()(std::coroutine_handle<task_promise<R>> handle) noexcept {
+    return operation_hash<std::coroutine_handle<>>()(handle.promise().who_waits);
+  }
+};
+
 }  // namespace dd
