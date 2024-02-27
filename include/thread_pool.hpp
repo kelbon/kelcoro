@@ -5,30 +5,11 @@
 #include <condition_variable>
 
 #include "job.hpp"
+#include "executor_interface.hpp"
 #include "noexport/thread_pool_monitoring.hpp"
+#include "common.hpp"
 
 namespace dd {
-
-enum struct schedule_errc : int {
-  ok,
-  cancelled,          // if task awaited with this code, it should not produce new tasks
-  timed_out,          // not used now
-  executor_overload,  // not used now
-};
-
-struct schedule_status {
-  schedule_errc what = schedule_errc::ok;
-
-  constexpr explicit operator bool() const noexcept {
-    return what == schedule_errc::ok;
-  }
-};
-
-struct task_node {
-  task_node* next = nullptr;
-  std::coroutine_handle<> task = nullptr;
-  schedule_errc status = schedule_errc::ok;
-};
 
 struct thread_pool;
 
@@ -184,6 +165,9 @@ struct strand {
   }
   // use co_await jump_on(strand) to schedule coroutine
 
+  void attach(task_node* node) const noexcept {
+    w->attach(node);
+  }
   worker& get_worker() const noexcept {
     return *w;
   }
@@ -224,6 +208,11 @@ struct thread_pool {
 
   // use co_await jump_on(pool) to schedule coroutine
 
+  void attach(task_node* node) noexcept {
+    worker& w = select_worker(calculate_operation_hash(node->task));
+    w.attach(node);
+  }
+
   // same as schedule_to(pool), but uses pool memory resource to allocate tasks
   void schedule(std::invocable auto&& foo, operation_hash_t hash) {
     worker& w = select_worker(hash);
@@ -253,54 +242,24 @@ struct thread_pool {
   void stop(worker* w, size_t count) noexcept;
 };
 
-struct jump_on_thread_pool : task_node {
- private:
-  thread_pool& tp;
+struct jump_on_thread_pool : private create_node_and_attach<thread_pool> {
+  using base_t = create_node_and_attach<thread_pool>;
 
- public:
-  explicit jump_on_thread_pool(thread_pool& e) noexcept : tp(e) {
+  explicit jump_on_thread_pool(thread_pool& e) noexcept : base_t(e) {
   }
-  static bool await_ready() noexcept {
-    return false;
-  }
+
+  using base_t::await_ready;
+  using base_t::await_resume;
+
   template <typename P>
   void await_suspend(std::coroutine_handle<P> handle) noexcept {
     // set task before it is attached
     task = handle;
-    worker& w = tp.select_worker(calculate_operation_hash(handle));
+    worker& w = e.select_worker(calculate_operation_hash(task));
     w.attach(this);
-  }
-  [[nodiscard]] schedule_status await_resume() noexcept {
-    return schedule_status{status};
   }
 };
 
-struct jump_on_worker : task_node {
-  worker& w;
-  // creates task node and attaches it
-  explicit jump_on_worker(worker& w) noexcept : w(w) {
-  }
-
-  static bool await_ready() noexcept {
-    return false;
-  }
-
-  void await_suspend(std::coroutine_handle<> handle) noexcept {
-    // set task before it is attached
-    task = handle;
-    w.attach(this);
-  }
-  schedule_status await_resume() noexcept {
-    return schedule_status{status};
-  }
-};
-
-KELCORO_CO_AWAIT_REQUIRED inline co_awaiter auto jump_on(worker& w KELCORO_LIFETIMEBOUND) noexcept {
-  return jump_on_worker(w);
-}
-KELCORO_CO_AWAIT_REQUIRED inline co_awaiter auto jump_on(strand& s) noexcept {
-  return jump_on(s.get_worker());
-}
 KELCORO_CO_AWAIT_REQUIRED inline co_awaiter auto jump_on(thread_pool& tp KELCORO_LIFETIMEBOUND) noexcept {
   return jump_on_thread_pool(tp);
 }

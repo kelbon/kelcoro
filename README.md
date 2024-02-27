@@ -261,7 +261,7 @@ dd::async_task<std::string> foo_user() {
 # Usefull
 
 ## `jump_on`
-co_await jump_on(Executor) equals to suspending coroutine and resume it on Executor(with .execute method), for example it can be thread pool
+co_await jump_on(Executor) equals to suspending coroutine and resume it on Executor(with .attach(node)), for example it can be thread pool
 or dd::this_thread_executor(executes all on this thread) / dd::noop_executor etc
 ## `stop`
 more effective way to stop(request_stop + join) for many stopable arguments or range of such type.

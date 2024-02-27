@@ -2,6 +2,8 @@
 
 #include <coroutine>
 
+#include "noexport/macro.hpp"
+
 namespace dd {
 
 // operation hash helps identify same logical operation
@@ -30,6 +32,22 @@ static size_t do_hash(const void* ptr) noexcept {
   return val;
 }
 
+struct KELCORO_CO_AWAIT_REQUIRED op_hash_t {
+  operation_hash_t hash;
+
+  static constexpr bool await_ready() noexcept {
+    return false;
+  }
+  template <typename P>
+  constexpr bool await_suspend(std::coroutine_handle<P> handle) noexcept {
+    calculate_operation_hash(handle);
+    return false;
+  }
+  constexpr operation_hash_t await_resume() noexcept {
+    return hash;
+  }
+};
+
 }  // namespace noexport
 
 // precondition: opeation can be executed
@@ -55,6 +73,12 @@ struct operation_hash<std::coroutine_handle<P>> {
 template <typename O>
 [[gnu::pure]] constexpr operation_hash_t calculate_operation_hash(const O& operation) noexcept {
   return operation_hash<std::decay_t<O>>()(operation);
+}
+
+namespace this_coro {
+
+constexpr inline noexport::op_hash_t operation_hash = {};
+
 }
 
 }  // namespace dd

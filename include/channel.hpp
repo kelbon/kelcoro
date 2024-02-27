@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.hpp"
+#include "noexport/generators_common.hpp"
 
 #ifdef __GNUC__
 #pragma GCC diagnostic push

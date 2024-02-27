@@ -6,6 +6,9 @@
 #include <latch>
 #include <iostream>
 
+static_assert(dd::executor<dd::any_executor_ref> && dd::executor<dd::strand> &&
+              dd::executor<dd::thread_pool> && dd::executor<dd::worker>);
+
 #define error_if(Cond) error_count += static_cast<bool>((Cond));
 #define TEST(NAME) size_t test_##NAME(size_t error_count = 0)
 

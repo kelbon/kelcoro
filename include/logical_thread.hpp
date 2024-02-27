@@ -3,6 +3,7 @@
 #include <utility>
 
 #include "common.hpp"
+#include "memory_support.hpp"
 
 namespace dd {
 
@@ -215,9 +216,9 @@ using logical_thread = ::dd::logical_thread_r<polymorphic_resource>;
 
 template <typename T>
 concept stopable = requires(T& value) {
-                     value.request_stop();
-                     value.join();
-                   };
+  value.request_stop();
+  value.join();
+};
 // effectively stops every cancellable
 // (all.request stop(), then all.join(), faster then just request_stop() + join() for all)
 // only for lvalues

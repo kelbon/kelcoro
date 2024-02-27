@@ -1,12 +1,10 @@
 #pragma once
 
 #include "nonowner_lockfree_stack.hpp"
-
-#include "thread_pool.hpp"
+#include "executor_interface.hpp"
+#include "common.hpp"
 
 namespace dd {
-// TODO
-using any_executor_ref = dd::thread_pool&;
 
 // same as std::latch, but for coroutines
 // when completed, starts all waiters on passed executor
@@ -52,7 +50,7 @@ struct latch {
       assert(n >= 0 && n <= l.counter.load(std::memory_order::relaxed));
       ptrdiff_t c = l.counter.fetch_sub(n, std::memory_order::acq_rel) - n;
       if (c != 0) [[likely]] {
-        assert(c >= 0 && "precondition violated");
+        assert(c > 0 && "precondition violated");
         return;
       }
       l.wakeup_all();
@@ -107,14 +105,7 @@ struct latch {
  private:
   void wakeup_all() noexcept {
     task_node* top = stack.try_pop_all(std::memory_order::relaxed);
-    operation_hash_t hash = 0;
-    while (top) {
-      // save top to be not invalidated by .resume()
-      task_node* next = top->next;
-      worker& w = exe.select_worker(hash++);
-      w.attach(top);
-      top = next;
-    }
+    attach_list(exe, top);
   }
 };
 

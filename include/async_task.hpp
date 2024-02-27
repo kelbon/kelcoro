@@ -3,6 +3,7 @@
 #include <atomic>
 
 #include "common.hpp"
+#include "memory_support.hpp"
 
 namespace dd {
 
