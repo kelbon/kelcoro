@@ -9,12 +9,6 @@
 #include "noexport/thread_pool_monitoring.hpp"
 #include "common.hpp"
 
-namespace dd {
-
-struct thread_pool;
-
-}  // namespace dd
-
 namespace dd::noexport {
 
 static auto cancel_tasks(task_node* top) noexcept {
@@ -39,19 +33,7 @@ struct task_queue {
   // if first, then 'last' present too
   task_node* last = nullptr;
   std::mutex mtx;
-  std::condition_variable pushed;
-
-  friend struct dd::thread_pool;
-
-  // precondition: node && node->next
-  void push_nolock(task_node* node) noexcept {
-    if (first) {
-      last->next = node;
-      last = node;
-    } else {
-      first = last = node;
-    }
-  }
+  std::condition_variable not_empty;
   [[nodiscard]] task_node* pop_all_nolock() noexcept {
     return std::exchange(first, nullptr);
   }
@@ -60,11 +42,17 @@ struct task_queue {
   // precondition: node != nullptr && node is not contained in queue
   void push(task_node* node) {
     node->next = nullptr;
-    {
-      std::lock_guard l(mtx);
-      push_nolock(node);
+    std::lock_guard l{mtx};
+    if (first) {
+      last->next = node;
+      last = node;
+    } else {
+      first = last = node;
+      // notify under lock, because of loop in 'pop_all_not_empty'
+      // while (!first) |..missed notify..| wait
+      // this may block worker thread forever if no one notify after that
+      not_empty.notify_one();
     }
-    pushed.notify_one();
   }
 
   [[nodiscard]] task_node* pop_all() {
@@ -84,7 +72,7 @@ struct task_queue {
       std::unique_lock l(mtx);
       KELCORO_MONITORING(sleeped = !first);
       while (!first)
-        pushed.wait(l);
+        not_empty.wait(l);
       nodes = pop_all_nolock();
     }
     assert(!!nodes);
@@ -118,7 +106,7 @@ struct worker {
   std::thread thread;
 
   friend struct strand;
-  friend thread_pool;
+  friend struct thread_pool;
   static void worker_job(worker* w) noexcept;
 
  public:
@@ -321,9 +309,7 @@ inline void thread_pool::stop(worker* w, size_t count) noexcept {
   }
   // here all workers stopped, cancel tasks
   for (auto& w : workers) {
-    assert(w.queue.mtx.try_lock() && "no one should lock this mutex now!");
-    assert((w.queue.mtx.unlock(), true));
-    KELCORO_MONITORING(w.mon.cancelled +=) noexport::cancel_tasks(w.queue.pop_all_nolock());
+    KELCORO_MONITORING(w.mon.cancelled +=) noexport::cancel_tasks(w.queue.pop_all());
   }
 #ifdef KELCORO_ENABLE_THREADPOOL_MONITORING
   monitorings.clear();

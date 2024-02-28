@@ -102,6 +102,10 @@ struct latch {
     return arrive_and_wait_awaiter{*this, n};
   }
 
+  any_executor_ref get_executor() const noexcept {
+    return exe;
+  }
+
  private:
   void wakeup_all() noexcept {
     task_node* top = stack.try_pop_all(std::memory_order::relaxed);
