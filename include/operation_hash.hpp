@@ -40,7 +40,7 @@ struct KELCORO_CO_AWAIT_REQUIRED op_hash_t {
   }
   template <typename P>
   constexpr bool await_suspend(std::coroutine_handle<P> handle) noexcept {
-    calculate_operation_hash(handle);
+    hash = calculate_operation_hash(handle);
     return false;
   }
   constexpr operation_hash_t await_resume() noexcept {
