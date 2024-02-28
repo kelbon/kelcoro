@@ -4,6 +4,7 @@
 
 #include "job.hpp"
 #include "nonowner_lockfree_stack.hpp"
+#include "executor_interface.hpp"
 
 namespace dd {
 
@@ -28,20 +29,21 @@ struct event {
   // subscribes coroutine on event,
   // make it part of event-based stack of awaiters
   // accepts and returns required arguments for event
-  struct awaiter_t {
-    event* event_;
-    std::coroutine_handle<void> handle;
-    awaiter_t* next = nullptr;  // im a part of awaiters stack!
+  struct subscribe : task_node {
+    event* eve;
+    // always initialized before resume
     KELCORO_NO_UNIQUE_ADDRESS input_type input;
+
+    explicit subscribe(event* e) noexcept : eve(e) {
+    }
 
     static bool await_ready() noexcept {
       return false;
     }
-    void await_suspend(std::coroutine_handle<void> handle_) noexcept {
-      handle = handle_;
-      event_->subscribers.push(this);
+    void await_suspend(std::coroutine_handle<void> handle) noexcept {
+      task = handle;
+      eve->subscribers.push(this);
     }
-    // resumed only after initializing input
     [[nodiscard]] input_type await_resume() noexcept {
       if constexpr (!std::is_void_v<input_type>)
         return std::move(input);
@@ -52,7 +54,7 @@ struct event {
   // awaiters always alive, unique, one-thread interact with manager
   // (but manager interact with any count of threads)
 
-  nonowner_lockfree_stack<awaiter_t> subscribers;
+  nonowner_lockfree_stack<task_node> subscribers;
 
  public:
   event() noexcept = default;
@@ -62,63 +64,30 @@ struct event {
   // event source functional
 
   // returns false if no one has been woken up
-  // clang-format off
-  template<typename Executor>
-  requires(std::is_void_v<Input>)
-  bool notify_all(Executor&& exe) {
-    // clang-format on
-    // must be carefull - awaiter ptrs are or their coroutine(which we want to execute / destroy)
-    awaiter_t* top = subscribers.try_pop_all();
-    if (top == nullptr)
+  template <executor E>
+    requires(std::is_void_v<Input>)
+  bool notify_all(E&& exe) {
+    task_node* top = subscribers.try_pop_all();
+    if (!top)
       return false;
-    awaiter_t* next;
-    while (top != nullptr) {
-      next = top->next;
-      std::coroutine_handle<void> handle = top->handle;
-      try {
-        std::forward<Executor>(exe).execute(handle);
-      } catch (...) {
-        if (!handle.done())  // throws before handle.resume()
-          subscribers.push(top);
-        top = next;
-        subscribers.push_stack(top);
-        throw;
-      }
-      top = next;
-    }
+    // TODO not ignore possible exception from 'attach'
+    attach_list(exe, top);
     return true;
   }
 
   // copies input for all recievers(all coros returns to waiting if copy constructor throws)
   // returns false if no one has been woken up
-  // clang-format off
-  template <typename Executor>
-  requires(!std::is_void_v<Input>)
-  bool notify_all(Executor&& exe, input_type input) {
-    // clang-format on
-    awaiter_t* top = subscribers.try_pop_all();
-    if (top == nullptr)
+  template <executor E>
+    requires(!std::is_void_v<Input>)
+  bool notify_all(E&& exe, input_type input) {
+    task_node* top = subscribers.try_pop_all();
+    if (!top)
       return false;
-    awaiter_t* next;
-    while (top != nullptr) {
-      next = top->next;  // copy from awaiter, which on frame and will die
-      try {
-        top->input = input;  // not in copy, input must be on coroutine before await_resume
-        std::atomic_thread_fence(std::memory_order::release);
-      } catch (...) {
-        subscribers.push_stack(top);
-        throw;
-      }
-      std::coroutine_handle<void> handle = top->handle;
-      try {
-        std::forward<Executor>(exe).execute(handle);
-      } catch (...) {
-        if (!handle.done())  // throw was not while resuming
-          subscribers.push(top);
-        top = next;
-        subscribers.push_stack(top);
-        throw;
-      }
+    // TODO not ignore exception from attach/copy construct
+    while (top) {
+      static_cast<subscribe*>(top)->input = input;
+      task_node* next = top->next;
+      exe.attach(top);
       top = next;
     }
     return true;
@@ -142,7 +111,7 @@ struct event {
 
   // subscribe, but only for coroutines
   [[nodiscard]] auto operator co_await() noexcept {
-    return awaiter_t{this};
+    return subscribe(this);
   }
 };
 

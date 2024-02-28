@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common.hpp"
+#include "memory_support.hpp"
 
 namespace dd {
 

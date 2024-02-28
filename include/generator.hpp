@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "common.hpp"
+#include "noexport/generators_common.hpp"
 
 #ifdef __clang__
 #pragma clang diagnostic push
