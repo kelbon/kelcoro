@@ -44,7 +44,7 @@ struct inplace_generator_promise {
   std::suspend_always yield_value(Yield& lvalue) noexcept
     requires(std::is_reference_v<Yield>)
   {
-    return yield_value(by_ref(lvalue));
+    return yield_value(by_ref{lvalue});
   }
 
   hold_value_until_resume<Yield> yield_value(const Yield& clvalue) noexcept(
