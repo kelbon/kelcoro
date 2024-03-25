@@ -178,7 +178,7 @@ concept co_awaitable = has_member_co_await<T> || has_global_co_await<T> || co_aw
 // imitating compiler behaviour for co_await expression mutation into awaiter(without await_transform)
 // very usefull if you have await_transform and for all other types you need default behavior
 template <co_awaitable T>
-constexpr decltype(auto) build_awaiter(T&& value) {
+[[nodiscard]] constexpr decltype(auto) build_awaiter(T&& value) {
   static_assert(!ambigious_co_await_lookup<T>);
   if constexpr (co_awaiter<T&&>)  // first bcs can have operator co_await too
     return std::forward<T>(value);

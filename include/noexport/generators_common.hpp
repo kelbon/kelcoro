@@ -11,7 +11,7 @@ namespace dd {
 // that is - not function, not array, not cv-qualified (its has no )
 // additionally reference is not yieldable(std::ref exists...)
 template <typename T>
-concept yieldable = std::same_as<std::decay_t<T>, T> && (!std::is_void_v<T>);
+concept yieldable = !std::is_void_v<T> && (std::same_as<std::decay_t<T>, T> || std::is_lvalue_reference_v<T>);
 
 template <typename R>
 struct elements_of {
@@ -39,7 +39,7 @@ struct by_ref {
 };
 
 template <typename Yield>
-by_ref(Yield&) -> by_ref<Yield>;
+by_ref(Yield&) -> by_ref<Yield&>;
 
 template <yieldable>
 struct generator_promise;

@@ -12,16 +12,10 @@
 
 #if !defined(NDEBUG)
 #define KELCORO_ASSUME(expr) assert(expr)
-#elif defined(_MSC_VER)
-#define KELCORO_ASSUME(expr) __assume((expr))
-#elif defined(__clang__)
-#define KELCORO_ASSUME(expr) __builtin_assume((expr))
-#elif defined(__GNUC__)
+#else
 #define KELCORO_ASSUME(expr) \
   if (!(expr))               \
-  __builtin_unreachable()
-#else
-#define KELCORO_ASSUME(expr) (void)(expr)
+  KELCORO_UNREACHABLE
 #endif
 
 // for some implementation reasons clang adds noinline on 'await_suspend'
@@ -30,7 +24,7 @@
 // if no one can observe changes on coroutine frame after 'await_suspend' start until its end(including
 // returning)
 #ifdef __clang__
-#define KELCORO_ASSUME_NOONE_SEES  // disabled, dont want to provoke clang bugs [[gnu::always_inline]]
+#define KELCORO_ASSUME_NOONE_SEES [[gnu::always_inline]]
 #else
 #define KELCORO_ASSUME_NOONE_SEES
 #endif

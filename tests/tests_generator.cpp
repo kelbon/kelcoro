@@ -7,6 +7,7 @@
 #include "generator.hpp"
 #include "channel.hpp"
 #include "async_task.hpp"
+#include "inplace_generator.hpp"
 
 #include <random>
 #include <vector>
@@ -762,6 +763,80 @@ TEST(generator_as_output_range) {
 
 static_assert(std::output_iterator<dd::generator_output_iterator<int>, int>);
 
+dd::generator<int&> ref_generator() {
+  int x = 0;
+  for (int i = 0; i < 10; ++i) {
+    int prev = x;
+    co_yield x;
+    if (x != prev + 1)
+      std::exit(-6);
+  }
+}
+dd::generator<const int&> recursive_ref_gen() {
+  int i = 5;
+  co_yield i;
+  co_yield dd::elements_of(ref_generator());
+}
+
+static_assert(std::input_iterator<dd::generator<int&>::iterator>);
+TEST(reference_generators) {
+  for (int& x : ref_generator()) {
+    ++x;
+  }
+  dd::generator g = recursive_ref_gen();
+  error_if(*g.begin() != 5);
+  for (const int& x : g) {
+    ++(*const_cast<int*>(&x));
+  }
+  return error_count;
+}
+dd::channel<int&> ref_channel() {
+  int x = 0;
+  for (int i = 0; i < 10; ++i) {
+    int prev = x;
+    co_yield x;
+    if (x != prev + 1)
+      std::exit(-6);
+  }
+}
+dd::channel<const int&> recursive_ref_channel() {
+  int i = 5;
+  co_yield i;
+  co_yield dd::elements_of(ref_channel());
+}
+
+TEST(reference_channels) {
+  for (int& x : ref_generator()) {
+    ++x;
+  }
+  dd::generator g = recursive_ref_gen();
+  error_if(*g.begin() != 5);
+  for (const int& x : g) {
+    ++(*const_cast<int*>(&x));
+  }
+  return error_count;
+}
+
+dd::inplace_generator<int> inplace_iota(int i, int j) {
+  for (int x = i; x < j; ++x)
+    co_yield x;
+}
+
+TEST(inplace_generator) {
+  int x = 0;
+  for (int&& i : inplace_iota(0, 150)) {
+    error_if(x != i);
+    ++x;
+  }
+  return error_count;
+}
+TEST(empty_inplace_generator) {
+  for (int x : inplace_iota(0, 0)) {
+    error_if(true);
+  }
+  return error_count;
+}
+
 int main() {
   static_assert(::dd::memory_resource<new_delete_resource>);
   (void)flip();  // initalize random
@@ -839,6 +914,10 @@ int main() {
   RUN(different_yields);
   RUN(different_yields_channel);
   RUN(generator_as_output_range);
+  RUN(reference_generators);
+  RUN(reference_channels);
+  RUN(inplace_generator);
+  RUN(empty_inplace_generator);
   if (sz != 0 && sz != size_t(-1))
     std::exit(146);
   return ec;

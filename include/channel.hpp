@@ -37,7 +37,7 @@ struct channel_promise : not_movable {
   std::coroutine_handle<>& consumer_handle() const noexcept {
     return consumer()->handle;
   }
-  void set_result(Yield* v) const noexcept {
+  void set_result(std::add_pointer_t<Yield> v) const noexcept {
     consumer()->current_result = v;
   }
   std::exception_ptr& exception() const noexcept {
@@ -68,12 +68,19 @@ struct channel_promise : not_movable {
     set_result(std::addressof(rvalue));
     return transfer_control_to{consumer_handle()};
   }
-
+  transfer_control_to yield_value(Yield& lvalue) noexcept
+    requires(std::is_reference_v<Yield>)
+  {
+    return yield_value(by_ref(lvalue));
+  }
   noexport::hold_value_until_resume<Yield> yield_value(const Yield& clvalue) noexcept(
-      std::is_nothrow_copy_constructible_v<Yield>) {
+      std::is_nothrow_copy_constructible_v<Yield>)
+    requires(!std::is_reference_v<Yield>)
+  {
     return noexport::hold_value_until_resume<Yield>{Yield(clvalue)};
   }
-  transfer_control_to yield_value(by_ref<Yield> r) noexcept {
+  template <typename U>
+  transfer_control_to yield_value(by_ref<U> r) noexcept {
     set_result(std::addressof(r.value));
     return transfer_control_to{consumer_handle()};
   }
@@ -135,7 +142,7 @@ struct channel_iterator {
   }
   // not really iterator, but it is useful for iterator_traits
   using iterator_category = std::input_iterator_tag;
-  using value_type = Yield;
+  using value_type = std::decay_t<Yield>;
   using reference = Yield&&;
   using difference_type = ptrdiff_t;
 
@@ -147,15 +154,14 @@ struct channel_iterator {
     return chan;
   }
 
-  KELCORO_PURE constexpr bool operator==(std::default_sentinel_t) const noexcept {
+  constexpr bool operator==(std::default_sentinel_t) const noexcept {
     return chan->current_result == nullptr;
   }
-  // * returns rvalue ref
   reference operator*() const noexcept {
     KELCORO_ASSUME(*this != std::default_sentinel);
     return static_cast<reference>(*chan->current_result);
   }
-  constexpr Yield* operator->() const noexcept {
+  constexpr std::add_pointer_t<reference> operator->() const noexcept {
     auto&& ref = operator*();
     return std::addressof(ref);
   }
@@ -185,7 +191,7 @@ template <yieldable Yield>
 struct channel : enable_resource_deduction {
   using promise_type = channel_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;
-  using value_type = Yield;
+  using value_type = std::decay_t<Yield>;
 
  private:
   friend channel_promise<Yield>;
@@ -195,7 +201,7 @@ struct channel : enable_resource_deduction {
   // invariant: == nullptr when top.done()
   // Its important for exception handling and better == end(not call .done())
   // initialized when first value created(on in final suspend)
-  Yield* current_result = nullptr;
+  std::add_pointer_t<Yield> current_result = nullptr;
   std::coroutine_handle<> handle = nullptr;  // coro in which i exist(setted in co_await on .begin)
   handle_type top = nullptr;                 // current top level channel
   // invariant: setted only once for one coroutine frame
@@ -211,9 +217,6 @@ struct channel : enable_resource_deduction {
   // postcondition: empty()
   constexpr channel() noexcept = default;
 
-  // postconditions:
-  // * other.empty()
-  // * iterators to 'other' == end()
   constexpr channel(channel&& other) noexcept {
     swap(other);
   }
