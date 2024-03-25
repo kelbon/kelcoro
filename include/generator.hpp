@@ -72,7 +72,7 @@ struct generator_promise : not_movable {
   std::suspend_always yield_value(Yield& lvalue) noexcept
     requires(std::is_reference_v<Yield>)
   {
-    return yield_value(by_ref(lvalue));
+    return yield_value(by_ref{lvalue});
   }
   noexport::hold_value_until_resume<Yield> yield_value(const Yield& clvalue) noexcept(
       std::is_nothrow_copy_constructible_v<Yield>)
