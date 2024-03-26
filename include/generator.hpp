@@ -65,7 +65,9 @@ struct generator_promise : not_movable {
   auto await_transform(get_handle_t) noexcept {
     return this_coro::handle.operator co_await();
   }
-  std::suspend_always yield_value(Yield&& rvalue) noexcept {
+  std::suspend_always yield_value(Yield&& rvalue) noexcept
+    requires(!std::is_reference_v<Yield> && choose_me_if_ambiguous<Yield>)
+  {
     set_result(std::addressof(rvalue));
     return {};
   }

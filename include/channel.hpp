@@ -64,7 +64,9 @@ struct channel_promise : not_movable {
     return channel<Yield>(self_handle());
   }
 
-  transfer_control_to yield_value(Yield&& rvalue) noexcept {
+  transfer_control_to yield_value(Yield&& rvalue) noexcept
+    requires(!std::is_reference_v<Yield> && choose_me_if_ambiguous<Yield>)
+  {
     set_result(std::addressof(rvalue));
     return transfer_control_to{consumer_handle()};
   }

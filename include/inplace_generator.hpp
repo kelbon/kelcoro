@@ -37,7 +37,9 @@ struct inplace_generator_promise {
   // there are no correct things which you can do with co_await in inplace_generator
   void await_transform(auto&&) = delete;
 
-  std::suspend_always yield_value(Yield&& rvalue) noexcept {
+  std::suspend_always yield_value(Yield&& rvalue) noexcept
+    requires(!std::is_reference_v<Yield> && choose_me_if_ambiguous<Yield>)
+  {
     set_result(std::addressof(rvalue));
     return {};
   }

@@ -13,6 +13,10 @@ namespace dd {
 template <typename T>
 concept yieldable = !std::is_void_v<T> && (std::same_as<std::decay_t<T>, T> || std::is_lvalue_reference_v<T>);
 
+// just helper to disambigue two yield_value overloads in case when Yield is reference
+template <typename T>
+concept choose_me_if_ambiguous = requires(T& x) { x; };
+
 template <typename R>
 struct elements_of {
   KELCORO_NO_UNIQUE_ADDRESS R rng;

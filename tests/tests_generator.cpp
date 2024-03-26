@@ -774,7 +774,11 @@ dd::generator<int&> ref_generator() {
 }
 dd::generator<const int&> recursive_ref_gen() {
   int i = 5;
-  co_yield i;
+  co_yield i;  // &
+  co_yield 5;  // &&
+  const int j = 5;
+  co_yield j;             // const &
+  co_yield std::move(j);  // const &&
   co_yield dd::elements_of(ref_generator());
 }
 
@@ -784,7 +788,12 @@ TEST(reference_generators) {
     ++x;
   }
   dd::generator g = recursive_ref_gen();
-  error_if(*g.begin() != 5);
+  auto b = g.begin();
+  error_if(*b != 5);
+  for (int i = 0; i < 3; ++i) {
+    ++b;
+    error_if(*b != 5);
+  }
   for (const int& x : g) {
     ++(*const_cast<int*>(&x));
   }
@@ -801,21 +810,31 @@ dd::channel<int&> ref_channel() {
 }
 dd::channel<const int&> recursive_ref_channel() {
   int i = 5;
-  co_yield i;
+  co_yield i;  // &
+  co_yield 5;  // &&
+  const int j = 5;
+  co_yield j;             // const &
+  co_yield std::move(j);  // const &&
   co_yield dd::elements_of(ref_channel());
 }
 
-TEST(reference_channels) {
-  for (int& x : ref_generator()) {
+CHANNEL_TEST(reference_channels) {
+  co_foreach(int& x, ref_channel()) {
     ++x;
   }
-  dd::generator g = recursive_ref_gen();
-  error_if(*g.begin() != 5);
-  for (const int& x : g) {
+  dd::channel g = recursive_ref_channel();
+  auto b = co_await g.begin();
+  error_if(*b != 5);
+  for (int i = 0; i < 3; ++i) {
+    co_await ++b;
+    error_if(*b != 5);
+  }
+  co_foreach(const int& x, g) {
     ++(*const_cast<int*>(&x));
   }
-  return error_count;
+  co_return error_count;
 }
+CO_TEST(reference_channels);
 
 dd::inplace_generator<int> inplace_iota(int i, int j) {
   for (int x = i; x < j; ++x)
