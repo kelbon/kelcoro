@@ -1,9 +1,4 @@
 
-#if __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunknown-attributes"
-#endif
-
 #include "generator.hpp"
 #include "channel.hpp"
 #include "async_task.hpp"
