@@ -61,8 +61,7 @@ struct task : enable_resource_deduction {
   struct remember_waiter_and_start_task_t {
     handle_type task_handle;
 
-    bool await_ready() const noexcept {
-      assert(task_handle != nullptr && !task_handle.done());
+    static bool await_ready() noexcept {
       return false;
     }
     KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<void> await_suspend(
@@ -78,6 +77,7 @@ struct task : enable_resource_deduction {
 
  public:
   constexpr auto operator co_await() noexcept {
+    assert(!empty());
     return remember_waiter_and_start_task_t{handle_};
   }
 };

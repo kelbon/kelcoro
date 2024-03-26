@@ -1,12 +1,8 @@
 
-#if __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunknown-attributes"
-#endif
-
 #include "generator.hpp"
 #include "channel.hpp"
 #include "async_task.hpp"
+#include "inplace_generator.hpp"
 
 #include <random>
 #include <vector>
@@ -762,6 +758,111 @@ TEST(generator_as_output_range) {
 
 static_assert(std::output_iterator<dd::generator_output_iterator<int>, int>);
 
+dd::generator<int&> ref_generator() {
+  int x = 0;
+  for (int i = 0; i < 10; ++i) {
+    int prev = x;
+    co_yield x;
+    if (x != prev + 1)
+      std::exit(-6);
+  }
+}
+dd::generator<const int&> recursive_ref_gen() {
+  int i = 5;
+  co_yield i;  // &
+  co_yield 5;  // &&
+  const int j = 5;
+  co_yield j;             // const &
+  co_yield std::move(j);  // const &&
+  co_yield dd::elements_of(ref_generator());
+}
+
+static_assert(std::input_iterator<dd::generator<int&>::iterator>);
+TEST(reference_generators) {
+  for (int& x : ref_generator()) {
+    ++x;
+  }
+  dd::generator g = recursive_ref_gen();
+  auto b = g.begin();
+  error_if(*b != 5);
+  for (int i = 0; i < 3; ++i) {
+    ++b;
+    error_if(*b != 5);
+  }
+  for (const int& x : g) {
+    ++(*const_cast<int*>(&x));
+  }
+  return error_count;
+}
+dd::channel<int&> ref_channel() {
+  int x = 0;
+  for (int i = 0; i < 10; ++i) {
+    int prev = x;
+    co_yield x;
+    if (x != prev + 1)
+      std::exit(-6);
+  }
+}
+dd::channel<const int&> recursive_ref_channel() {
+  int i = 5;
+  co_yield i;  // &
+  co_yield 5;  // &&
+  const int j = 5;
+  co_yield j;             // const &
+  co_yield std::move(j);  // const &&
+  co_yield dd::elements_of(ref_channel());
+}
+
+CHANNEL_TEST(reference_channels) {
+  co_foreach(int& x, ref_channel()) {
+    ++x;
+  }
+  dd::channel g = recursive_ref_channel();
+  auto b = co_await g.begin();
+  error_if(*b != 5);
+  for (int i = 0; i < 3; ++i) {
+    co_await ++b;
+    error_if(*b != 5);
+  }
+  co_foreach(const int& x, g) {
+    ++(*const_cast<int*>(&x));
+  }
+  co_return error_count;
+}
+CO_TEST(reference_channels);
+
+dd::inplace_generator<int> inplace_iota(int i, int j) {
+  for (int x = i; x < j; ++x)
+    co_yield x;
+}
+
+TEST(inplace_generator) {
+  int x = 0;
+  for (int&& i : inplace_iota(0, 150)) {
+    error_if(x != i);
+    ++x;
+  }
+  return error_count;
+}
+TEST(empty_inplace_generator) {
+  for (int x : inplace_iota(0, 0)) {
+    error_if(true);
+  }
+  return error_count;
+}
+TEST(inplace_generator_move) {
+  dd::inplace_generator g = inplace_iota(0, 150);
+  auto g_moved = std::move(g);
+  error_if(!g.empty());
+  int x = 0;
+  for (int&& i : g_moved) {
+    error_if(x != i);
+    ++x;
+  }
+  error_if(!g_moved.empty());
+  return error_count;
+}
+
 int main() {
   static_assert(::dd::memory_resource<new_delete_resource>);
   (void)flip();  // initalize random
@@ -839,6 +940,11 @@ int main() {
   RUN(different_yields);
   RUN(different_yields_channel);
   RUN(generator_as_output_range);
+  RUN(reference_generators);
+  RUN(reference_channels);
+  RUN(inplace_generator);
+  RUN(empty_inplace_generator);
+  RUN(inplace_generator_move);
   if (sz != 0 && sz != size_t(-1))
     std::exit(146);
   return ec;

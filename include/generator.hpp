@@ -39,7 +39,7 @@ struct generator_promise : not_movable {
     KELCORO_ASSUME(root != this);
     return _owner;
   }
-  void set_result(Yield* p) const noexcept {
+  void set_result(std::add_pointer_t<Yield> p) const noexcept {
     root->_consumer->current_result = p;
   }
   KELCORO_PURE handle_type self_handle() noexcept {
@@ -65,15 +65,25 @@ struct generator_promise : not_movable {
   auto await_transform(get_handle_t) noexcept {
     return this_coro::handle.operator co_await();
   }
-  std::suspend_always yield_value(Yield&& rvalue) noexcept {
+  std::suspend_always yield_value(Yield&& rvalue) noexcept
+    requires(!std::is_reference_v<Yield> && choose_me_if_ambiguous<Yield>)
+  {
     set_result(std::addressof(rvalue));
     return {};
   }
+  std::suspend_always yield_value(Yield& lvalue) noexcept
+    requires(std::is_reference_v<Yield>)
+  {
+    return yield_value(by_ref{lvalue});
+  }
   noexport::hold_value_until_resume<Yield> yield_value(const Yield& clvalue) noexcept(
-      std::is_nothrow_copy_constructible_v<Yield>) {
+      std::is_nothrow_copy_constructible_v<Yield>)
+    requires(!std::is_reference_v<Yield>)
+  {
     return noexport::hold_value_until_resume<Yield>{Yield(clvalue)};
   }
-  std::suspend_always yield_value(by_ref<Yield> r) noexcept {
+  template <typename U>
+  std::suspend_always yield_value(by_ref<U> r) noexcept {
     set_result(std::addressof(r.value));
     return {};
   }
@@ -128,7 +138,7 @@ struct generator_iterator {
   }
 
   using iterator_category = std::input_iterator_tag;
-  using value_type = Yield;
+  using value_type = std::decay_t<Yield>;
   using reference = Yield&&;
   using difference_type = ptrdiff_t;
 
@@ -140,15 +150,14 @@ struct generator_iterator {
     return *self;
   }
 
-  KELCORO_PURE constexpr bool operator==(std::default_sentinel_t) const noexcept {
+  constexpr bool operator==(std::default_sentinel_t) const noexcept {
     return self->current_result == nullptr;
   }
-  // * returns rvalue ref
   constexpr reference operator*() const noexcept {
     KELCORO_ASSUME(*this != std::default_sentinel);
     return static_cast<reference>(*self->current_result);
   }
-  constexpr Yield* operator->() const noexcept {
+  constexpr std::add_pointer_t<reference> operator->() const noexcept {
     auto&& ref = operator*();
     return std::addressof(ref);
   }
@@ -175,7 +184,7 @@ template <yieldable Yield>
 struct generator_output_iterator : generator_iterator<Yield> {
   using base_t = generator_iterator<Yield>;
   constexpr Yield& operator*() const noexcept {
-    static_assert(std::is_rvalue_reference_v<decltype(base_t::operator*())>);
+    static_assert(std::is_reference_v<decltype(base_t::operator*())>);
     Yield&& i = base_t::operator*();
     // avoid C++23 automove in return expression
     Yield& j = i;
@@ -208,7 +217,7 @@ template <yieldable Yield>
 struct generator : enable_resource_deduction {
   using promise_type = generator_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;
-  using value_type = Yield;
+  using value_type = std::decay_t<Yield>;
   using iterator = generator_iterator<Yield>;
 
  private:
@@ -217,7 +226,7 @@ struct generator : enable_resource_deduction {
   friend noexport::attach_leaf<generator>;
 
   // invariant: == nullptr when top.done()
-  Yield* current_result = nullptr;
+  std::add_pointer_t<Yield> current_result = nullptr;
   handle_type top = nullptr;
 
   // precondition: 'handle' != nullptr, handle does not have other owners
@@ -229,9 +238,6 @@ struct generator : enable_resource_deduction {
   // postcondition: empty(), 'for' loop produces 0 values
   constexpr generator() noexcept = default;
 
-  // postconditions:
-  // * other.empty()
-  // * iterators to 'other' == end()
   constexpr generator(generator&& other) noexcept {
     swap(other);
   }

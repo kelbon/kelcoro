@@ -85,7 +85,7 @@ struct logical_thread_promise {
     static bool await_ready() noexcept {
       return false;
     }
-    KELCORO_ASSUME_NOONE_SEES void await_suspend(std::coroutine_handle<void> handle) const noexcept {
+    void await_suspend(std::coroutine_handle<void> handle) const noexcept {
       if (!link.try_inform())
         handle.destroy();
     }
