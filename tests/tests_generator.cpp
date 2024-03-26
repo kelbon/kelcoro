@@ -850,6 +850,18 @@ TEST(empty_inplace_generator) {
   }
   return error_count;
 }
+TEST(inplace_generator_move) {
+  dd::inplace_generator g = inplace_iota(0, 150);
+  auto g_moved = std::move(g);
+  error_if(!g.empty());
+  int x = 0;
+  for (int&& i : g_moved) {
+    error_if(x != i);
+    ++x;
+  }
+  error_if(!g_moved.empty());
+  return error_count;
+}
 
 int main() {
   static_assert(::dd::memory_resource<new_delete_resource>);
@@ -932,6 +944,7 @@ int main() {
   RUN(reference_channels);
   RUN(inplace_generator);
   RUN(empty_inplace_generator);
+  RUN(inplace_generator_move);
   if (sz != 0 && sz != size_t(-1))
     std::exit(146);
   return ec;

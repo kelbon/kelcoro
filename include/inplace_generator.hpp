@@ -119,9 +119,19 @@ struct inplace_generator_iterator {
   }
 };
 
-// use only when you know what you do!
+template <yieldable Yield>
+struct nonowner_inplace_generator_t {
+  using promise_type = inplace_generator_promise<Yield>;
+  using handle_type = std::coroutine_handle<promise_type>;
+
+  handle_type handle;
+
+  nonowner_inplace_generator_t(std::coroutine_handle<promise_type> handle) noexcept : handle(handle) {
+  }
+};
+
+// optimized non recursive version of generator
 // * calculates first value when generator created
-// * .begin should be called only once
 // * does not support memory resources, because should never be allocated
 template <yieldable Yield>
 struct inplace_generator {
@@ -134,12 +144,17 @@ struct inplace_generator {
   // invariant: != nullptr
   handle_type top;
 
+  static nonowner_inplace_generator_t<Yield> empty_generator() {
+    co_return;
+  }
+
  public:
   // should be used only from get_return_object
   constexpr inplace_generator(handle_type handle) noexcept : top(handle) {
   }
-  constexpr inplace_generator(inplace_generator&& other) noexcept {
-    swap(other);
+  constexpr inplace_generator(inplace_generator&& other) noexcept : top(other.top) {
+    // assume not allocates (noexcept)
+    other.top = empty_generator().handle;
   }
   constexpr inplace_generator& operator=(inplace_generator&& other) noexcept {
     swap(other);
@@ -154,11 +169,16 @@ struct inplace_generator {
     a.swap(b);
   }
 
+  [[nodiscard]] bool empty() const noexcept {
+    return top.done();
+  }
+  explicit operator bool() const noexcept {
+    return !empty();
+  }
   constexpr ~inplace_generator() {
     top.destroy();
   }
 
-  // precondition: .begin was not called
   [[nodiscard]] iterator begin() const noexcept {
     return iterator{top.promise()};
   }
