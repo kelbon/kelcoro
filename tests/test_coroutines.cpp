@@ -16,13 +16,13 @@
 #include <array>
 #include <algorithm>
 
-#include "async_task.hpp"
-#include "channel.hpp"
-#include "generator.hpp"
-#include "job.hpp"
-#include "logical_thread.hpp"
-#include "task.hpp"
-#include "events.hpp"
+#include "kelcoro/async_task.hpp"
+#include "kelcoro/channel.hpp"
+#include "kelcoro/generator.hpp"
+#include "kelcoro/job.hpp"
+#include "kelcoro/logical_thread.hpp"
+#include "kelcoro/task.hpp"
+#include "kelcoro/events.hpp"
 
 // clang had bug which breaks all std::views
 #if !defined(__clang_major__) || __clang_major__ >= 15

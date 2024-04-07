@@ -1,8 +1,8 @@
 
-#include "generator.hpp"
-#include "channel.hpp"
-#include "async_task.hpp"
-#include "inplace_generator.hpp"
+#include "kelcoro/generator.hpp"
+#include "kelcoro/channel.hpp"
+#include "kelcoro/async_task.hpp"
+#include "kelcoro/inplace_generator.hpp"
 
 #include <random>
 #include <vector>
