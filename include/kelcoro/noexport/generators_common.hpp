@@ -2,8 +2,8 @@
 
 #include <concepts>
 
-#include "noexport/macro.hpp"
-#include "memory_support.hpp"
+#include "kelcoro/noexport/macro.hpp"
+#include "kelcoro/memory_support.hpp"
 
 namespace dd {
 

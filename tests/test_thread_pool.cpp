@@ -1,7 +1,7 @@
-#include "async_task.hpp"
-#include "task.hpp"
-#include "thread_pool.hpp"
-#include "latch.hpp"
+#include "kelcoro/async_task.hpp"
+#include "kelcoro/task.hpp"
+#include "kelcoro/thread_pool.hpp"
+#include "kelcoro/latch.hpp"
 
 #include <latch>
 #include <iostream>
