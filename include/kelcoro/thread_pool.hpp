@@ -137,6 +137,14 @@ struct worker {
   std::thread::id get_id() const noexcept {
     return thread.get_id();
   }
+  // precondition: caller should not break thread, e.g. do not use .join, .detach, .swap
+  // but may use it to set thread name or pinning thread to core
+  std::thread& get_thread() noexcept {
+    return thread;
+  }
+  const std::thread& get_thread() const noexcept {
+    return thread;
+  }
 };
 
 // executes tasks on one thread
@@ -210,7 +218,10 @@ struct thread_pool {
     schedule(std::forward<decltype(foo)>(foo), calculate_operation_hash(foo));
   }
 
-  KELCORO_PURE std::span<const worker> workers_range() noexcept KELCORO_LIFETIMEBOUND {
+  KELCORO_PURE std::span<worker> workers_range() noexcept KELCORO_LIFETIMEBOUND {
+    return std::span(workers, workers_size);
+  }
+  KELCORO_PURE std::span<const worker> workers_range() const noexcept KELCORO_LIFETIMEBOUND {
     return std::span(workers, workers_size);
   }
 

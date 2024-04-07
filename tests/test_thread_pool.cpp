@@ -5,12 +5,16 @@
 
 #include <latch>
 #include <iostream>
+#include <string>
 
 static_assert(dd::executor<dd::any_executor_ref> && dd::executor<dd::strand> &&
               dd::executor<dd::thread_pool> && dd::executor<dd::worker>);
 
 #define error_if(Cond) error_count += static_cast<bool>((Cond));
 #define TEST(NAME) size_t test_##NAME(size_t error_count = 0)
+
+bool pin_thread_to_cpu_core(std::thread&, int core_nb) noexcept;
+bool set_thread_name(std::thread&, const char* name) noexcept;
 
 TEST(latch) {
   auto run_task = [](dd::thread_pool& p, std::atomic_int& i, dd::latch& start,
@@ -63,7 +67,12 @@ TEST(thread_pool) {
   std::latch l(COUNT);
   dd::thread_pool p(16);
   dd::latch start(COUNT, p);
-
+  std::span workers = p.workers_range();
+  for (int i = 0; i < workers.size(); ++i) {
+    (void)pin_thread_to_cpu_core(workers[i].get_thread(), i);
+    std::string name = "number " + std::to_string(i);
+    (void)set_thread_name(workers[i].get_thread(), name.c_str());
+  }
   for (int ind = 0; ind < COUNT; ++ind) {
     foo(p, start, i, l);
     p.schedule([&] { ++i; });
@@ -91,4 +100,47 @@ int main() {
   ec += test_latch();
   ec += test_thread_pool();
   return ec;
+}
+#ifdef _WIN32
+#include <windows.h>
+#elif defined(__unix__)
+#include <pthread.h>
+#else
+#endif
+
+bool pin_thread_to_cpu_core(std::thread& t, int core_nb) noexcept {
+  if (core_nb < 0 || core_nb >= CHAR_BIT * sizeof(void*))
+    return false;
+#ifdef _WIN32
+  HANDLE handle = t.native_handle();
+  DWORD_PTR mask = 1ull << core_nb;
+  return SetThreadAffinityMask(handle, mask);
+#elif defined(__unix__)
+  cpu_set_t cpuset;
+  CPU_ZERO(&cpuset);
+  CPU_SET(core_nb, &cpuset);
+  pthread_t handle = t.native_handle();
+  return pthread_setaffinity_np(handle, sizeof(cpu_set_t), &cpuset) == 0;
+#else
+  // nothing, not pinned
+  return false;
+#endif
+}
+
+bool set_thread_name(std::thread& t, const char* name) noexcept {
+  if (!name)
+    return false;
+#if defined(_WIN32) && defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x0A00
+  HANDLE handle = t.native_handle();
+  int size_needed = MultiByteToWideChar(CP_UTF8, 0, name, strlen(name), NULL, 0);
+  std::wstring nm(size_needed, 0);
+  MultiByteToWideChar(CP_UTF8, 0, name, strlen(name), &nm[0], size_needed);
+  HRESULT r = SetThreadDescription(handle, nm.c_str());
+  return !(FAILED(r));
+#elif defined(__unix__)
+  return pthread_setname_np(pthread_self(), name) == 0;
+#else
+  // nothing, name not setted
+  return false;
+#endif
 }
