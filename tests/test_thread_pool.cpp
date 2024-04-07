@@ -103,8 +103,9 @@ int main() {
 }
 #ifdef _WIN32
 #include <windows.h>
-#else
+#elif defined(__unix__)
 #include <pthread.h>
+#else
 #endif
 
 bool pin_thread_to_cpu_core(std::thread& t, int core_nb) noexcept {
