@@ -11,7 +11,7 @@ static_assert(dd::executor<dd::any_executor_ref> && dd::executor<dd::strand> &&
               dd::executor<dd::thread_pool> && dd::executor<dd::worker>);
 
 #define error_if(Cond) error_count += static_cast<bool>((Cond));
-#define TEST(NAME) size_t test_##NAME(size_t error_count = 0)
+#define TEST(NAME) inline size_t test_##NAME(size_t error_count = 0)
 
 bool pin_thread_to_cpu_core(std::thread&, int core_nb) noexcept;
 bool set_thread_name(std::thread&, const char* name) noexcept;
@@ -95,10 +95,39 @@ TEST(thread_pool) {
   return error_count;
 }
 
+TEST(latch_waiters) {
+  dd::thread_pool pool;
+
+  std::vector<dd::async_task<void>> tasks;
+  dd::latch test_latch(1000, pool);
+  auto make_producer = [&]() -> dd::async_task<void> {
+    (void)co_await jump_on(test_latch.get_executor());
+    if (std::rand() % 2)
+      test_latch.count_down();
+    else
+      co_await test_latch.arrive_and_wait();
+    co_return;
+  };
+
+  auto make_waiter = [&]() -> dd::async_task<void> {
+    (void)co_await dd::jump_on(pool);
+    co_await test_latch.wait();
+    co_return;
+  };
+  for (int i = 0; i < 1000; ++i) {
+    tasks.push_back(make_waiter());
+    tasks.push_back(make_producer());
+  }
+  for (auto& t : tasks)
+    t.wait();
+  return error_count;
+}
+
 int main() {
   size_t ec = 0;
   ec += test_latch();
   ec += test_thread_pool();
+  ec += test_latch_waiters();
   return ec;
 }
 #ifdef _WIN32

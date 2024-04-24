@@ -55,6 +55,7 @@ struct any_executor_ref {
     requires(!std::same_as<std::remove_volatile_t<E>, any_executor_ref> && !std::is_const_v<E>)
       : attach_node(&do_attach<E>), data(std::addressof(exe)) {
   }
+
   any_executor_ref(const any_executor_ref&) = default;
   any_executor_ref(any_executor_ref&&) = default;
 
@@ -97,7 +98,7 @@ struct KELCORO_CO_AWAIT_REQUIRED create_node_and_attach : task_node {
     task = handle;
     e.attach(this);
   }
-  schedule_status await_resume() noexcept {
+  [[nodiscard]] schedule_status await_resume() noexcept {
     return schedule_status{status};
   }
 };
@@ -105,7 +106,7 @@ struct KELCORO_CO_AWAIT_REQUIRED create_node_and_attach : task_node {
 // ADL customization point, may be overloaded for your executor type, should return awaitable which
 // schedules execution of coroutine to 'e'
 template <executor E>
-KELCORO_CO_AWAIT_REQUIRED constexpr auto jump_on(E& e KELCORO_LIFETIMEBOUND) noexcept {
+KELCORO_CO_AWAIT_REQUIRED constexpr auto jump_on(E&& e KELCORO_LIFETIMEBOUND) noexcept {
   return create_node_and_attach<E>(e);
 }
 

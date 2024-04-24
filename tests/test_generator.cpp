@@ -28,7 +28,7 @@ using dd::generator;
 #define RANDOM_CONTROL_FLOW                               \
   if constexpr (std::is_same_v<G<int>, dd::channel<int>>) \
     if (flip())                                           \
-  co_await dd::jump_on(dd::new_thread_executor)
+  (void)co_await dd::jump_on(dd::new_thread_executor)
 
 static bool flip() {
   static thread_local std::mt19937 rng = [] {

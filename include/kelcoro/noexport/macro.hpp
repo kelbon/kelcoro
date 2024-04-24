@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cassert>
+
 #define KELCORO_CO_AWAIT_REQUIRED [[nodiscard("forget co_await?")]]
 
 #if defined(__GNUC__) || defined(__clang__)

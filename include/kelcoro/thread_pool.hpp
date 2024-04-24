@@ -241,6 +241,17 @@ struct thread_pool {
   void stop(worker* w, size_t count) noexcept;
 };
 
+// specialization for thread pool uses hash to maximize parallel execution
+inline void attach_list(thread_pool& e, task_node* top) {
+  operation_hash_t hash = 0;
+  while (top) {
+    task_node* next = top->next;
+    e.select_worker(hash).attach(top);
+    ++hash;
+    top = next;
+  }
+}
+
 struct jump_on_thread_pool : private create_node_and_attach<thread_pool> {
   using base_t = create_node_and_attach<thread_pool>;
 

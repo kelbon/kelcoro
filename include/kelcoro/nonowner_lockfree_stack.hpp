@@ -31,8 +31,8 @@ struct nonowner_lockfree_stack {
   }
 
   // returns top of the stack
-  [[nodiscard]] node_type* try_pop_all(std::memory_order exchange_order = acq_rel) noexcept {
-    return top.exchange(nullptr, exchange_order);
+  [[nodiscard]] node_type* try_pop_all() noexcept {
+    return top.exchange(nullptr, acq_rel);
   }
   // other_top must be a top of other stack ( for example from try_pop_all() )
   void push_stack(node_type* other_top) noexcept {
