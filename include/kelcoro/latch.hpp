@@ -10,12 +10,12 @@ namespace dd {
 // when completed, starts all waiters on passed executor
 struct latch {
  private:
-  alignas(hardware_destructive_interference_size) mutable nonowner_lockfree_stack<task_node> stack;
-  alignas(hardware_destructive_interference_size) std::atomic_ptrdiff_t counter;
+  nonowner_lockfree_stack<task_node> stack;
   any_executor_ref exe;
+  std::atomic_ptrdiff_t counter;
 
   struct wait_awaiter {
-    const latch& l;
+    latch& l;
     task_node node;
 
     bool await_ready() const noexcept {
@@ -24,6 +24,9 @@ struct latch {
     void await_suspend(std::coroutine_handle<> handle) noexcept {
       node.task = handle;
       l.stack.push(&node);
+      // in case if 'ready' changed from 'false' to 'true' wakeup all who call 'wait'
+      if (l.ready())
+        l.wakeup_all();
     }
     static void await_resume() noexcept {
     }
@@ -47,13 +50,11 @@ struct latch {
       node.task = handle;
       l.stack.push(&node);
       // copy logic from count down but never resume
-      assert(n >= 0 && n <= l.counter.load(std::memory_order::relaxed));
-      ptrdiff_t c = l.counter.fetch_sub(n, std::memory_order::acq_rel) - n;
-      if (c != 0) [[likely]] {
-        assert(c > 0 && "precondition violated");
-        return;
-      }
-      l.wakeup_all();
+      assert(n >= 0 && n <= l.counter.load(std::memory_order::acquire));
+      ptrdiff_t c = l.counter.fetch_sub(n, std::memory_order::acq_rel);
+      assert(c >= n);
+      if (c == n) [[unlikely]]
+        l.wakeup_all();
     }
     static void await_resume() noexcept {
     }
@@ -74,13 +75,11 @@ struct latch {
   // decrements the internal counter by n without blocking the caller
   // precondition: n >= 0 && n <= internal counter
   void count_down(std::ptrdiff_t n = 1) noexcept {
-    assert(n >= 0 && n <= counter.load(std::memory_order::relaxed));
-    ptrdiff_t c = counter.fetch_sub(n, std::memory_order::acq_rel) - n;
-    if (c != 0) [[likely]] {
-      assert(c >= 0 && "precondition violated");
-      return;
-    }
-    wakeup_all();
+    assert(n >= 0 && n <= counter.load(std::memory_order::acquire));
+    ptrdiff_t c = counter.fetch_sub(n, std::memory_order::acq_rel);
+    assert(c >= n && "precondition violated");
+    if (c == n) [[unlikely]]
+      wakeup_all();
   }
 
   // returns true if the internal counter has reached zero
@@ -91,14 +90,14 @@ struct latch {
 
   // suspends the calling coroutine until the internal counter reaches ​0​.
   // If it is zero already, returns immediately
-  KELCORO_CO_AWAIT_REQUIRED co_awaiter auto wait() const noexcept {
+  KELCORO_CO_AWAIT_REQUIRED co_awaiter auto wait() noexcept {
     return wait_awaiter{*this};
   }
 
   // precondition: n >= 0 && n <= internal counter
   // logical equivalent to count_down(n); wait() (but atomicaly, really count down + wait is rata race)
   KELCORO_CO_AWAIT_REQUIRED co_awaiter auto arrive_and_wait(std::ptrdiff_t n = 1) noexcept {
-    assert(n >= 0 && n <= counter.load(std::memory_order::relaxed));
+    assert(n >= 0 && n <= counter.load(std::memory_order::acquire));
     return arrive_and_wait_awaiter{*this, n};
   }
 
@@ -108,7 +107,7 @@ struct latch {
 
  private:
   void wakeup_all() noexcept {
-    task_node* top = stack.try_pop_all(std::memory_order::relaxed);
+    task_node* top = stack.try_pop_all();
     attach_list(exe, top);
   }
 };
