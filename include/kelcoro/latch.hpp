@@ -49,12 +49,7 @@ struct latch {
     void await_suspend(std::coroutine_handle<> handle) noexcept {
       node.task = handle;
       l.stack.push(&node);
-      // copy logic from count down but never resume
-      assert(n >= 0 && n <= l.counter.load(std::memory_order::acquire));
-      ptrdiff_t c = l.counter.fetch_sub(n, std::memory_order::acq_rel);
-      assert(c >= n);
-      if (c == n) [[unlikely]]
-        l.wakeup_all();
+      l.count_down(n);
     }
     static void await_resume() noexcept {
     }
