@@ -1,24 +1,27 @@
 #pragma once
 
 #include "common.hpp"
-#include "kelcoro/async_task.hpp"
+#include "async_task.hpp"
 #include "memory_support.hpp"
+
+/*
+same as dd::task, but guaranteed to nothrow (terminate), slightly more effective
+*/
 
 namespace dd {
 
 template <typename Result>
-struct task_promise : return_block<Result> {
+struct noexcept_task_promise : return_block<Result> {
   std::coroutine_handle<void> who_waits;
-  std::exception_ptr exception = nullptr;
 
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
   auto get_return_object() {
-    return std::coroutine_handle<task_promise<Result>>::from_promise(*this);
+    return std::coroutine_handle<noexcept_task_promise<Result>>::from_promise(*this);
   }
-  void unhandled_exception() noexcept {
-    exception = std::current_exception();
+  [[noreturn]] static void unhandled_exception() noexcept {
+    std::terminate();
   }
   auto final_suspend() noexcept {
     // who_waits always setted because task not started or co_awaited
@@ -28,27 +31,27 @@ struct task_promise : return_block<Result> {
 
 // single value generator that returns a value with a co_return
 template <typename Result>
-struct task : enable_resource_deduction {
+struct noexcept_task : enable_resource_deduction {
   using result_type = Result;
-  using promise_type = task_promise<Result>;
+  using promise_type = noexcept_task_promise<Result>;
   using handle_type = std::coroutine_handle<promise_type>;
 
  private:
   handle_type handle_;
 
  public:
-  constexpr task() noexcept = default;
-  constexpr task(handle_type handle) noexcept : handle_(handle) {
+  constexpr noexcept_task() noexcept = default;
+  constexpr noexcept_task(handle_type handle) noexcept : handle_(handle) {
   }
 
-  task(task&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {
+  noexcept_task(noexcept_task&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {
   }
-  task& operator=(task&& other) noexcept {
+  noexcept_task& operator=(noexcept_task&& other) noexcept {
     std::swap(handle_, other.handle_);
     return *this;
   }
 
-  ~task() {
+  ~noexcept_task() {
     if (handle_)
       handle_.destroy();
   }
@@ -64,9 +67,9 @@ struct task : enable_resource_deduction {
   }
 
   // blocking
-  result_type get() {
+  result_type get() noexcept {
     assert(!empty());
-    return [](task t) -> async_task<result_type> { co_return co_await t; }(std::move(*this)).get();
+    return [](noexcept_task t) -> async_task<result_type> { co_return co_await t; }(std::move(*this)).get();
   }
 
  private:
@@ -82,11 +85,8 @@ struct task : enable_resource_deduction {
       // symmetric transfer control to task
       return task_handle;
     }
-    [[nodiscard]] std::add_rvalue_reference_t<result_type> await_resume() {
-      auto& promise = task_handle.promise();
-      if (promise.exception) [[unlikely]]
-        std::rethrow_exception(promise.exception);
-      return promise.result();
+    [[nodiscard]] std::add_rvalue_reference_t<result_type> await_resume() noexcept {
+      return task_handle.promise().result();
     }
   };
 
@@ -98,18 +98,18 @@ struct task : enable_resource_deduction {
 };
 
 template <typename Ret, memory_resource R>
-using task_r = resourced<task<Ret>, R>;
+using noexcept_task_r = resourced<noexcept_task<Ret>, R>;
 
 namespace pmr {
 
 template <typename Ret>
-using task = ::dd::task_r<Ret, polymorphic_resource>;
+using noexcept_task = ::dd::noexcept_task_r<Ret, polymorphic_resource>;
 
 }
 
 template <typename R>
-struct operation_hash<std::coroutine_handle<task_promise<R>>> {
-  operation_hash_t operator()(std::coroutine_handle<task_promise<R>> handle) noexcept {
+struct operation_hash<std::coroutine_handle<noexcept_task_promise<R>>> {
+  operation_hash_t operator()(std::coroutine_handle<noexcept_task_promise<R>> handle) noexcept {
     return operation_hash<std::coroutine_handle<>>()(handle.promise().who_waits);
   }
 };

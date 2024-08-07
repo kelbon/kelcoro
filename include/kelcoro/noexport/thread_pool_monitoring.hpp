@@ -20,7 +20,6 @@ struct monitoring_t {
   std::atomic_size_t strands_count = 0;
   // count of pop_all from queue
   std::atomic_size_t pop_count = 0;
-  std::atomic_size_t sleep_count = 0;
 
   monitoring_t() = default;
   // copied only when one thread
@@ -29,8 +28,7 @@ struct monitoring_t {
         finished(other.finished.load(relaxed)),
         cancelled(other.cancelled.load(relaxed)),
         strands_count(other.strands_count.load(relaxed)),
-        pop_count(other.pop_count.load(relaxed)),
-        sleep_count(other.sleep_count.load(relaxed)) {
+        pop_count(other.pop_count.load(relaxed)) {
   }
   // all calculations approximate
   using enum std::memory_order;
@@ -44,22 +42,16 @@ struct monitoring_t {
     // order to never produce value < 0
     return pushed - finished;
   }
-  static float sleep_percent(size_t pop_count, size_t sleep_count) noexcept {
-    assert(pop_count >= sleep_count);
-    return static_cast<float>(sleep_count) / pop_count;
-  }
+
   void print(auto&& out) const {
-    size_t p = pushed, f = finished, sc = strands_count, pc = pop_count, slc = sleep_count,
-           slp = sleep_percent(pc, slc), avr_tp = average_tasks_popped(pc, f), pending = pending_count(p, f),
-           cld = cancelled;
+    size_t p = pushed, f = finished, sc = strands_count, pc = pop_count, avr_tp = average_tasks_popped(pc, f),
+           pending = pending_count(p, f), cld = cancelled;
     // clang-format off
     out << "pushed:               " << p << '\n';
     out << "finished:             " << f << '\n';
     out << "cancelled:            " << cld << '\n';
     out << "strands_count:        " << sc << '\n';
     out << "pop_count:            " << pc << '\n';
-    out << "sleep_count:          " << slc << '\n';
-    out << "sleep%:               " << slp << '\n';
     out << "average tasks popped: " << avr_tp << '\n';
     out << "pending count:        " << pending << '\n';
     // clang-format on

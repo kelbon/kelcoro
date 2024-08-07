@@ -12,6 +12,7 @@ struct async_task;
 
 template <typename Result>
 struct async_task_promise : return_block<Result> {
+  std::exception_ptr exception = nullptr;
   std::atomic_bool ready = false;
   // only owner and coroutine itself are owners
   std::atomic_int8_t ref_count = 1;
@@ -22,8 +23,9 @@ struct async_task_promise : return_block<Result> {
   async_task<Result> get_return_object() {
     return async_task<Result>(std::coroutine_handle<async_task_promise<Result>>::from_promise(*this));
   }
-  [[noreturn]] void unhandled_exception() const noexcept {
-    std::terminate();
+  void unhandled_exception() noexcept {
+    exception = std::current_exception();
+    // goes to final suspend
   }
 
  private:
@@ -102,16 +104,21 @@ struct async_task : enable_resource_deduction {
 
   // precondition: !empty()
   // must be invoked in one thread(one consumer)
-  std::add_rvalue_reference_t<Result> get() && noexcept KELCORO_LIFETIMEBOUND {
+  std::add_rvalue_reference_t<Result> get() KELCORO_LIFETIMEBOUND {
     assert(!empty());
     wait();
-    // result always exist, its setted or std::terminate called on exception.
-    return handle.promise().result();
+    auto& promise = handle.promise();
+    if (promise.exception) [[unlikely]]
+      std::rethrow_exception(promise.exception);
+    return promise.result();
   }
 
   // return true if call to 'get' will produce UB
   constexpr bool empty() const noexcept {
     return handle == nullptr;
+  }
+  constexpr explicit operator bool() const noexcept {
+    return !empty();
   }
 
   ~async_task() {
