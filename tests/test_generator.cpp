@@ -234,6 +234,19 @@ CHANNEL_TEST(recursive_channel) {
 }
 CO_TEST(recursive_channel);
 
+CHANNEL_TEST(recursive_channel_next) {
+  std::vector<int> vec;
+  auto g = g3<dd::channel>(0);
+  while (int* i = co_await g.next())
+    vec.push_back(*i);
+  error_if((vec != std::vector{10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0}));
+  error_if(!g.empty());
+  while (int* i = co_await g.next())
+    error_if(true);
+  co_return error_count;
+}
+CO_TEST(recursive_channel_next);
+
 CHAN_OR_GEN
 G<int> g5(int& i) {
   co_yield dd::elements_of([]() -> G<int> {
@@ -923,6 +936,7 @@ int main() {
   RUN(recursive_interrupted2);
   RUN(recursive_interrupted_channel2);
   RUN(recursive_throw);
+  RUN(recursive_channel_next);
 #ifndef _WIN32
   // segfault when reading throwed exception .what(), because its somehow on coro frame, when it must not
   // so its already destroyed by generator destructor when cached

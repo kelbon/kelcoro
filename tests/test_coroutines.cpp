@@ -23,6 +23,7 @@
 #include "kelcoro/logical_thread.hpp"
 #include "kelcoro/task.hpp"
 #include "kelcoro/events.hpp"
+#include "kelcoro/noexcept_task.hpp"
 
 // clang had bug which breaks all std::views
 #if !defined(__clang_major__) || __clang_major__ >= 15
@@ -447,6 +448,38 @@ dd::task<std::string> do_smth() {
   co_return "hello from task";
 }
 
+dd::noexcept_task<std::string> do_smth_noexcept() {
+  (void)co_await dd::jump_on(dd::new_thread_executor);
+  co_return "hello from task";
+}
+
+TEST(task_blocking_wait_noexcept) {
+  error_if(do_smth_noexcept().get() != "hello from task");
+  return error_count;
+}
+
+TEST(task_blocking_wait) {
+  error_if(do_smth().get() != "hello from task");
+  return error_count;
+}
+
+dd::task<std::string> do_throw() {
+  (void)co_await dd::jump_on(dd::new_thread_executor);
+  throw 42;
+}
+
+TEST(task_with_exception) {
+  dd::task t = do_throw();
+  try {
+    t.get();
+  } catch (int x) {
+    error_if(x != 42);
+    return error_count;
+  }
+  error_if(true);
+  return error_count;
+}
+
 dd::async_task<void> tasks_user() {
   std::vector<dd::task<std::string>> vec;
   for (int i = 0; i < 10; ++i)
@@ -518,6 +551,9 @@ int main() {
   ec += TESTchannel();
   ec += TESTallocations();
   ec += TESTdetached_tasks();
+  ec += TESTtask_blocking_wait();
+  ec += TESTtask_with_exception();
+  ec += TESTtask_blocking_wait_noexcept();
   return ec;
 }
 #else

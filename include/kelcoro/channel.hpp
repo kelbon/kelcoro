@@ -299,6 +299,25 @@ struct channel : enable_resource_deduction {
     }
   };
 
+  struct next_awaiter : not_movable {
+    channel& self;
+
+    constexpr explicit next_awaiter(channel& c) noexcept : self(c) {
+    }
+    bool await_ready() const noexcept {
+      return self.empty();
+    }
+    KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<> await_suspend(
+        std::coroutine_handle<> consumer) noexcept {
+      self.handle = consumer;
+      self.top.promise()._consumer = &self;
+      return self.top.promise().current_worker;
+    }
+    [[nodiscard]] std::add_pointer_t<Yield> await_resume() const noexcept {
+      return self.current_result;  // nullptr if empty
+    }
+  };
+
  public:
   // * if .empty(), then co_await begin() == end()
   // produces next value(often first)
@@ -307,6 +326,10 @@ struct channel : enable_resource_deduction {
   }
   static constexpr std::default_sentinel_t end() noexcept {
     return std::default_sentinel;
+  }
+
+  KELCORO_CO_AWAIT_REQUIRED next_awaiter next() noexcept {
+    return next_awaiter(*this);
   }
 };
 

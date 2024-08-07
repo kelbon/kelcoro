@@ -26,6 +26,10 @@ static auto cancel_tasks(task_node* top) noexcept {
   KELCORO_MONITORING(return count);
 }
 
+}  // namespace dd::noexport
+
+namespace dd {
+
 struct task_queue {
  private:
   task_node* first = nullptr;
@@ -66,11 +70,10 @@ struct task_queue {
 
   // blocking
   // postcondition: task_node != nullptr
-  [[nodiscard]] task_node* pop_all_not_empty(KELCORO_MONITORING(bool& sleeped)) {
+  [[nodiscard]] task_node* pop_all_not_empty() {
     task_node* nodes;
     {
       std::unique_lock l(mtx);
-      KELCORO_MONITORING(sleeped = !first);
       while (!first)
         not_empty.wait(l);
       nodes = pop_all_nolock();
@@ -79,10 +82,6 @@ struct task_queue {
     return nodes;
   }
 };
-
-}  // namespace dd::noexport
-
-namespace dd {
 
 // schedules execution of 'foo' to executor 'e'
 [[maybe_unused]] job schedule_to(auto& e KELCORO_LIFETIMEBOUND, auto foo) {
@@ -101,7 +100,7 @@ template <memory_resource R>
 // expensive to create
 struct worker {
  private:
-  noexport::task_queue queue;
+  task_queue queue;
   KELCORO_MONITORING(monitoring_t mon);
   std::thread thread;
 
@@ -171,7 +170,7 @@ struct strand {
 
 // distributes tasks among workers
 // co_await jump_on(pool) schedules coroutine to thread pool
-// note: when thread pool dies, all pending tasks invoked with errc::cancelled
+// note: when thread pool dies, all pending tasks invoked with schedule_errc::cancelled
 struct thread_pool {
  private:
   worker* workers;                      // invariant: != 0
@@ -185,7 +184,7 @@ struct thread_pool {
   }
 
   explicit thread_pool(size_t thread_count = default_thread_count(),
-                       std::pmr::memory_resource* r = std::pmr::new_delete_resource());
+                       std::pmr::memory_resource* r = std::pmr::get_default_resource());
 
   ~thread_pool() {
     // if destructor started, then it is undefined behavior to push tasks
@@ -278,11 +277,9 @@ inline void worker::worker_job(worker* w) noexcept {
   assert(w);
   task_node* top;
   std::coroutine_handle task;
-  noexport::task_queue* queue = &w->queue;
-  KELCORO_MONITORING(bool sleeped);
-  while (true) {
-    top = queue->pop_all_not_empty(KELCORO_MONITORING(sleeped));
-    KELCORO_MONITORING(if (sleeped) KELCORO_MONITORING_INC(w->mon.sleep_count));
+  task_queue* queue = &w->queue;
+  for (;;) {
+    top = queue->pop_all_not_empty();
     KELCORO_MONITORING_INC(w->mon.pop_count);
     assert(top);
     do {
