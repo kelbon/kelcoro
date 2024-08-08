@@ -50,7 +50,7 @@ struct KELCORO_CO_AWAIT_REQUIRED op_hash_t {
 
 }  // namespace noexport
 
-// precondition: opeation can be executed
+// precondition: operation can be executed
 // e.g. it is not empty coroutine handle or empty std::function
 template <typename T>
 struct operation_hash {

@@ -242,7 +242,7 @@ struct thread_pool {
 
 // specialization for thread pool uses hash to maximize parallel execution
 inline void attach_list(thread_pool& e, task_node* top) {
-  operation_hash_t hash = 0;
+  operation_hash_t hash = noexport::do_hash(top);
   while (top) {
     task_node* next = top->next;
     e.select_worker(hash).attach(top);
