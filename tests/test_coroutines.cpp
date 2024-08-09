@@ -458,6 +458,29 @@ TEST(task_blocking_wait_noexcept) {
   return error_count;
 }
 
+TEST(task_start_and_detach) {
+  std::atomic_bool flag = false;
+  dd::task task = [](std::atomic_bool& flag) -> dd::task<void> {
+    (void)co_await dd::jump_on(dd::new_thread_executor);
+    flag.exchange(true);
+    (void)co_await dd::jump_on(dd::new_thread_executor);
+    dd::scope_exit e = [&] { flag.notify_one(); };
+  }(flag);
+  task.start_and_detach();
+  flag.wait(false);
+  int x = 0;
+  dd::task task2 = [](int& x) -> dd::task<void> {
+    x = 42;
+    co_return;
+  }(x);
+  error_if(x != 0);
+  std::coroutine_handle h = task2.start_and_detach(/*stop_at_end=*/true);
+  error_if(x != 42);
+  error_if(!h.done());
+  h.destroy();
+  return error_count;
+}
+
 TEST(task_blocking_wait) {
   error_if(do_smth().get() != "hello from task");
   return error_count;
@@ -554,6 +577,7 @@ int main() {
   ec += TESTtask_blocking_wait();
   ec += TESTtask_with_exception();
   ec += TESTtask_blocking_wait_noexcept();
+  ec += TESTtask_start_and_detach();
   return ec;
 }
 #else

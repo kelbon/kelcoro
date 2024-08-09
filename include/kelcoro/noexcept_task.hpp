@@ -66,6 +66,19 @@ struct noexcept_task : enable_resource_deduction {
     return std::exchange(handle_, nullptr);
   }
 
+  // postcondition: empty(), task result ignored
+  // returns released task handle
+  // if stop_at_end is false, then task will delete itself at end, otherwise handle.destroy() should be called
+  handle_type start_and_detach(bool stop_at_end = false) {
+    if (!handle_)
+      return nullptr;
+    handle_type h = std::exchange(handle_, nullptr);
+    // task resumes itself at end and destroys itself or just stops with noop_coroutine
+    h.promise().who_waits = stop_at_end ? std::noop_coroutine() : std::coroutine_handle<>(h);
+    h.resume();
+    return h;
+  }
+
   // blocking
   result_type get() noexcept {
     assert(!empty());
