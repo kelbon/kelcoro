@@ -467,6 +467,7 @@ TEST(task_start_and_detach) {
     dd::scope_exit e = [&] { flag.notify_one(); };
   }(flag);
   task.start_and_detach();
+  error_if(!task.empty());
   flag.wait(false);
   int x = 0;
   dd::task task2 = [](int& x) -> dd::task<void> {
@@ -475,6 +476,7 @@ TEST(task_start_and_detach) {
   }(x);
   error_if(x != 0);
   std::coroutine_handle h = task2.start_and_detach(/*stop_at_end=*/true);
+  error_if(!task2.empty());
   error_if(x != 42);
   error_if(!h.done());
   h.destroy();

@@ -63,6 +63,7 @@ struct task : enable_resource_deduction {
     return std::exchange(handle_, nullptr);
   }
 
+#if defined(__GNUC__) || defined(__clang__)
   // postcondition: empty(), task result ignored
   // returns released task handle
   // if stop_at_end is false, then task will delete itself at end, otherwise handle.destroy() should be called
@@ -75,7 +76,7 @@ struct task : enable_resource_deduction {
     h.resume();
     return h;
   }
-
+#endif
   // blocking
   result_type get() {
     assert(!empty());
