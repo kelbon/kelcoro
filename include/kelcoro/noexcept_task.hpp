@@ -31,7 +31,7 @@ struct noexcept_task_promise : return_block<Result> {
 
 // single value generator that returns a value with a co_return
 template <typename Result>
-struct noexcept_task : enable_resource_deduction {
+struct [[nodiscard]] noexcept_task : enable_resource_deduction {
   using result_type = Result;
   using promise_type = noexcept_task_promise<Result>;
   using handle_type = std::coroutine_handle<promise_type>;
@@ -65,7 +65,6 @@ struct noexcept_task : enable_resource_deduction {
   [[nodiscard]] handle_type release() noexcept {
     return std::exchange(handle_, nullptr);
   }
-#if defined(__GNUC__) || defined(__clang__)
   // postcondition: empty(), task result ignored
   // returns released task handle
   // if stop_at_end is false, then task will delete itself at end, otherwise handle.destroy() should be called
@@ -74,11 +73,11 @@ struct noexcept_task : enable_resource_deduction {
       return nullptr;
     handle_type h = std::exchange(handle_, nullptr);
     // task resumes itself at end and destroys itself or just stops with noop_coroutine
-    h.promise().who_waits = stop_at_end ? std::noop_coroutine() : std::coroutine_handle<>(h);
+    h.promise().who_waits = stop_at_end ? std::noop_coroutine() : std::coroutine_handle<>(nullptr);
     h.resume();
     return h;
   }
-#endif
+
   // blocking
   result_type get() noexcept {
     assert(!empty());

@@ -53,22 +53,14 @@ struct return_block<void> {
   }
 };
 
+// if transfers to nullptr, then behaves as suspend_never
 struct [[nodiscard("co_await it!")]] transfer_control_to {
   std::coroutine_handle<> who_waits;
 
   bool await_ready() const noexcept {
-    assert(who_waits != nullptr);
-    return false;
+    return !who_waits;
   }
-  KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) noexcept {
-    if (who_waits.done()) [[unlikely]] {
-      (void)h;
-      assert(h == who_waits);
-      // only possible on gcc/clang when compiler passes handle on final suspend point
-      // standard says it should be legal to just return handle to continue coroutine and free memory
-      who_waits.destroy();
-      return std::noop_coroutine();
-    }
+  KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<> await_suspend(std::coroutine_handle<>) noexcept {
     return who_waits;  // symmetric transfer here
   }
   static constexpr void await_resume() noexcept {

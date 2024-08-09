@@ -21,14 +21,13 @@ struct task_promise : return_block<Result> {
     exception = std::current_exception();
   }
   auto final_suspend() noexcept {
-    // who_waits always setted because task not started or co_awaited
     return transfer_control_to{who_waits};
   }
 };
 
 // single value generator that returns a value with a co_return
 template <typename Result>
-struct task : enable_resource_deduction {
+struct [[nodiscard]] task : enable_resource_deduction {
   using result_type = Result;
   using promise_type = task_promise<Result>;
   using handle_type = std::coroutine_handle<promise_type>;
@@ -63,7 +62,6 @@ struct task : enable_resource_deduction {
     return std::exchange(handle_, nullptr);
   }
 
-#if defined(__GNUC__) || defined(__clang__)
   // postcondition: empty(), task result ignored
   // returns released task handle
   // if stop_at_end is false, then task will delete itself at end, otherwise handle.destroy() should be called
@@ -72,11 +70,11 @@ struct task : enable_resource_deduction {
       return nullptr;
     handle_type h = std::exchange(handle_, nullptr);
     // task resumes itself at end and destroys itself or just stops with noop_coroutine
-    h.promise().who_waits = stop_at_end ? std::noop_coroutine() : std::coroutine_handle<>(h);
+    h.promise().who_waits = stop_at_end ? std::noop_coroutine() : std::coroutine_handle<>(nullptr);
     h.resume();
     return h;
   }
-#endif
+
   // blocking
   result_type get() {
     assert(!empty());
