@@ -61,6 +61,9 @@ struct [[nodiscard]] task : enable_resource_deduction {
   [[nodiscard]] handle_type release() noexcept {
     return std::exchange(handle_, nullptr);
   }
+  [[nodiscard]] handle_type raw_handle() const noexcept {
+    return handle_;
+  }
 
   // postcondition: empty(), task result ignored
   // returns released task handle

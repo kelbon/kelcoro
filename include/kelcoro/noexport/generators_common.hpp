@@ -11,7 +11,7 @@ namespace dd {
 // that is - not function, not array, not cv-qualified (its has no )
 // additionally reference is not yieldable(std::ref exists...)
 template <typename T>
-concept yieldable = !std::is_void_v<T> && (std::same_as<std::decay_t<T>, T> || std::is_lvalue_reference_v<T>);
+concept yieldable = std::same_as<std::decay_t<T>, T> || std::is_lvalue_reference_v<T>;
 
 // just helper to disambigue two yield_value overloads in case when Yield is reference
 template <typename T>

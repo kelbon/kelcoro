@@ -7,9 +7,6 @@ foreach(PART ${KELCORO_PARTS})
   set_target_properties(${PART} PROPERTIES
 	  CMAKE_CXX_EXTENSIONS OFF
 	  LINKER_LANGUAGE CXX
-    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-      target_compile_options(${PART} -fsanitize=thread)
-    endif()
 	  CMAKE_CXX_STANDARD_REQUIRED ON
 	  CXX_STANDARD 20
   )
