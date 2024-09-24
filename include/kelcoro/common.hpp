@@ -25,8 +25,9 @@ template <typename T>
 struct return_block {
   std::optional<T> storage = std::nullopt;
 
-  constexpr void return_value(T value) noexcept(std::is_nothrow_move_constructible_v<T>) {
-    storage.emplace(std::move(value));
+  template <typename U = T>
+  constexpr void return_value(U&& value) noexcept(std::is_nothrow_constructible_v<T, U&&>) {
+    storage.emplace(std::forward<U>(value));
   }
   constexpr T&& result() noexcept KELCORO_LIFETIMEBOUND {
     assert(storage.has_value());

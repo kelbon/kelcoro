@@ -631,6 +631,27 @@ TEST(contexted_task) {
   return error_count;
 }
 
+// checks that 'return_value' may be used with non movable types
+dd::task<std::tuple<int, std::string, std::vector<int>, std::unique_ptr<int>>> complex_ret(int i) {
+  switch (i) {
+    case 0:
+      co_return {5, std::string(""), std::vector<int>{5, 10}, std::unique_ptr<int>(nullptr)};
+    case 1: {
+      std::tuple<int, std::string, std::vector<int>, std::unique_ptr<int>> v{
+          5, std::string(""), std::vector<int>{5, 10}, std::unique_ptr<int>(nullptr)};
+      ;
+      co_return v;
+    }
+    default:
+      co_return {};
+  }
+}
+TEST(complex_ret) {
+  complex_ret(0).start_and_detach();
+  complex_ret(1).start_and_detach();
+  return error_count;
+}
+
 int main() {
   srand(time(0));
   size_t ec = 0;
@@ -651,6 +672,7 @@ int main() {
   ec += TESTtask_blocking_wait_noexcept();
   ec += TESTtask_start_and_detach();
   ec += TESTcontexted_task();
+  ec += TESTcomplex_ret();
   return ec;
 }
 #else
