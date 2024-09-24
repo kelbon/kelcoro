@@ -6,31 +6,77 @@
 
 namespace dd {
 
-template <typename Result>
+namespace this_coro {
+
+constexpr inline get_context_t context = {};
+
+}  // namespace this_coro
+
+// default task Ctx, also example of what context may do
+struct null_context {
+  // invoked when task is scheduled to execute, 'owner' is handle of coroutine, which awaits task
+  // never invoked with nullptrs
+  template <typename OwnerPromise, typename TaskPromise>
+  static void on_owner_setted(std::coroutine_handle<OwnerPromise>,
+                              std::coroutine_handle<TaskPromise>) noexcept {
+  }
+  // may be invoked even without 'on_owner_setted' before, if task is detached
+  template <typename TaskPromise>
+  static void on_start(std::coroutine_handle<TaskPromise>) noexcept {
+  }
+  // invoked when task successfully ended
+  template <typename TaskPromise>
+  static void on_end_success(std::coroutine_handle<TaskPromise>) noexcept {
+  }
+  // invoked when task ended with exception
+  // Note: by default, exception when no one waits is ignored, but this function may check it and
+  // std::terminate or smth like this (check .who_waits == nullptr)
+  template <typename TaskPromise>
+  static void on_end_failure(std::coroutine_handle<TaskPromise>, const std::exception_ptr&) noexcept {
+  }
+};
+
+template <typename Result, typename Ctx>
 struct task_promise : return_block<Result> {
-  std::coroutine_handle<void> who_waits;
+  KELCORO_NO_UNIQUE_ADDRESS Ctx ctx;
+  std::coroutine_handle<> who_waits;
   std::exception_ptr exception = nullptr;
+
+  auto await_transform(this_coro::get_context_t) noexcept {
+    return this_coro::get_context_t::awaiter<Ctx>{};
+  }
+  auto await_transform(this_coro::get_handle_t) noexcept {
+    return this_coro::get_handle_t::awaiter<task_promise>{};
+  }
+  KELCORO_DEFAULT_AWAIT_TRANSFORM;
+
+  auto self_handle() {
+    return std::coroutine_handle<task_promise<Result, Ctx>>::from_promise(*this);
+  }
 
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
   auto get_return_object() {
-    return std::coroutine_handle<task_promise<Result>>::from_promise(*this);
+    return self_handle();
   }
   void unhandled_exception() noexcept {
     exception = std::current_exception();
+    ctx.on_end_failure(self_handle(), exception);
   }
   auto final_suspend() noexcept {
+    ctx.on_end_success(self_handle());
     return transfer_control_to{who_waits};
   }
 };
 
 // single value generator that returns a value with a co_return
-template <typename Result>
+template <typename Result, typename Ctx = null_context>
 struct [[nodiscard]] task : enable_resource_deduction {
   using result_type = Result;
-  using promise_type = task_promise<Result>;
+  using promise_type = task_promise<Result, Ctx>;
   using handle_type = std::coroutine_handle<promise_type>;
+  using context_type = Ctx;
 
  private:
   handle_type handle_;
@@ -65,20 +111,27 @@ struct [[nodiscard]] task : enable_resource_deduction {
     return handle_;
   }
 
+  context_type* get_context() const noexcept {
+    return handle_ ? std::addressof(handle_.promise().get_context()) : nullptr;
+  }
+
   // postcondition: empty(), task result ignored
   // returns released task handle
   // if stop_at_end is false, then task will delete itself at end, otherwise handle.destroy() should be called
+  // Note: when task is detached and exception happens, its ignored
   handle_type start_and_detach(bool stop_at_end = false) {
     if (!handle_)
       return nullptr;
     handle_type h = std::exchange(handle_, nullptr);
     // task resumes itself at end and destroys itself or just stops with noop_coroutine
     h.promise().who_waits = stop_at_end ? std::noop_coroutine() : std::coroutine_handle<>(nullptr);
+    h.promise().ctx.on_start(h);
     h.resume();
     return h;
   }
 
   // blocking
+  // Note: .get() when task is not scheduled to another thread will lead to deadlock
   result_type get() {
     assert(!empty());
     return [](task t) -> async_task<result_type> { co_return co_await t; }(std::move(*this)).get();
@@ -88,12 +141,17 @@ struct [[nodiscard]] task : enable_resource_deduction {
   struct remember_waiter_and_start_task_t {
     handle_type task_handle;
 
-    static bool await_ready() noexcept {
-      return false;
+    bool await_ready() noexcept {
+      // for case when awaited after start or second co_await
+      return task_handle.done();
     }
-    KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<void> await_suspend(
-        std::coroutine_handle<void> handle) const noexcept {
-      task_handle.promise().who_waits = handle;
+    template <typename OwnerHandle>
+    KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<> await_suspend(
+        std::coroutine_handle<OwnerHandle> owner) const noexcept {
+      auto& promise = task_handle.promise();
+      promise.who_waits = owner;
+      promise.ctx.on_owner_setted(owner, task_handle);
+      promise.ctx.on_start(task_handle);
       // symmetric transfer control to task
       return task_handle;
     }
@@ -106,25 +164,26 @@ struct [[nodiscard]] task : enable_resource_deduction {
   };
 
  public:
+  // precondition: !empty()
   constexpr auto operator co_await() noexcept {
     assert(!empty());
     return remember_waiter_and_start_task_t{handle_};
   }
 };
 
-template <typename Ret, memory_resource R>
-using task_r = resourced<task<Ret>, R>;
+template <typename Ret, memory_resource R, typename Ctx = null_context>
+using task_r = resourced<task<Ret, Ctx>, R>;
 
 namespace pmr {
 
-template <typename Ret>
-using task = ::dd::task_r<Ret, polymorphic_resource>;
+template <typename Ret, typename Ctx = null_context>
+using task = ::dd::task_r<Ret, polymorphic_resource, Ctx>;
 
 }
 
-template <typename R>
-struct operation_hash<std::coroutine_handle<task_promise<R>>> {
-  operation_hash_t operator()(std::coroutine_handle<task_promise<R>> handle) noexcept {
+template <typename R, typename Ctx>
+struct operation_hash<std::coroutine_handle<task_promise<R, Ctx>>> {
+  operation_hash_t operator()(std::coroutine_handle<task_promise<R, Ctx>> handle) noexcept {
     return operation_hash<std::coroutine_handle<>>()(handle.promise().who_waits);
   }
 };

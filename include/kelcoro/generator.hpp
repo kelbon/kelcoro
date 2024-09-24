@@ -7,12 +7,12 @@
 #include "noexport/generators_common.hpp"
 
 #ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunknown-attributes"
+  #pragma clang diagnostic push
+  #pragma clang diagnostic ignored "-Wunknown-attributes"
 #endif
 #ifdef __GNUC__
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wattributes"
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wattributes"
 #endif
 
 namespace dd {
@@ -108,8 +108,8 @@ struct generator_promise : not_movable, yield_block<generator_promise<Yield>, Yi
   {
     return {};
   }
-  auto await_transform(get_handle_t) noexcept {
-    return this_coro::handle.operator co_await();
+  auto await_transform(this_coro::get_handle_t) noexcept {
+    return this_coro::get_handle_t::awaiter<generator_promise>{};
   }
 
   using yield_block<generator_promise, Yield>::yield_value;
@@ -376,8 +376,8 @@ using generator = ::dd::generator_r<Y, polymorphic_resource>;
 }  // namespace dd
 
 #ifdef __clang__
-#pragma clang diagnostic pop
+  #pragma clang diagnostic pop
 #endif
 #ifdef __GNUC__
-#pragma GCC diagnostic pop
+  #pragma GCC diagnostic pop
 #endif

@@ -78,29 +78,6 @@ struct [[nodiscard("Dont forget to name it!")]] scope_exit {
   }
 };
 
-struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
- private:
-  struct return_handle {
-    std::coroutine_handle<> handle_;
-
-    static constexpr bool await_ready() noexcept {
-      return false;
-    }
-    KELCORO_ASSUME_NOONE_SEES bool await_suspend(std::coroutine_handle<> handle) noexcept {
-      handle_ = handle;
-      return false;
-    }
-    std::coroutine_handle<> await_resume() const noexcept {
-      return handle_;
-    }
-  };
-
- public:
-  return_handle operator co_await() const noexcept {
-    return return_handle{};
-  }
-};
-
 // destroys coroutine in which awaited for
 struct KELCORO_CO_AWAIT_REQUIRED destroy_coro_t {
   static bool await_ready() noexcept {
@@ -133,6 +110,47 @@ template <typename F>
 suspend_and_t(F&&) -> suspend_and_t<std::remove_cvref_t<F>>;
 
 namespace this_coro {
+
+struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
+  template <typename PromiseType>
+  struct awaiter {
+    std::coroutine_handle<PromiseType> handle_;
+
+    static constexpr bool await_ready() noexcept {
+      return false;
+    }
+    KELCORO_ASSUME_NOONE_SEES bool await_suspend(std::coroutine_handle<PromiseType> handle) noexcept {
+      handle_ = handle;
+      return false;
+    }
+    [[nodiscard]] std::coroutine_handle<PromiseType> await_resume() const noexcept {
+      return handle_;
+    }
+  };
+
+  awaiter<void> operator co_await() const noexcept {
+    return awaiter<void>{};
+  }
+};
+
+struct get_context_t {
+  template <typename Ctx>
+  struct awaiter {
+    Ctx* ctx;
+
+    static bool await_ready() noexcept {
+      return false;
+    }
+    template <typename T>
+    bool await_suspend(std::coroutine_handle<T> h) {
+      ctx = std::addressof(h.promise().ctx);
+      return false;
+    }
+    [[nodiscard]] Ctx& await_resume() const noexcept {
+      return *ctx;
+    }
+  };
+};
 
 // provides access to inner handle of coroutine
 constexpr inline get_handle_t handle = {};
@@ -171,7 +189,6 @@ template <typename T>
 concept co_awaitable = has_member_co_await<T> || has_global_co_await<T> || co_awaiter<T>;
 
 // imitating compiler behaviour for co_await expression mutation into awaiter(without await_transform)
-// very usefull if you have await_transform and for all other types you need default behavior
 template <co_awaitable T>
 [[nodiscard]] constexpr decltype(auto) build_awaiter(T&& value) {
   static_assert(!ambigious_co_await_lookup<T>);

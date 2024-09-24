@@ -1,6 +1,6 @@
 #if __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunknown-attributes"
+  #pragma clang diagnostic push
+  #pragma clang diagnostic ignored "-Wunknown-attributes"
 #endif
 #include <atomic>
 #include <coroutine>
@@ -28,8 +28,8 @@
 // clang had bug which breaks all std::views
 #if !defined(__clang_major__) || __clang_major__ >= 15
 
-#define error_if(Cond) error_count += static_cast<bool>((Cond))
-#define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
+  #define error_if(Cond) error_count += static_cast<bool>((Cond))
+  #define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
 
 inline size_t some_task(int i) {
   return i;
@@ -49,8 +49,8 @@ TEST(allocations) {
   static_assert(padding_len<4>(1) == 3);
   static_assert(padding_len<4>(4) == 0);
 
-#define EXPECT_PROMISE(promise, ... /* coro arg args*/) \
-  static_assert(std::is_same_v<std::coroutine_traits<__VA_ARGS__>::promise_type, promise>);
+  #define EXPECT_PROMISE(promise, ... /* coro arg args*/) \
+    static_assert(std::is_same_v<std::coroutine_traits<__VA_ARGS__>::promise_type, promise>);
   using namespace dd;
   using r = pmr::polymorphic_resource;
   {
@@ -95,15 +95,15 @@ TEST(allocations) {
     using default_promise = generator_promise<int>;
     using expected = resourced_promise<generator_promise<int>, r>;
     using test_t = generator<int>;
-#define TEST_DEDUCTED                                                                                      \
-  EXPECT_PROMISE(default_promise, test_t, int, float, double);                                             \
-  EXPECT_PROMISE(default_promise, test_t);                                                                 \
-  EXPECT_PROMISE(expected, test_t, with_resource<r>);                                                      \
-  EXPECT_PROMISE(expected, test_t, with_resource<r>&);                                                     \
-  EXPECT_PROMISE(expected, test_t, float, float, double, int, with_resource<r>&);                          \
-  EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>, with_resource<r>&); \
-  EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>&,                    \
-                 with_resource<some_resource>)
+  #define TEST_DEDUCTED                                                                                      \
+    EXPECT_PROMISE(default_promise, test_t, int, float, double);                                             \
+    EXPECT_PROMISE(default_promise, test_t);                                                                 \
+    EXPECT_PROMISE(expected, test_t, with_resource<r>);                                                      \
+    EXPECT_PROMISE(expected, test_t, with_resource<r>&);                                                     \
+    EXPECT_PROMISE(expected, test_t, float, float, double, int, with_resource<r>&);                          \
+    EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>, with_resource<r>&); \
+    EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>&,                    \
+                   with_resource<some_resource>)
     TEST_DEDUCTED;
   }
   {
@@ -125,8 +125,8 @@ TEST(allocations) {
     TEST_DEDUCTED;
   }
   {
-    using default_promise = task_promise<int>;
-    using expected = resourced_promise<task_promise<int>, r>;
+    using default_promise = task_promise<int, null_context>;
+    using expected = resourced_promise<task_promise<int, null_context>, r>;
     using test_t = task<int>;
     TEST_DEDUCTED;
   }
@@ -140,12 +140,12 @@ TEST(allocations) {
   {
     using expected = resourced_promise<generator_promise<int>, r>;
     using test_t = generator_r<int, r>;
-#define TEST_CONCRETE                                                 \
-  EXPECT_PROMISE(expected, test_t, int, float, double);               \
-  EXPECT_PROMISE(expected, test_t, int, with_resource<r>, double);    \
-  EXPECT_PROMISE(expected, test_t, with_resource<r>);                 \
-  EXPECT_PROMISE(expected, test_t, const volatile with_resource<r>&); \
-  EXPECT_PROMISE(expected, test_t);
+  #define TEST_CONCRETE                                                 \
+    EXPECT_PROMISE(expected, test_t, int, float, double);               \
+    EXPECT_PROMISE(expected, test_t, int, with_resource<r>, double);    \
+    EXPECT_PROMISE(expected, test_t, with_resource<r>);                 \
+    EXPECT_PROMISE(expected, test_t, const volatile with_resource<r>&); \
+    EXPECT_PROMISE(expected, test_t);
 
     TEST_CONCRETE;
   }
@@ -160,7 +160,7 @@ TEST(allocations) {
     TEST_CONCRETE;
   }
   {
-    using expected = resourced_promise<task_promise<int>, r>;
+    using expected = resourced_promise<task_promise<int, null_context>, r>;
     using test_t = task_r<int, r>;
     TEST_CONCRETE;
   }
@@ -174,9 +174,9 @@ TEST(allocations) {
     using test_t = logical_thread_r<r>;
     TEST_CONCRETE;
   }
-#undef EXPECT_RPOMISE
-#undef TEST_CONCRETE
-#undef TEST_DEDUCTED
+  #undef EXPECT_RPOMISE
+  #undef TEST_CONCRETE
+  #undef TEST_DEDUCTED
   return error_count;
 }
 TEST(generator) {
@@ -282,6 +282,8 @@ TEST(logical_thread_mm) {
 
 dd::task<size_t> task_mm(int i) {
   auto handle = co_await dd::this_coro::handle;
+  static_assert(
+      std::is_same_v<decltype(handle), std::coroutine_handle<dd::task_promise<size_t, dd::null_context>>>);
   (void)handle;
   co_return i;
 }
@@ -561,6 +563,74 @@ TEST(detached_tasks) {
   }
   return error_count;
 }
+
+struct ctx {
+  std::vector<std::string>* s = nullptr;
+  std::string name;
+
+  template <typename R1, typename R2>
+  void on_owner_setted(std::coroutine_handle<dd::task_promise<R1, ctx>> owner,
+                       std::coroutine_handle<dd::task_promise<R2, ctx>> task) noexcept {
+    s = owner.promise().ctx.s;
+  }
+  template <typename TaskPromise>
+  void on_start(std::coroutine_handle<TaskPromise> task) noexcept {
+    if (s)
+      s->push_back(name);
+  }
+  template <typename TaskPromise>
+  void on_end_success(std::coroutine_handle<TaskPromise>) noexcept {
+    if (s && !s->empty())
+      s->pop_back();
+  }
+  // invoked when task ended with exception
+  // Note: by default, exception when no one waits is ignored, but this function may check it and
+  // std::terminate or smth like this (check .who_waits == nullptr)
+  template <typename TaskPromise>
+  void on_end_failure(std::coroutine_handle<TaskPromise>, const std::exception_ptr&) noexcept {
+    if (s && !s->empty())
+      s->pop_back();
+  }
+};
+
+inline std::vector<std::string> locations;
+
+dd::task<std::string, ctx> ctx_user2() {
+  auto& ctx = co_await dd::this_coro::context;
+  if (ctx.s != &locations || ctx.s->size() != 3)
+    throw 42;
+  co_return "abc";
+}
+
+dd::task<float, ctx> ctx_user() {
+  auto& ctx = co_await dd::this_coro::context;
+  if (ctx.s != &locations || ctx.s->size() != 2 || ctx.s->front() != "task 1")
+    throw 42;
+  std::string s = co_await ctx_user2();
+  if (s != "abc")
+    throw 43;
+  co_return 3.14f;
+}
+
+dd::task<int, ctx> ctxed_foo() {
+  // init my context
+  auto& ctx = co_await dd::this_coro::context;
+  ctx.s = &locations;
+  ctx.s->push_back("task 1");
+  float f = co_await ctx_user();
+  if (f != 3.14f)
+    throw 11;
+  co_return 0;
+}
+
+TEST(contexted_task) {
+  auto h = ctxed_foo().start_and_detach(/*stop_at_end=*/true);
+  error_if(h.promise().exception);
+  error_if(!locations.empty());
+  h.destroy();
+  return error_count;
+}
+
 int main() {
   srand(time(0));
   size_t ec = 0;
@@ -580,6 +650,7 @@ int main() {
   ec += TESTtask_with_exception();
   ec += TESTtask_blocking_wait_noexcept();
   ec += TESTtask_start_and_detach();
+  ec += TESTcontexted_task();
   return ec;
 }
 #else
