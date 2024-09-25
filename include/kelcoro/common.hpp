@@ -169,7 +169,7 @@ struct [[nodiscard("co_await it!")]] destroy_and_transfer_control_to {
 
 #if !KELCORO_AGGREGATE_PAREN_INIT
   destroy_and_transfer_control_to() = default;
-  explicit destroy_and_transfer_control_to(std::corooutine_handle<> h) noexcept : who_waits(h) {
+  explicit destroy_and_transfer_control_to(std::coroutine_handle<> h) noexcept : who_waits(h) {
   }
 #endif
   static bool await_ready() noexcept {
