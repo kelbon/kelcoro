@@ -167,6 +167,11 @@ constexpr auto suspend_and(auto&& fn) {
 struct [[nodiscard("co_await it!")]] destroy_and_transfer_control_to {
   std::coroutine_handle<> who_waits;
 
+#if !KELCORO_AGGREGATE_PAREN_INIT
+  destroy_and_transfer_control_to() = default;
+  explicit destroy_and_transfer_control_to(std::corooutine_handle<> h) noexcept : who_waits(h) {
+  }
+#endif
   static bool await_ready() noexcept {
     return false;
   }

@@ -70,3 +70,9 @@
   static T&& await_transform(T&& v) noexcept { \
     return (T&&)(v);                           \
   }
+
+#if __cpp_aggregate_paren_init < 201902L
+  #define KELCORO_AGGREGATE_PAREN_INIT 0
+#else
+  #define KELCORO_AGGREGATE_PAREN_INIT 1
+#endif

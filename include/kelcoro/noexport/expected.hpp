@@ -2,15 +2,18 @@
 
 #include <variant>
 
+#include "kelcoro/noexport/macro.hpp"
+
 namespace dd {
 
 template <typename T>
 struct unexpected {
   T value;
 
-  // some compilers do not support aggregate paren init
+#if !KELCORO_AGGREGATE_PAREN_INIT
   explicit unexpected(T value) noexcept(std::is_nothrow_move_constructible_v<T>) : value(std::move(value)) {
   }
+#endif
 };
 
 template <typename T>
