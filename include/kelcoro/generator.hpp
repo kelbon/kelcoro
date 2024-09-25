@@ -264,7 +264,7 @@ struct generator : enable_resource_deduction {
   friend noexport::attach_leaf<generator>;
 
   // invariant: == nullptr when top.done()
-  pointer_to_yielded_t<Yield> current_result = nullptr;
+  KELCORO_NO_UNIQUE_ADDRESS pointer_to_yielded_t<Yield> current_result = nullptr;
   handle_type top = nullptr;
 
   // precondition: 'handle' != nullptr, handle does not have other owners
