@@ -164,6 +164,23 @@ constexpr auto suspend_and(auto&& fn) {
   return suspend_and_t(std::forward<decltype(fn)>(fn));
 }
 
+struct [[nodiscard("co_await it!")]] destroy_and_transfer_control_to {
+  std::coroutine_handle<> who_waits;
+
+  static bool await_ready() noexcept {
+    return false;
+  }
+  KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<> await_suspend(std::coroutine_handle<> self) noexcept {
+    // move it to stack memory to save from destruction
+    auto w = who_waits;
+    self.destroy();
+    return w ? w : std::noop_coroutine();  // symmetric transfer here
+  }
+  static void await_resume() noexcept {
+    KELCORO_UNREACHABLE;
+  }
+};
+
 }  // namespace this_coro
 
 template <typename T>

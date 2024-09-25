@@ -16,6 +16,7 @@ constexpr inline get_context_t context = {};
 struct null_context {
   // invoked when task is scheduled to execute, 'owner' is handle of coroutine, which awaits task
   // never invoked with nullptrs
+  // note: one task may have only one owner, but one owner can have many child tasks (when_all/when_any)
   template <typename OwnerPromise, typename TaskPromise>
   static void on_owner_setted(std::coroutine_handle<OwnerPromise>,
                               std::coroutine_handle<TaskPromise>) noexcept {
@@ -53,6 +54,12 @@ struct task_promise : return_block<Result> {
   auto self_handle() {
     return std::coroutine_handle<task_promise<Result, Ctx>>::from_promise(*this);
   }
+  // precondition: not running && .done
+  std::add_rvalue_reference_t<Result> result_or_rethrow() {
+    if (exception) [[unlikely]]
+      std::rethrow_exception(exception);
+    return this->result();
+  }
 
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
@@ -83,6 +90,7 @@ struct [[nodiscard]] task : enable_resource_deduction {
 
  public:
   constexpr task() noexcept = default;
+  // precoondition: one handle owned only by 1 task
   constexpr task(handle_type handle) noexcept : handle_(handle) {
   }
 
@@ -99,7 +107,7 @@ struct [[nodiscard]] task : enable_resource_deduction {
   }
   // returns true if task cant be co_awaited
   constexpr bool empty() const noexcept {
-    return handle_ == nullptr || handle_.done();
+    return handle_ == nullptr;
   }
   constexpr explicit operator bool() const noexcept {
     return !empty();
@@ -112,17 +120,23 @@ struct [[nodiscard]] task : enable_resource_deduction {
   }
 
   context_type* get_context() const noexcept {
-    return handle_ ? std::addressof(handle_.promise().get_context()) : nullptr;
+    return handle_ ? std::addressof(handle_.promise().ctx) : (context_type*)nullptr;
   }
 
-  // postcondition: empty(), task result ignored
+  // precondition: empty() || not started yet
+  // postcondition: empty(), task result ignored (exception too)
   // returns released task handle
-  // if stop_at_end is false, then task will delete itself at end, otherwise handle.destroy() should be called
-  // Note: when task is detached and exception happens, its ignored
+  // if 'stop_at_end' is false, then task will delete itself at end,
+  // otherwise handle.destroy() should be called
   handle_type start_and_detach(bool stop_at_end = false) {
     if (!handle_)
       return nullptr;
     handle_type h = std::exchange(handle_, nullptr);
+    if (h.done()) {
+      if (!stop_at_end)
+        h.destroy();
+      return h;
+    }
     // task resumes itself at end and destroys itself or just stops with noop_coroutine
     h.promise().who_waits = stop_at_end ? std::noop_coroutine() : std::coroutine_handle<>(nullptr);
     h.promise().ctx.on_start(h);
@@ -130,17 +144,32 @@ struct [[nodiscard]] task : enable_resource_deduction {
     return h;
   }
 
-  // blocking
+  // blocking (if not done yet)
   // Note: .get() when task is not scheduled to another thread will lead to deadlock
+  // precondition: !task.empty() && task not started yet or already done (after .wait for example)
   result_type get() {
     assert(!empty());
+    if (handle_.done()) {
+      // fast path without creating a coroutine
+      return handle_.promise().result_or_rethrow();
+    }
     return [](task t) -> async_task<result_type> { co_return co_await t; }(std::move(*this)).get();
   }
 
  private:
+  template <typename OwnerPromise>
+  static void prepare_task_to_start(handle_type task_handle, std::coroutine_handle<OwnerPromise> owner) {
+    auto& promise = task_handle.promise();
+    promise.who_waits = owner;
+    promise.ctx.on_owner_setted(owner, task_handle);
+    promise.ctx.on_start(task_handle);
+  }
+
   struct remember_waiter_and_start_task_t {
     handle_type task_handle;
 
+    explicit remember_waiter_and_start_task_t(handle_type t) noexcept : task_handle(t) {
+    }
     bool await_ready() noexcept {
       // for case when awaited after start or second co_await
       return task_handle.done();
@@ -148,18 +177,36 @@ struct [[nodiscard]] task : enable_resource_deduction {
     template <typename OwnerHandle>
     KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<> await_suspend(
         std::coroutine_handle<OwnerHandle> owner) const noexcept {
-      auto& promise = task_handle.promise();
-      promise.who_waits = owner;
-      promise.ctx.on_owner_setted(owner, task_handle);
-      promise.ctx.on_start(task_handle);
-      // symmetric transfer control to task
+      prepare_task_to_start(task_handle, owner);
       return task_handle;
     }
+  };
+  struct wait_and_get_result_or_rethrow : remember_waiter_and_start_task_t {
+    using remember_waiter_and_start_task_t::remember_waiter_and_start_task_t;
     [[nodiscard]] std::add_rvalue_reference_t<result_type> await_resume() {
-      auto& promise = task_handle.promise();
-      if (promise.exception) [[unlikely]]
-        std::rethrow_exception(promise.exception);
-      return promise.result();
+      return this->task_handle.promise().result_or_rethrow();
+    }
+  };
+  struct wait_awaiter : remember_waiter_and_start_task_t {
+    using remember_waiter_and_start_task_t::remember_waiter_and_start_task_t;
+    static void await_resume() noexcept {
+    }
+  };
+  template <typename OwnerPromise>
+  struct wait_with_proxy_owner_awaiter : wait_awaiter {
+    std::coroutine_handle<OwnerPromise> proxy_owner;
+
+    wait_with_proxy_owner_awaiter(handle_type task_h,
+                                  std::coroutine_handle<OwnerPromise> proxy_owner) noexcept
+        : wait_awaiter(task_h), proxy_owner(proxy_owner) {
+    }
+
+    KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<> await_suspend(
+        std::coroutine_handle<> owner) const noexcept {
+      prepare_task_to_start(this->task_handle, proxy_owner);
+      this->task_handle.promise().who_waits = owner;
+      // symmetric transfer control to task
+      return this->task_handle;
     }
   };
 
@@ -167,7 +214,20 @@ struct [[nodiscard]] task : enable_resource_deduction {
   // precondition: !empty()
   constexpr auto operator co_await() noexcept {
     assert(!empty());
-    return remember_waiter_and_start_task_t{handle_};
+    return wait_and_get_result_or_rethrow{handle_};
+  }
+  // precondition: !empty()
+  // postcondition: .get() will return without blocking
+  auto wait() noexcept {
+    assert(!empty());
+    return wait_awaiter(handle_);
+  }
+  // same as .wait, but uses context of another coroutine, see when_all for example
+  // postcondition: .get() will return without blocking
+  template <typename OwnerPromise>
+  auto wait_with_proxy_owner(std::coroutine_handle<OwnerPromise> proxy_owner) noexcept {
+    assert(!empty());
+    return wait_with_proxy_owner_awaiter<OwnerPromise>(handle_, proxy_owner);
   }
 };
 

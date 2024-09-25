@@ -24,6 +24,10 @@
 #include "kelcoro/task.hpp"
 #include "kelcoro/events.hpp"
 #include "kelcoro/noexcept_task.hpp"
+#include "kelcoro/thread_pool.hpp"
+#include "kelcoro/algorithm.hpp"
+
+inline dd::thread_pool TP(8);
 
 // clang had bug which breaks all std::views
 #if !defined(__clang_major__) || __clang_major__ >= 15
@@ -214,7 +218,7 @@ inline dd::logical_thread multithread(std::atomic<int32_t>& value) {
   (void)handle;
   auto token = co_await dd::this_coro::stop_token;
   (void)token.stop_requested();
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   for (auto i : std::views::iota(0, 100))
     ++value, (void)i;
 }
@@ -238,10 +242,9 @@ TEST(logical_thread) {
 dd::logical_thread bar(bool& requested) {
   auto handle = co_await dd::this_coro::handle;
   (void)handle;
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   auto token = co_await dd::this_coro::stop_token;
   while (true) {
-    std::this_thread::sleep_for(std::chrono::microseconds(5));
     if (token.stop_requested()) {
       requested = true;
       co_return;
@@ -308,7 +311,7 @@ TEST(job_mm) {
   std::atomic<size_t> err_c = 0;
   auto job_creator = [&](std::atomic<int32_t>& value) -> dd::job {
     auto th_id = std::this_thread::get_id();
-    (void)co_await dd::jump_on(dd::new_thread_executor);
+    (void)co_await dd::jump_on(TP);
     if (th_id == std::this_thread::get_id())
       ++err_c;
     value.fetch_add(1, std::memory_order::release);
@@ -340,7 +343,7 @@ dd::job sub(std::atomic<int>& count) {
 }
 
 dd::logical_thread writer(std::atomic<int>& count) {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   dd::stop_token tok = co_await dd::this_coro::stop_token;
   for (auto i : std::views::iota(0, 1000)) {
     (void)i;
@@ -351,7 +354,7 @@ dd::logical_thread writer(std::atomic<int>& count) {
 }
 
 dd::logical_thread reader() {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   dd::stop_token tok = co_await dd::this_coro::stop_token;
   for (;;) {
     e1.notify_all(dd::this_thread_executor, 1);
@@ -379,7 +382,7 @@ inline dd::event<std::vector<std::string>> three;
 inline dd::event<void> four;
 
 dd::async_task<void> waiter_any(uint32_t& count) {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   std::mutex m;
   int32_t i = 0;
   while (i < 100000) {
@@ -390,7 +393,7 @@ dd::async_task<void> waiter_any(uint32_t& count) {
   }
 }
 dd::async_task<void> waiter_all(uint32_t& count) {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   for (int32_t i : std::views::iota(0, 100000)) {
     (void)i;
     auto tuple = co_await dd::when_all(one, two, three, four);
@@ -403,7 +406,7 @@ dd::async_task<void> waiter_all(uint32_t& count) {
 }
 
 dd::logical_thread notifier(auto& event) {
-  co_await dd::jump_on(dd::new_thread_executor);
+  co_await dd::jump_on(TP);
   dd::stop_token token = co_await dd::this_coro::stop_token;
   while (true) {
     event.notify_all(dd::this_thread_executor);
@@ -413,7 +416,7 @@ dd::logical_thread notifier(auto& event) {
 }
 
 dd::logical_thread notifier(auto& pool, auto input) {
-  co_await dd::jump_on(dd::new_thread_executor);
+  co_await dd::jump_on(TP);
   dd::stop_token token = co_await dd::this_coro::stop_token;
   while (true) {
     pool.notify_all(dd::this_thread_executor, input);
@@ -423,7 +426,7 @@ dd::logical_thread notifier(auto& pool, auto input) {
 }
 
 dd::async_task<std::string> afoo() {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   co_return "hello world";
 }
 
@@ -446,12 +449,12 @@ TEST(void_async_task) {
 }
 
 dd::task<std::string> do_smth() {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   co_return "hello from task";
 }
 
 dd::noexcept_task<std::string> do_smth_noexcept() {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   co_return "hello from task";
 }
 
@@ -463,9 +466,9 @@ TEST(task_blocking_wait_noexcept) {
 TEST(task_start_and_detach) {
   std::atomic_bool flag = false;
   dd::task task = [](std::atomic_bool& flag) -> dd::task<void> {
-    (void)co_await dd::jump_on(dd::new_thread_executor);
+    (void)co_await dd::jump_on(TP);
     flag.exchange(true);
-    (void)co_await dd::jump_on(dd::new_thread_executor);
+    (void)co_await dd::jump_on(TP);
     dd::scope_exit e = [&] { flag.notify_one(); };
   }(flag);
   task.start_and_detach();
@@ -491,7 +494,7 @@ TEST(task_blocking_wait) {
 }
 
 dd::task<std::string> do_throw() {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   throw 42;
 }
 
@@ -521,8 +524,7 @@ dd::async_task<void> tasks_user() {
 
 dd::channel<std::tuple<int, double, float>> creator() {
   for (int i = 0; i < 100; ++i) {
-    (void)co_await dd::jump_on(dd::new_thread_executor);
-    std::this_thread::sleep_for(std::chrono::microseconds(3));
+    (void)co_await dd::jump_on(TP);
     co_yield std::tuple{i, static_cast<double>(i), static_cast<float>(i)};
   }
 }
@@ -545,7 +547,7 @@ TEST(channel) {
 }
 
 dd::async_task<int> small_task() {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   co_return 1;
 }
 
@@ -572,6 +574,9 @@ struct ctx {
   void on_owner_setted(std::coroutine_handle<dd::task_promise<R1, ctx>> owner,
                        std::coroutine_handle<dd::task_promise<R2, ctx>> task) noexcept {
     s = owner.promise().ctx.s;
+  }
+  template <typename P1, typename P2>
+  void on_owner_setted(std::coroutine_handle<P1>, std::coroutine_handle<P2>) noexcept {
   }
   template <typename TaskPromise>
   void on_start(std::coroutine_handle<TaskPromise> task) noexcept {
@@ -652,6 +657,150 @@ TEST(complex_ret) {
   return error_count;
 }
 
+dd::task<int> task_fast_value() {
+  co_return 42;
+}
+
+dd::task<std::string> task_value() {
+  (void)co_await dd::jump_on(TP);
+  co_return "hello";
+}
+
+dd::task<std::string> task_throw() {
+  (void)co_await dd::jump_on(TP);
+  throw std::runtime_error("err");
+}
+
+dd::task<void> task_fast_throw() {
+  throw 4;
+  co_return;
+}
+
+dd::task<size_t> waiter_of_all() {
+  size_t error_count = 0;
+  (void)co_await dd::jump_on(TP);
+  auto [a, b, c, d] = co_await dd::when_all(task_fast_value(), task_value(), task_throw(), task_fast_throw());
+  error_if(!a || *a != 42);
+  error_if(!b || *b != "hello");
+  error_if(c);
+  error_if(d);
+  co_return error_count;
+}
+TEST(when_all_same_ctx) {
+  return waiter_of_all().get();
+}
+TEST(when_all_dynamic) {
+  std::vector<dd::task<size_t>> tasks;
+  for (int i = 0; i < 30; ++i)
+    tasks.push_back(waiter_of_all());
+  for (auto& x : dd::when_all(std::move(tasks)).get()) {
+    error_if(!x);
+    error_count += *x;
+  }
+  return error_count;
+}
+
+TEST(when_any) {
+  // basic cases
+  {
+    auto x = dd::when_any(task_fast_throw()).get();
+    error_if(x.index() != 1);
+  }
+  {
+    auto x = dd::when_any(task_fast_value()).get();
+    error_if(x.index() != 1);
+  }
+  // full failure cases
+  {
+    auto y = dd::when_any(task_fast_throw(), task_fast_throw(), task_fast_throw()).get();
+    error_if(y.index() != 3);  // must return last exception
+  }
+  {
+    auto y = dd::when_any(task_fast_throw(), task_throw(), task_fast_throw()).get();
+    // may be 2, but its race, dont know
+    error_if(y.index() == 0);
+  }
+  {
+    auto y = dd::when_any(task_throw(), task_throw(), task_fast_throw()).get();
+    error_if(y.index() == 0);
+  }
+  {
+    auto y = dd::when_any(task_fast_throw(), task_throw(), task_throw()).get();
+    error_if(y.index() == 0);
+  }
+  {
+    auto y = dd::when_any(task_throw(), task_throw(), task_throw()).get();
+    error_if(y.index() == 0);
+  }
+  // party failed cases, one pretendent
+  {
+    auto y = dd::when_any(task_throw(), task_throw(), task_value()).get();
+    error_if(y.index() != 3);
+  }
+  {
+    auto y = dd::when_any(task_throw(), task_value(), task_throw()).get();
+    error_if(y.index() != 2);
+  }
+  {
+    auto y = dd::when_any(task_value(), task_throw(), task_throw()).get();
+    error_if(y.index() != 1);
+  }
+  {
+    auto y = dd::when_any(task_throw(), task_throw(), task_fast_value()).get();
+    error_if(y.index() != 3);
+  }
+  {
+    auto y = dd::when_any(task_throw(), task_fast_value(), task_throw()).get();
+    error_if(y.index() != 2);
+  }
+  {
+    auto y = dd::when_any(task_value(), task_fast_throw(), task_throw()).get();
+    error_if(y.index() != 1);
+  }
+  // partial fail many pretendenst cases
+  {
+    auto y = dd::when_any(task_throw(), task_fast_value(), task_value()).get();
+    error_if(y.index() != 2);
+  }
+  {
+    auto y = dd::when_any(task_throw(), task_value(), task_fast_value()).get();
+    error_if(y.index() == 0);  // dont know order
+  }
+  {
+    auto y = dd::when_any(task_fast_value(), task_value(), task_throw()).get();
+    error_if(y.index() != 1);
+  }
+  // full success cases
+  {
+    auto y = dd::when_any(task_fast_value(), task_fast_value(), task_fast_value()).get();
+    error_if(y.index() != 1);
+  }
+  {
+    auto y = dd::when_any(task_fast_value(), task_fast_value(), task_value()).get();
+    error_if(y.index() != 1);
+  }
+  {
+    auto y = dd::when_any(task_value(), task_value(), task_value()).get();
+    error_if(y.index() == 0);
+  }
+
+  return error_count;
+}
+
+dd::task<std::string, ctx> task_throw_cxted() {
+  (void)co_await dd::jump_on(TP);
+  throw std::runtime_error("err");
+}
+
+TEST(when_any_different_ctxts) {
+  dd::task t = dd::when_any(task_throw_cxted(), task_value());
+  ctx* ctx = t.get_context();
+  error_if(!ctx);
+  std::variant result = t.get();
+  error_if(result.index() != 2);
+  return error_count;
+}
+
 int main() {
   srand(time(0));
   size_t ec = 0;
@@ -673,6 +822,10 @@ int main() {
   ec += TESTtask_start_and_detach();
   ec += TESTcontexted_task();
   ec += TESTcomplex_ret();
+  ec += TESTwhen_all_same_ctx();
+  ec += TESTwhen_any();
+  ec += TESTwhen_all_dynamic();
+  ec += TESTwhen_any_different_ctxts();
   return ec;
 }
 #else
