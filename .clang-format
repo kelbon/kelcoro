@@ -5,3 +5,4 @@ AllowShortLambdasOnASingleLine: true
 AllowShortIfStatementsOnASingleLine: false
 AllowShortLoopsOnASingleLine: false
 SortIncludes: false
+IndentPPDirectives: BeforeHash

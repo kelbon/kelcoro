@@ -247,6 +247,10 @@ struct channel : enable_resource_deduction {
   [[nodiscard]] constexpr handle_type release() noexcept {
     return std::exchange(top, nullptr);
   }
+  [[nodiscard]] constexpr handle_type raw_handle() const noexcept {
+    return top;
+  }
+
   // postcondition: .empty()
   constexpr void clear() noexcept {
     if (top) {

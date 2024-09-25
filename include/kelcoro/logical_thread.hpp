@@ -116,10 +116,7 @@ struct logical_thread_promise {
   auto await_transform(get_stop_token_t) const noexcept {
     return return_stop_token{};
   }
-  template <typename T>
-  decltype(auto) await_transform(T&& v) const noexcept {
-    return build_awaiter(std::forward<T>(v));
-  }
+  KELCORO_DEFAULT_AWAIT_TRANSFORM;
 };
 
 // shared owning of coroutine handle between coroutine object and coroutine frame.

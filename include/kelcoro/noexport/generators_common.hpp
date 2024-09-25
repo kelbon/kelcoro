@@ -11,7 +11,7 @@ namespace dd {
 // that is - not function, not array, not cv-qualified (its has no )
 // additionally reference is not yieldable(std::ref exists...)
 template <typename T>
-concept yieldable = !std::is_void_v<T> && (std::same_as<std::decay_t<T>, T> || std::is_lvalue_reference_v<T>);
+concept yieldable = std::same_as<std::decay_t<T>, T> || std::is_lvalue_reference_v<T>;
 
 // just helper to disambigue two yield_value overloads in case when Yield is reference
 template <typename T>
@@ -21,7 +21,7 @@ template <typename R>
 struct elements_of {
   KELCORO_NO_UNIQUE_ADDRESS R rng;
 
-#if __cpp_aggregate_paren_init < 201902L
+#if !KELCORO_AGGREGATE_PAREN_INIT
   // may be clang will never support aggregate () initialization...
   constexpr elements_of(std::type_identity_t<R> rng) noexcept : rng(static_cast<R&&>(rng)) {
   }

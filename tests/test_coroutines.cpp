@@ -1,6 +1,6 @@
 #if __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunknown-attributes"
+  #pragma clang diagnostic push
+  #pragma clang diagnostic ignored "-Wunknown-attributes"
 #endif
 #include <atomic>
 #include <coroutine>
@@ -24,12 +24,16 @@
 #include "kelcoro/task.hpp"
 #include "kelcoro/events.hpp"
 #include "kelcoro/noexcept_task.hpp"
+#include "kelcoro/thread_pool.hpp"
+#include "kelcoro/algorithm.hpp"
+
+inline dd::thread_pool TP(8);
 
 // clang had bug which breaks all std::views
 #if !defined(__clang_major__) || __clang_major__ >= 15
 
-#define error_if(Cond) error_count += static_cast<bool>((Cond))
-#define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
+  #define error_if(Cond) error_count += static_cast<bool>((Cond))
+  #define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
 
 inline size_t some_task(int i) {
   return i;
@@ -49,8 +53,8 @@ TEST(allocations) {
   static_assert(padding_len<4>(1) == 3);
   static_assert(padding_len<4>(4) == 0);
 
-#define EXPECT_PROMISE(promise, ... /* coro arg args*/) \
-  static_assert(std::is_same_v<std::coroutine_traits<__VA_ARGS__>::promise_type, promise>);
+  #define EXPECT_PROMISE(promise, ... /* coro arg args*/) \
+    static_assert(std::is_same_v<std::coroutine_traits<__VA_ARGS__>::promise_type, promise>);
   using namespace dd;
   using r = pmr::polymorphic_resource;
   {
@@ -95,15 +99,15 @@ TEST(allocations) {
     using default_promise = generator_promise<int>;
     using expected = resourced_promise<generator_promise<int>, r>;
     using test_t = generator<int>;
-#define TEST_DEDUCTED                                                                                      \
-  EXPECT_PROMISE(default_promise, test_t, int, float, double);                                             \
-  EXPECT_PROMISE(default_promise, test_t);                                                                 \
-  EXPECT_PROMISE(expected, test_t, with_resource<r>);                                                      \
-  EXPECT_PROMISE(expected, test_t, with_resource<r>&);                                                     \
-  EXPECT_PROMISE(expected, test_t, float, float, double, int, with_resource<r>&);                          \
-  EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>, with_resource<r>&); \
-  EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>&,                    \
-                 with_resource<some_resource>)
+  #define TEST_DEDUCTED                                                                                      \
+    EXPECT_PROMISE(default_promise, test_t, int, float, double);                                             \
+    EXPECT_PROMISE(default_promise, test_t);                                                                 \
+    EXPECT_PROMISE(expected, test_t, with_resource<r>);                                                      \
+    EXPECT_PROMISE(expected, test_t, with_resource<r>&);                                                     \
+    EXPECT_PROMISE(expected, test_t, float, float, double, int, with_resource<r>&);                          \
+    EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>, with_resource<r>&); \
+    EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>&,                    \
+                   with_resource<some_resource>)
     TEST_DEDUCTED;
   }
   {
@@ -125,8 +129,8 @@ TEST(allocations) {
     TEST_DEDUCTED;
   }
   {
-    using default_promise = task_promise<int>;
-    using expected = resourced_promise<task_promise<int>, r>;
+    using default_promise = task_promise<int, null_context>;
+    using expected = resourced_promise<task_promise<int, null_context>, r>;
     using test_t = task<int>;
     TEST_DEDUCTED;
   }
@@ -140,12 +144,12 @@ TEST(allocations) {
   {
     using expected = resourced_promise<generator_promise<int>, r>;
     using test_t = generator_r<int, r>;
-#define TEST_CONCRETE                                                 \
-  EXPECT_PROMISE(expected, test_t, int, float, double);               \
-  EXPECT_PROMISE(expected, test_t, int, with_resource<r>, double);    \
-  EXPECT_PROMISE(expected, test_t, with_resource<r>);                 \
-  EXPECT_PROMISE(expected, test_t, const volatile with_resource<r>&); \
-  EXPECT_PROMISE(expected, test_t);
+  #define TEST_CONCRETE                                                 \
+    EXPECT_PROMISE(expected, test_t, int, float, double);               \
+    EXPECT_PROMISE(expected, test_t, int, with_resource<r>, double);    \
+    EXPECT_PROMISE(expected, test_t, with_resource<r>);                 \
+    EXPECT_PROMISE(expected, test_t, const volatile with_resource<r>&); \
+    EXPECT_PROMISE(expected, test_t);
 
     TEST_CONCRETE;
   }
@@ -160,7 +164,7 @@ TEST(allocations) {
     TEST_CONCRETE;
   }
   {
-    using expected = resourced_promise<task_promise<int>, r>;
+    using expected = resourced_promise<task_promise<int, null_context>, r>;
     using test_t = task_r<int, r>;
     TEST_CONCRETE;
   }
@@ -174,9 +178,9 @@ TEST(allocations) {
     using test_t = logical_thread_r<r>;
     TEST_CONCRETE;
   }
-#undef EXPECT_RPOMISE
-#undef TEST_CONCRETE
-#undef TEST_DEDUCTED
+  #undef EXPECT_RPOMISE
+  #undef TEST_CONCRETE
+  #undef TEST_DEDUCTED
   return error_count;
 }
 TEST(generator) {
@@ -214,7 +218,7 @@ inline dd::logical_thread multithread(std::atomic<int32_t>& value) {
   (void)handle;
   auto token = co_await dd::this_coro::stop_token;
   (void)token.stop_requested();
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   for (auto i : std::views::iota(0, 100))
     ++value, (void)i;
 }
@@ -238,10 +242,9 @@ TEST(logical_thread) {
 dd::logical_thread bar(bool& requested) {
   auto handle = co_await dd::this_coro::handle;
   (void)handle;
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   auto token = co_await dd::this_coro::stop_token;
   while (true) {
-    std::this_thread::sleep_for(std::chrono::microseconds(5));
     if (token.stop_requested()) {
       requested = true;
       co_return;
@@ -282,6 +285,8 @@ TEST(logical_thread_mm) {
 
 dd::task<size_t> task_mm(int i) {
   auto handle = co_await dd::this_coro::handle;
+  static_assert(
+      std::is_same_v<decltype(handle), std::coroutine_handle<dd::task_promise<size_t, dd::null_context>>>);
   (void)handle;
   co_return i;
 }
@@ -306,7 +311,7 @@ TEST(job_mm) {
   std::atomic<size_t> err_c = 0;
   auto job_creator = [&](std::atomic<int32_t>& value) -> dd::job {
     auto th_id = std::this_thread::get_id();
-    (void)co_await dd::jump_on(dd::new_thread_executor);
+    (void)co_await dd::jump_on(TP);
     if (th_id == std::this_thread::get_id())
       ++err_c;
     value.fetch_add(1, std::memory_order::release);
@@ -338,7 +343,7 @@ dd::job sub(std::atomic<int>& count) {
 }
 
 dd::logical_thread writer(std::atomic<int>& count) {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   dd::stop_token tok = co_await dd::this_coro::stop_token;
   for (auto i : std::views::iota(0, 1000)) {
     (void)i;
@@ -349,7 +354,7 @@ dd::logical_thread writer(std::atomic<int>& count) {
 }
 
 dd::logical_thread reader() {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   dd::stop_token tok = co_await dd::this_coro::stop_token;
   for (;;) {
     e1.notify_all(dd::this_thread_executor, 1);
@@ -377,7 +382,7 @@ inline dd::event<std::vector<std::string>> three;
 inline dd::event<void> four;
 
 dd::async_task<void> waiter_any(uint32_t& count) {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   std::mutex m;
   int32_t i = 0;
   while (i < 100000) {
@@ -388,7 +393,7 @@ dd::async_task<void> waiter_any(uint32_t& count) {
   }
 }
 dd::async_task<void> waiter_all(uint32_t& count) {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   for (int32_t i : std::views::iota(0, 100000)) {
     (void)i;
     auto tuple = co_await dd::when_all(one, two, three, four);
@@ -401,7 +406,7 @@ dd::async_task<void> waiter_all(uint32_t& count) {
 }
 
 dd::logical_thread notifier(auto& event) {
-  co_await dd::jump_on(dd::new_thread_executor);
+  co_await dd::jump_on(TP);
   dd::stop_token token = co_await dd::this_coro::stop_token;
   while (true) {
     event.notify_all(dd::this_thread_executor);
@@ -411,7 +416,7 @@ dd::logical_thread notifier(auto& event) {
 }
 
 dd::logical_thread notifier(auto& pool, auto input) {
-  co_await dd::jump_on(dd::new_thread_executor);
+  co_await dd::jump_on(TP);
   dd::stop_token token = co_await dd::this_coro::stop_token;
   while (true) {
     pool.notify_all(dd::this_thread_executor, input);
@@ -421,7 +426,7 @@ dd::logical_thread notifier(auto& pool, auto input) {
 }
 
 dd::async_task<std::string> afoo() {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   co_return "hello world";
 }
 
@@ -444,12 +449,12 @@ TEST(void_async_task) {
 }
 
 dd::task<std::string> do_smth() {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   co_return "hello from task";
 }
 
 dd::noexcept_task<std::string> do_smth_noexcept() {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   co_return "hello from task";
 }
 
@@ -461,9 +466,9 @@ TEST(task_blocking_wait_noexcept) {
 TEST(task_start_and_detach) {
   std::atomic_bool flag = false;
   dd::task task = [](std::atomic_bool& flag) -> dd::task<void> {
-    (void)co_await dd::jump_on(dd::new_thread_executor);
+    (void)co_await dd::jump_on(TP);
     flag.exchange(true);
-    (void)co_await dd::jump_on(dd::new_thread_executor);
+    (void)co_await dd::jump_on(TP);
     dd::scope_exit e = [&] { flag.notify_one(); };
   }(flag);
   task.start_and_detach();
@@ -489,7 +494,7 @@ TEST(task_blocking_wait) {
 }
 
 dd::task<std::string> do_throw() {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   throw 42;
 }
 
@@ -519,8 +524,7 @@ dd::async_task<void> tasks_user() {
 
 dd::channel<std::tuple<int, double, float>> creator() {
   for (int i = 0; i < 100; ++i) {
-    (void)co_await dd::jump_on(dd::new_thread_executor);
-    std::this_thread::sleep_for(std::chrono::microseconds(3));
+    (void)co_await dd::jump_on(TP);
     co_yield std::tuple{i, static_cast<double>(i), static_cast<float>(i)};
   }
 }
@@ -543,7 +547,7 @@ TEST(channel) {
 }
 
 dd::async_task<int> small_task() {
-  (void)co_await dd::jump_on(dd::new_thread_executor);
+  (void)co_await dd::jump_on(TP);
   co_return 1;
 }
 
@@ -561,6 +565,242 @@ TEST(detached_tasks) {
   }
   return error_count;
 }
+
+struct ctx {
+  std::vector<std::string>* s = nullptr;
+  std::string name;
+
+  template <typename R1, typename R2>
+  void on_owner_setted(std::coroutine_handle<dd::task_promise<R1, ctx>> owner,
+                       std::coroutine_handle<dd::task_promise<R2, ctx>> task) noexcept {
+    s = owner.promise().ctx.s;
+  }
+  template <typename P1, typename P2>
+  void on_owner_setted(std::coroutine_handle<P1>, std::coroutine_handle<P2>) noexcept {
+  }
+  template <typename TaskPromise>
+  void on_start(std::coroutine_handle<TaskPromise> task) noexcept {
+    if (s)
+      s->push_back(name);
+  }
+  template <typename TaskPromise>
+  void on_end_success(std::coroutine_handle<TaskPromise>) noexcept {
+    if (s && !s->empty())
+      s->pop_back();
+  }
+  // invoked when task ended with exception
+  // Note: by default, exception when no one waits is ignored, but this function may check it and
+  // std::terminate or smth like this (check .who_waits == nullptr)
+  template <typename TaskPromise>
+  void on_end_failure(std::coroutine_handle<TaskPromise>, const std::exception_ptr&) noexcept {
+    if (s && !s->empty())
+      s->pop_back();
+  }
+};
+
+inline std::vector<std::string> locations;
+
+dd::task<std::string, ctx> ctx_user2() {
+  auto& ctx = co_await dd::this_coro::context;
+  if (ctx.s != &locations || ctx.s->size() != 3)
+    throw 42;
+  co_return "abc";
+}
+
+dd::task<float, ctx> ctx_user() {
+  auto& ctx = co_await dd::this_coro::context;
+  if (ctx.s != &locations || ctx.s->size() != 2 || ctx.s->front() != "task 1")
+    throw 42;
+  std::string s = co_await ctx_user2();
+  if (s != "abc")
+    throw 43;
+  co_return 3.14f;
+}
+
+dd::task<int, ctx> ctxed_foo() {
+  // init my context
+  auto& ctx = co_await dd::this_coro::context;
+  ctx.s = &locations;
+  ctx.s->push_back("task 1");
+  float f = co_await ctx_user();
+  if (f != 3.14f)
+    throw 11;
+  co_return 0;
+}
+
+TEST(contexted_task) {
+  auto h = ctxed_foo().start_and_detach(/*stop_at_end=*/true);
+  error_if(h.promise().exception);
+  error_if(!locations.empty());
+  h.destroy();
+  return error_count;
+}
+
+// checks that 'return_value' may be used with non movable types
+dd::task<std::tuple<int, std::string, std::vector<int>, std::unique_ptr<int>>> complex_ret(int i) {
+  switch (i) {
+    case 0:
+      co_return {5, std::string(""), std::vector<int>{5, 10}, std::unique_ptr<int>(nullptr)};
+    case 1: {
+      std::tuple<int, std::string, std::vector<int>, std::unique_ptr<int>> v{
+          5, std::string(""), std::vector<int>{5, 10}, std::unique_ptr<int>(nullptr)};
+      ;
+      co_return v;
+    }
+    default:
+      co_return {};
+  }
+}
+TEST(complex_ret) {
+  complex_ret(0).start_and_detach();
+  complex_ret(1).start_and_detach();
+  return error_count;
+}
+
+dd::task<int> task_fast_value() {
+  co_return 42;
+}
+
+dd::task<std::string> task_value() {
+  (void)co_await dd::jump_on(TP);
+  co_return "hello";
+}
+
+dd::task<std::string> task_throw() {
+  (void)co_await dd::jump_on(TP);
+  throw std::runtime_error("err");
+}
+
+dd::task<void> task_fast_throw() {
+  throw 4;
+  co_return;
+}
+
+dd::task<size_t> waiter_of_all() {
+  size_t error_count = 0;
+  (void)co_await dd::jump_on(TP);
+  auto [a, b, c, d] = co_await dd::when_all(task_fast_value(), task_value(), task_throw(), task_fast_throw());
+  error_if(!a || *a != 42);
+  error_if(!b || *b != "hello");
+  error_if(c);
+  error_if(d);
+  co_return error_count;
+}
+TEST(when_all_same_ctx) {
+  return waiter_of_all().get();
+}
+TEST(when_all_dynamic) {
+  std::vector<dd::task<size_t>> tasks;
+  for (int i = 0; i < 30; ++i)
+    tasks.push_back(waiter_of_all());
+  for (auto& x : dd::when_all(std::move(tasks)).get()) {
+    error_if(!x);
+    error_count += *x;
+  }
+  return error_count;
+}
+
+TEST(when_any) {
+  // basic cases
+  {
+    auto x = dd::when_any(task_fast_throw()).get();
+    error_if(x.index() != 1);
+  }
+  {
+    auto x = dd::when_any(task_fast_value()).get();
+    error_if(x.index() != 1);
+  }
+  // full failure cases
+  {
+    auto y = dd::when_any(task_fast_throw(), task_fast_throw(), task_fast_throw()).get();
+    error_if(y.index() != 3);  // must return last exception
+  }
+  {
+    auto y = dd::when_any(task_fast_throw(), task_throw(), task_fast_throw()).get();
+    // may be 2, but its race, dont know
+    error_if(y.index() == 0);
+  }
+  {
+    auto y = dd::when_any(task_throw(), task_throw(), task_fast_throw()).get();
+    error_if(y.index() == 0);
+  }
+  {
+    auto y = dd::when_any(task_fast_throw(), task_throw(), task_throw()).get();
+    error_if(y.index() == 0);
+  }
+  {
+    auto y = dd::when_any(task_throw(), task_throw(), task_throw()).get();
+    error_if(y.index() == 0);
+  }
+  // party failed cases, one pretendent
+  {
+    auto y = dd::when_any(task_throw(), task_throw(), task_value()).get();
+    error_if(y.index() != 3);
+  }
+  {
+    auto y = dd::when_any(task_throw(), task_value(), task_throw()).get();
+    error_if(y.index() != 2);
+  }
+  {
+    auto y = dd::when_any(task_value(), task_throw(), task_throw()).get();
+    error_if(y.index() != 1);
+  }
+  {
+    auto y = dd::when_any(task_throw(), task_throw(), task_fast_value()).get();
+    error_if(y.index() != 3);
+  }
+  {
+    auto y = dd::when_any(task_throw(), task_fast_value(), task_throw()).get();
+    error_if(y.index() != 2);
+  }
+  {
+    auto y = dd::when_any(task_value(), task_fast_throw(), task_throw()).get();
+    error_if(y.index() != 1);
+  }
+  // partial fail many pretendenst cases
+  {
+    auto y = dd::when_any(task_throw(), task_fast_value(), task_value()).get();
+    error_if(y.index() != 2);
+  }
+  {
+    auto y = dd::when_any(task_throw(), task_value(), task_fast_value()).get();
+    error_if(y.index() == 0);  // dont know order
+  }
+  {
+    auto y = dd::when_any(task_fast_value(), task_value(), task_throw()).get();
+    error_if(y.index() != 1);
+  }
+  // full success cases
+  {
+    auto y = dd::when_any(task_fast_value(), task_fast_value(), task_fast_value()).get();
+    error_if(y.index() != 1);
+  }
+  {
+    auto y = dd::when_any(task_fast_value(), task_fast_value(), task_value()).get();
+    error_if(y.index() != 1);
+  }
+  {
+    auto y = dd::when_any(task_value(), task_value(), task_value()).get();
+    error_if(y.index() == 0);
+  }
+
+  return error_count;
+}
+
+dd::task<std::string, ctx> task_throw_cxted() {
+  (void)co_await dd::jump_on(TP);
+  throw std::runtime_error("err");
+}
+
+TEST(when_any_different_ctxts) {
+  dd::task t = dd::when_any(task_throw_cxted(), task_value());
+  ctx* ctx = t.get_context();
+  error_if(!ctx);
+  std::variant result = t.get();
+  error_if(result.index() != 2);
+  return error_count;
+}
+
 int main() {
   srand(time(0));
   size_t ec = 0;
@@ -580,6 +820,12 @@ int main() {
   ec += TESTtask_with_exception();
   ec += TESTtask_blocking_wait_noexcept();
   ec += TESTtask_start_and_detach();
+  ec += TESTcontexted_task();
+  ec += TESTcomplex_ret();
+  ec += TESTwhen_all_same_ctx();
+  ec += TESTwhen_any();
+  ec += TESTwhen_all_dynamic();
+  ec += TESTwhen_any_different_ctxts();
   return ec;
 }
 #else

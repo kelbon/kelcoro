@@ -876,6 +876,67 @@ TEST(inplace_generator_move) {
   return error_count;
 }
 
+template <typename T>
+generator<T> exception_generator() {
+  throw std::runtime_error("test");
+  co_yield {};
+}
+
+template <typename T>
+generator<T> recursive_generator(int depth) {
+  if (depth > 0) {
+    co_yield {};
+    co_yield dd::elements_of(recursive_generator<T>(depth - 1));
+    co_return;
+  }
+  // throw from lowest layer
+  co_yield dd::elements_of(exception_generator<T>());
+}
+
+template <typename T>
+size_t check_gen() {
+  size_t error_count = 0;
+
+  dd::generator<T> gen;
+  error_if(!gen.empty());
+  error_if(gen);
+  error_if(gen.raw_handle());
+  gen = recursive_generator<T>(4);
+  gen.prepare_to_start();
+  // generate first value
+  ++gen.cur_iterator();
+  error_if(gen.empty());
+  error_if(gen.raw_handle() == nullptr);
+  error_if(!gen);
+  for (int i = 0; i < 3; ++i)
+    ++gen.cur_iterator();
+  error_if(gen.raw_handle().done());
+  try {
+    // all failed leafs recursively stop itself
+    ++gen.cur_iterator();
+    error_if(true);
+  } catch (std::runtime_error& e) {
+    // skip failed leafs one by one
+    error_if(e.what() != std::string_view("test"));
+  }
+  // failed leaf skipped, but generator is not done yet
+  // (but test generator will not produce new value)
+  ++gen.cur_iterator();
+  error_if(!gen.raw_handle().done());
+  error_if(gen.cur_iterator() != gen.end());
+  error_if(!gen.empty());
+  error_if(gen);
+
+  return error_count;
+}
+
+TEST(nothing_generator) {
+  return check_gen<dd::nothing_t>();
+}
+TEST(not_nothing_generator) {
+  return check_gen<int>();
+}
+
 int main() {
   static_assert(::dd::memory_resource<new_delete_resource>);
   (void)flip();  // initalize random
@@ -959,6 +1020,8 @@ int main() {
   RUN(inplace_generator);
   RUN(empty_inplace_generator);
   RUN(inplace_generator_move);
+  RUN(nothing_generator);
+  RUN(not_nothing_generator);
   if (sz != 0 && sz != size_t(-1))
     std::exit(146);
   return ec;
