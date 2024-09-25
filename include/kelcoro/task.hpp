@@ -52,7 +52,7 @@ struct task_promise : return_block<Result> {
   KELCORO_DEFAULT_AWAIT_TRANSFORM;
 
   auto self_handle() {
-    return std::coroutine_handle<task_promise<Result, Ctx>>::from_promise(*this);
+    return std::coroutine_handle<task_promise>::from_promise(*this);
   }
   // precondition: not running && .done
   std::add_rvalue_reference_t<Result> result_or_rethrow() {
