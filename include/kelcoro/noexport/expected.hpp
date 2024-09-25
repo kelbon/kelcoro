@@ -7,6 +7,10 @@ namespace dd {
 template <typename T>
 struct unexpected {
   T value;
+
+  // some compilers do not support aggregate paren init
+  explicit unexpected(T value) noexcept(std::is_nothrow_move_constructible_v<T>) : value(std::move(value)) {
+  }
 };
 
 template <typename T>
