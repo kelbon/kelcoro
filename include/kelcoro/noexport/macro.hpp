@@ -4,14 +4,10 @@
 
 #define KELCORO_CO_AWAIT_REQUIRED [[nodiscard("forget co_await?")]]
 
-#ifdef NDEBUG
-  #if defined(__GNUC__) || defined(__clang__)
-    #define KELCORO_UNREACHABLE __builtin_unreachable()
-  #elif defined(_MSC_VER)
-    #define KELCORO_UNREACHABLE __assume(false)
-  #else
-    #define KELCORO_UNREACHABLE assert(false)
-  #endif
+#if defined(__GNUC__) || defined(__clang__)
+  #define KELCORO_UNREACHABLE __builtin_unreachable()
+#elif defined(_MSC_VER)
+  #define KELCORO_UNREACHABLE __assume(false)
 #else
   #define KELCORO_UNREACHABLE assert(false)
 #endif

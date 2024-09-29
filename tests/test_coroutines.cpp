@@ -584,15 +584,7 @@ struct ctx {
       s->push_back(name);
   }
   template <typename TaskPromise>
-  void on_end_success(std::coroutine_handle<TaskPromise>) noexcept {
-    if (s && !s->empty())
-      s->pop_back();
-  }
-  // invoked when task ended with exception
-  // Note: by default, exception when no one waits is ignored, but this function may check it and
-  // std::terminate or smth like this (check .who_waits == nullptr)
-  template <typename TaskPromise>
-  void on_end_failure(std::coroutine_handle<TaskPromise>, const std::exception_ptr&) noexcept {
+  void on_end(std::coroutine_handle<TaskPromise>) noexcept {
     if (s && !s->empty())
       s->pop_back();
   }
