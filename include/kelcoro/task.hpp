@@ -25,15 +25,9 @@ struct null_context {
   template <typename TaskPromise>
   static void on_start(std::coroutine_handle<TaskPromise>) noexcept {
   }
-  // invoked when task successfully ended
+  // invoked when task ended with/without exception
   template <typename TaskPromise>
-  static void on_end_success(std::coroutine_handle<TaskPromise>) noexcept {
-  }
-  // invoked when task ended with exception
-  // Note: by default, exception when no one waits is ignored, but this function may check it and
-  // std::terminate or smth like this (check .who_waits == nullptr)
-  template <typename TaskPromise>
-  static void on_end_failure(std::coroutine_handle<TaskPromise>, const std::exception_ptr&) noexcept {
+  static void on_end(std::coroutine_handle<TaskPromise>) noexcept {
   }
 };
 
@@ -69,10 +63,9 @@ struct task_promise : return_block<Result> {
   }
   void unhandled_exception() noexcept {
     exception = std::current_exception();
-    ctx.on_end_failure(self_handle(), exception);
   }
   auto final_suspend() noexcept {
-    ctx.on_end_success(self_handle());
+    ctx.on_end(self_handle());
     return transfer_control_to{who_waits};
   }
 };

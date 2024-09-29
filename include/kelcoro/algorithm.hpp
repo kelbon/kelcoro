@@ -65,7 +65,7 @@ template <size_t I, typename T, typename Ctx, typename... Ts>
 job job_for_when_any(task<T, Ctx> child, std::weak_ptr<when_any_state<Ts...>> state) {
   // stop at entry and give when_any do its preparations
   co_await std::suspend_always{};
-  if (!state.lock()) {
+  if (state.expired()) {
     // someone sets result while we was starting without awaiting
     co_return;
   }
