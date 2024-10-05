@@ -123,23 +123,26 @@ struct generator_promise : not_movable, yield_block<generator_promise<Yield>, Yi
     return {};
   }
 
-  // *this is an final awaiter for size optimization
-  static constexpr bool await_ready() noexcept {
-    return false;
-  }
-  static constexpr void await_resume() noexcept {
-  }
-  KELCORO_ASSUME_NOONE_SEES constexpr std::coroutine_handle<> await_suspend(
-      std::coroutine_handle<>) const noexcept {
-    if (root != this) {
-      skip_this_leaf();
-      return owner();
+  struct final_awaiter {
+    const generator_promise& p;
+    static constexpr bool await_ready() noexcept {
+      return false;
     }
-    set_result(nullptr);
-    return std::noop_coroutine();
-  }
-  const generator_promise& final_suspend() const noexcept {
-    return *this;
+    static constexpr void await_resume() noexcept {
+    }
+    KELCORO_ASSUME_NOONE_SEES constexpr std::coroutine_handle<> await_suspend(
+        std::coroutine_handle<>) const noexcept {
+      if (p.root != &p) {
+        p.skip_this_leaf();
+        return p.owner();
+      }
+      p.set_result(nullptr);
+      return std::noop_coroutine();
+    }
+  };
+
+  final_awaiter final_suspend() const noexcept {
+    return final_awaiter{*this};
   }
   static constexpr void return_void() noexcept {
   }

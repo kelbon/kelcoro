@@ -307,10 +307,14 @@ TEST(gen_mm) {
   return error_count;
 }
 
+[[gnu::noinline]] void nocache(auto&) {
+}
+
 TEST(job_mm) {
   std::atomic<size_t> err_c = 0;
   auto job_creator = [&](std::atomic<int32_t>& value) -> dd::job {
     auto th_id = std::this_thread::get_id();
+    nocache(th_id);
     (void)co_await dd::jump_on(TP);
     if (th_id == std::this_thread::get_id())
       ++err_c;
@@ -793,31 +797,44 @@ TEST(when_any_different_ctxts) {
   return error_count;
 }
 
+  #define RUN(TEST_NAME)                             \
+    {                                                \
+      std::cout << "- " << #TEST_NAME << std::flush; \
+      size_t c = TEST##TEST_NAME();                  \
+      if (c > 0) {                                   \
+        std::cerr << " FAIL " << c << '\n';          \
+        ec += c;                                     \
+      } else {                                       \
+        std::cout << " +" << '\n';                   \
+      }                                              \
+    }
+
 int main() {
   srand(time(0));
   size_t ec = 0;
-  ec += TESTgenerator();
-  ec += TESTzip_generator();
-  ec += TESTlogical_thread();
-  ec += TESTcoroutines_integral();
-  ec += TESTlogical_thread_mm();
-  ec += TESTgen_mm();
-  ec += TESTjob_mm();
-  ec += TESTasync_tasks();
-  ec += TESTvoid_async_task();
-  ec += TESTchannel();
-  ec += TESTallocations();
-  ec += TESTdetached_tasks();
-  ec += TESTtask_blocking_wait();
-  ec += TESTtask_with_exception();
-  ec += TESTtask_blocking_wait_noexcept();
-  ec += TESTtask_start_and_detach();
-  ec += TESTcontexted_task();
-  ec += TESTcomplex_ret();
-  ec += TESTwhen_all_same_ctx();
-  ec += TESTwhen_any();
-  ec += TESTwhen_all_dynamic();
-  ec += TESTwhen_any_different_ctxts();
+  RUN(generator);
+  RUN(generator);
+  RUN(zip_generator);
+  RUN(logical_thread);
+  RUN(coroutines_integral);
+  RUN(logical_thread_mm);
+  RUN(gen_mm);
+  RUN(job_mm);
+  RUN(async_tasks);
+  RUN(void_async_task);
+  RUN(channel);
+  RUN(allocations);
+  RUN(detached_tasks);
+  RUN(task_blocking_wait);
+  RUN(task_with_exception);
+  RUN(task_blocking_wait_noexcept);
+  RUN(task_start_and_detach);
+  RUN(contexted_task);
+  RUN(complex_ret);
+  RUN(when_all_same_ctx);
+  RUN(when_any);
+  RUN(when_all_dynamic);
+  RUN(when_any_different_ctxts);
   return ec;
 }
 #else

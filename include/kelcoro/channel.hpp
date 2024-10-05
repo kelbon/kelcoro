@@ -4,8 +4,8 @@
 #include "noexport/generators_common.hpp"
 
 #ifdef __GNUC__
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wattributes"
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wattributes"
 #endif
 namespace dd {
 
@@ -94,23 +94,28 @@ struct channel_promise : not_movable {
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
-  // *this is an final awaiter for size optimization
-  static constexpr bool await_ready() noexcept {
-    return false;
-  }
-  static constexpr void await_resume() noexcept {
-  }
-  KELCORO_ASSUME_NOONE_SEES constexpr std::coroutine_handle<> await_suspend(
-      std::coroutine_handle<>) const noexcept {
-    if (root != this) {
-      skip_this_leaf();
-      return owner();
+
+  struct final_awaiter {
+    const channel_promise& p;
+
+    static constexpr bool await_ready() noexcept {
+      return false;
     }
-    set_result(nullptr);
-    return consumer_handle();
-  }
-  const channel_promise& final_suspend() const noexcept {
-    return *this;
+    static constexpr void await_resume() noexcept {
+    }
+    KELCORO_ASSUME_NOONE_SEES constexpr std::coroutine_handle<> await_suspend(
+        std::coroutine_handle<>) const noexcept {
+      if (p.root != &p) {
+        p.skip_this_leaf();
+        return p.owner();
+      }
+      p.set_result(nullptr);
+      return p.consumer_handle();
+    }
+  };
+
+  final_awaiter final_suspend() const noexcept {
+    return final_awaiter{*this};
   }
   static constexpr void return_void() noexcept {
   }
@@ -367,5 +372,5 @@ struct operation_hash<std::coroutine_handle<channel_promise<Y>>> {
 }  // namespace dd
 
 #ifdef __GNUC__
-#pragma GCC diagnostic pop
+  #pragma GCC diagnostic pop
 #endif
