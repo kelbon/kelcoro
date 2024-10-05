@@ -1,4 +1,4 @@
-name: build_and_test_newest_clang
+name: build_and_test
 
 on: push
 
