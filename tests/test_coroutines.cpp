@@ -311,7 +311,7 @@ TEST(job_mm) {
   std::atomic<size_t> err_c = 0;
   auto job_creator = [&](std::atomic<int32_t>& value) -> dd::job {
     auto th_id = std::this_thread::get_id();
-    (void)co_await dd::jump_on(TP);
+    (void)co_await dd::jump_on(dd::new_thread_executor);
     if (th_id == std::this_thread::get_id())
       ++err_c;
     value.fetch_add(1, std::memory_order::release);
