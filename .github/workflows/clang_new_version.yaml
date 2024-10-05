@@ -11,7 +11,7 @@ jobs:
         cpp_standard: [20]
         build_type: [Debug, Release]
     runs-on: ${{matrix.os}}
-    title: clang-${{matrix.version}}-${{matrix.build_type}}
+    name: clang-${{matrix.version}}-${{matrix.build_type}}
     steps:
       - uses: actions/checkout@v2
 
