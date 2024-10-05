@@ -1,0 +1,40 @@
+name: build_and_test
+
+on: push
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+        version: [18, 19]
+        cpp_standard: [20]
+        build_type: [Debug, Release]
+    runs-on: ${{matrix.os}}
+    title: clang-${{matrix.version}}-${{matrix.build_type}}
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install dependencies
+        run: |
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh ${{matrix.version}}
+          sudo apt-get update
+          sudo apt-get install ninja-build lld
+          sudo ln -sf /usr/local/bin/ld /usr/bin/lld
+      - name: Configure CMake
+        run:  |
+          cmake . -DKELCORO_ENABLE_TESTING=ON             \
+            -DCMAKE_BUILD_TYPE=${{matrix.build_type}}     \
+            -DCMAKE_CXX_COMPILER=clang++-${{matrix.version}}     \
+            -DCMAKE_CXX_STANDARD=${{matrix.cpp_standard}} \
+            -B build -G "Ninja"
+      - name: Build
+        run:
+          cmake --build build
+
+      - name: Test
+        run: |
+          cd build
+          ctest --output-on-failure -C ${{matrix.build_type}} -V
