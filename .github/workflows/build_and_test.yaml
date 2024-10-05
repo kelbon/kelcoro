@@ -6,8 +6,8 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [ubuntu-22.04]
-        compiler: [g++-12, clang++-14]
+        os: [ubuntu-24.04]
+        compiler: [g++-12, g++-14, clang++-14, clang++-17]
         cpp_standard: [20]
         build_type: [Debug, Release]
     runs-on: ${{matrix.os}}
@@ -18,10 +18,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install ninja-build lld gcc-12 clang-14
+          sudo apt-get install ninja-build lld gcc-12 gcc-14 clang-14 clang-17
           sudo ln -sf /usr/local/bin/ld /usr/bin/lld
       - name: Configure CMake
-        run: |
+        run:  |
           cmake . -DKELCORO_ENABLE_TESTING=ON             \
             -DCMAKE_BUILD_TYPE=${{matrix.build_type}}     \
             -DCMAKE_CXX_COMPILER=${{matrix.compiler}}     \
