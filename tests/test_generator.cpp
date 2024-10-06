@@ -937,6 +937,15 @@ TEST(not_nothing_generator) {
   return check_gen<int>();
 }
 
+dd::generator<int> custom_coawait_gen() {
+  co_await dd::this_coro::destroy_and_transfer_control_to(std::coroutine_handle<>{});
+}
+
+TEST(coawait_in_generator) {
+  custom_coawait_gen().release().resume();
+  return error_count;
+}
+
 int main() {
   static_assert(::dd::memory_resource<new_delete_resource>);
   (void)flip();  // initalize random
@@ -1022,6 +1031,7 @@ int main() {
   RUN(inplace_generator_move);
   RUN(nothing_generator);
   RUN(not_nothing_generator);
+  RUN(coawait_in_generator);
   if (sz != 0 && sz != size_t(-1))
     std::exit(146);
   return ec;

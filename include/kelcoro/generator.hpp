@@ -100,14 +100,7 @@ struct generator_promise : not_movable, yield_block<generator_promise<Yield>, Yi
   generator<Yield> get_return_object() noexcept {
     return generator<Yield>(self_handle());
   }
-  // there are no correct things which you can do with co_await in generator
-  void await_transform(auto&&) = delete;
-  // its not a error for 'nothing_t', because *it do not dereferences invalid iterator
-  std::suspend_always await_transform(std::suspend_always)
-    requires(std::is_same_v<nothing_t, Yield>)
-  {
-    return {};
-  }
+  KELCORO_DEFAULT_AWAIT_TRANSFORM;
   auto await_transform(this_coro::get_handle_t) noexcept {
     return this_coro::get_handle_t::awaiter<generator_promise>{};
   }
@@ -253,7 +246,8 @@ auto generator_iterator<Yield>::out() const&& noexcept {
 //  will lead to std::terminate
 //  * if exception was thrown from recursivelly co_yielded generator, then this leaf just skipped and caller
 //  can continue iterating after catch(requires new .begin call)
-//
+//  * its caller responsibility to not use co_await with real suspend in generator
+// (or you must know what you do)
 template <yieldable Yield>
 struct generator : enable_resource_deduction {
   using promise_type = generator_promise<Yield>;
