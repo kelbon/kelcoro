@@ -21,7 +21,11 @@ struct not_movable {
 };
 
 struct rvo_tag_t {
-  explicit rvo_tag_t() = default;
+  // gcc 12 workaround for co_return {}
+  struct do_not_break_construction {
+    explicit do_not_break_construction() = default;
+  };
+  explicit constexpr rvo_tag_t(do_not_break_construction) noexcept {};
 };
 
 // Optimization for returning objects in dd::task
@@ -45,7 +49,7 @@ struct rvo_tag_t {
 //   co_return dd::rvo;
 // }
 //
-constexpr inline const rvo_tag_t rvo = rvo_tag_t{};
+constexpr inline const rvo_tag_t rvo = rvo_tag_t{rvo_tag_t::do_not_break_construction{}};
 
 // 'teaches' promise to return
 template <typename T>
