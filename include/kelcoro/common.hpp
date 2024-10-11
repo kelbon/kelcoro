@@ -20,20 +20,89 @@ struct not_movable {
   void operator=(not_movable&&) = delete;
 };
 
+struct rvo_tag_t {
+  // gcc 12 workaround for co_return {}
+  struct do_not_break_construction {
+    explicit do_not_break_construction() = default;
+  };
+  explicit constexpr rvo_tag_t(do_not_break_construction) noexcept {};
+};
+
+// Optimization for returning objects in dd::task
+//
+// Example of potential memory duplication for BigT:
+// There are two BigT:
+//   * in coroutine frame (local variable)
+//   * in coroutine promise for co_return
+//
+// dd::task<BigT> foo() {
+//   BigT t;
+//   fill(&t);
+//   co_return t;
+// }
+//
+// Optimized version (only one BigT in coroutine promise):
+//
+// dd::task<BigT> foo() {
+//   BigT& t = co_await dd::this_coro::return_place;
+//   fill(&t);
+//   co_return dd::rvo;
+// }
+//
+constexpr inline const rvo_tag_t rvo = rvo_tag_t{rvo_tag_t::do_not_break_construction{}};
+
 // 'teaches' promise to return
 template <typename T>
 struct return_block {
+  // it is optional and not bytes of memory for correctly invoking destructor
+  // when .destroy() on handle called, even after coroutine is .done() already
   std::optional<T> storage = std::nullopt;
 
   template <typename U = T>
   constexpr void return_value(U&& value) noexcept(std::is_nothrow_constructible_v<T, U&&>) {
     storage.emplace(std::forward<U>(value));
   }
+
+  constexpr void return_value(rvo_tag_t) noexcept {
+    assert(storage.has_value());
+  }
+
   constexpr T&& result() noexcept KELCORO_LIFETIMEBOUND {
     assert(storage.has_value());
     return std::move(*storage);
   }
+  // args for case when T is not default contructible
+  // must be used with co_return dd::rvo
+  template <typename... Args>
+  constexpr T& return_place(Args&&... args) noexcept {
+    return storage.emplace(std::forward<Args>(args)...);
+  }
 };
+
+template <typename T>
+  requires(std::is_trivially_destructible_v<T> && std::is_default_constructible_v<T>)
+struct return_block<T> {
+  T storage;  // not inited here
+
+  template <typename U = T>
+  constexpr void return_value(U&& value) noexcept(std::is_nothrow_constructible_v<T, U&&>) {
+    std::construct_at(std::addressof(storage), std::forward<U>(value));
+  }
+
+  constexpr void return_value(rvo_tag_t) noexcept {
+  }
+
+  constexpr T&& result() noexcept KELCORO_LIFETIMEBOUND {
+    return std::move(storage);
+  }
+  // args for case when T is not default contructible
+  // must be used with co_return dd::rvo
+  template <typename... Args>
+  constexpr T& return_place(Args&&... args) noexcept {
+    return *std::construct_at(std::addressof(storage), std::forward<Args>(args)...);
+  }
+};
+
 template <typename T>
 struct return_block<T&> {
   T* storage = nullptr;
@@ -41,16 +110,27 @@ struct return_block<T&> {
   constexpr void return_value(T& value) noexcept {
     storage = std::addressof(value);
   }
+
+  constexpr void return_value(rvo_tag_t) noexcept {
+    assert(storage != nullptr);
+  }
+
   constexpr T& result() noexcept {
     assert(storage != nullptr);
     return *storage;
   }
+  constexpr T*& return_place(T* p = nullptr) {
+    return storage = p;
+  }
 };
+
 template <>
 struct return_block<void> {
   constexpr void return_void() const noexcept {
   }
   static void result() noexcept {
+  }
+  static void return_place() noexcept {
   }
 };
 
@@ -113,6 +193,8 @@ suspend_and_t(F&&) -> suspend_and_t<std::remove_cvref_t<F>>;
 namespace this_coro {
 
 struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
+  explicit get_handle_t() = default;
+
   template <typename PromiseType>
   struct awaiter {
     std::coroutine_handle<PromiseType> handle_;
@@ -135,6 +217,8 @@ struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
 };
 
 struct get_context_t {
+  explicit get_context_t() = default;
+
   template <typename Ctx>
   struct awaiter {
     Ctx* ctx;
@@ -154,9 +238,9 @@ struct get_context_t {
 };
 
 // provides access to inner handle of coroutine
-constexpr inline get_handle_t handle = {};
+constexpr inline get_handle_t handle = get_handle_t{};
 
-constexpr inline destroy_coro_t destroy = {};
+constexpr inline destroy_coro_t destroy = destroy_coro_t{};
 
 // co_awaiting on this function suspends coroutine and invokes 'fn' with coroutine handle.
 // await suspend returns what 'fn' returns!

@@ -797,6 +797,27 @@ TEST(when_any_different_ctxts) {
   return error_count;
 }
 
+dd::task<std::string> rvo_task() {
+  (void)co_await jump_on(TP);
+  std::string& ret = co_await dd::this_coro::return_place;
+  ret = "hello world";
+  co_return dd::rvo;
+}
+
+dd::task<int&> rvo_task_ref(int& x) {
+  (void)co_await jump_on(TP);
+  int*& ret = co_await dd::this_coro::return_place;
+  ret = &x;
+  co_return dd::rvo;
+}
+
+TEST(rvo_tasks) {
+  error_if(rvo_task().get() != "hello world");
+  int x = 0;
+  error_if(&rvo_task_ref(x).get() != &x);
+  return error_count;
+}
+
   #define RUN(TEST_NAME)                             \
     {                                                \
       std::cout << "- " << #TEST_NAME << std::flush; \
@@ -835,6 +856,7 @@ int main() {
   RUN(when_any);
   RUN(when_all_dynamic);
   RUN(when_any_different_ctxts);
+  RUN(rvo_tasks);
   return ec;
 }
 #else

@@ -8,7 +8,31 @@ namespace dd {
 
 namespace this_coro {
 
-constexpr inline get_context_t context = {};
+constexpr inline get_context_t context = get_context_t{};
+
+// just tag, coroutine knows how to return it
+struct KELCORO_CO_AWAIT_REQUIRED get_return_place_t {
+  explicit get_return_place_t() = default;
+
+  template <typename Ptr>
+  struct awaiter {
+    Ptr place;
+
+    static bool await_ready() noexcept {
+      return false;
+    }
+    template <typename Promise>
+    bool await_suspend(std::coroutine_handle<Promise> handle) noexcept {
+      place = std::addressof(handle.promise().return_place());
+      return false;
+    }
+    decltype(auto) await_resume() noexcept {
+      return *place;
+    }
+  };
+};
+
+constexpr inline get_return_place_t return_place = get_return_place_t{};
 
 }  // namespace this_coro
 
@@ -42,6 +66,9 @@ struct task_promise : return_block<Result> {
   }
   auto await_transform(this_coro::get_handle_t) noexcept {
     return this_coro::get_handle_t::awaiter<task_promise>{};
+  }
+  auto await_transform(this_coro::get_return_place_t) noexcept {
+    return this_coro::get_return_place_t::awaiter<decltype(std::addressof(this->return_place()))>{};
   }
   KELCORO_DEFAULT_AWAIT_TRANSFORM;
 
