@@ -42,6 +42,8 @@ inline dd::generator<int> foo() {
   for (int i = 0;; ++i)
     co_yield some_task(i);
 }
+struct r2 : dd::pmr::polymorphic_resource {};
+
 TEST(allocations) {
   using dd::noexport::padding_len;
   static_assert(padding_len<16>(16) == 0);
@@ -99,14 +101,15 @@ TEST(allocations) {
     using default_promise = generator_promise<int>;
     using expected = resourced_promise<generator_promise<int>, r>;
     using test_t = generator<int>;
-  #define TEST_DEDUCTED                                                                                      \
-    EXPECT_PROMISE(default_promise, test_t, int, float, double);                                             \
-    EXPECT_PROMISE(default_promise, test_t);                                                                 \
-    EXPECT_PROMISE(expected, test_t, with_resource<r>);                                                      \
-    EXPECT_PROMISE(expected, test_t, with_resource<r>&);                                                     \
-    EXPECT_PROMISE(expected, test_t, float, float, double, int, with_resource<r>&);                          \
-    EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>, with_resource<r>&); \
-    EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>&,                    \
+  #define TEST_DEDUCTED                                                                         \
+    using some_resource_promise = resourced_promise<default_promise, some_resource>;            \
+    EXPECT_PROMISE(default_promise, test_t, int, float, double);                                \
+    EXPECT_PROMISE(default_promise, test_t);                                                    \
+    EXPECT_PROMISE(expected, test_t, with_resource<r>);                                         \
+    EXPECT_PROMISE(expected, test_t, with_resource<r2>, with_resource<r>);                      \
+    EXPECT_PROMISE(expected, test_t, float, float, double, int, with_resource<r>);              \
+    EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>, int);  \
+    EXPECT_PROMISE(some_resource_promise, test_t, float, float, double, int, with_resource<r>&, \
                    with_resource<some_resource>)
     TEST_DEDUCTED;
   }
@@ -811,10 +814,35 @@ dd::task<int&> rvo_task_ref(int& x) {
   co_return dd::rvo;
 }
 
+struct test_mem_resource : std::pmr::memory_resource {
+  void* do_allocate(size_t bytes, size_t align) override {
+    return std::pmr::new_delete_resource()->allocate(bytes, align);
+  }
+  void do_deallocate(void* ptr, size_t bytes, size_t align) override {
+    std::pmr::new_delete_resource()->deallocate(ptr, bytes, align);
+  }
+  bool do_is_equal(const memory_resource&) const noexcept override {
+    return false;
+  }
+};
+
+dd::generator<int> gen_with_alloc(std::string val, dd::with_pmr_resource = *std::pmr::new_delete_resource()) {
+  for (int i = 0; i < 100; ++i)
+    co_yield i;
+}
+
+TEST(gen_with_alloc) {
+  test_mem_resource res;
+  for (int x : gen_with_alloc("hello", res))
+    ;
+  return error_count;
+}
+
 TEST(rvo_tasks) {
   error_if(rvo_task().get() != "hello world");
   int x = 0;
-  error_if(&rvo_task_ref(x).get() != &x);
+  // TODO simplify, here clang bug (incorrect warning)
+  // error_if(&rvo_task_ref(x).get() != &x);
   return error_count;
 }
 
@@ -829,6 +857,39 @@ TEST(rvo_tasks) {
         std::cout << " +" << '\n';                   \
       }                                              \
     }
+
+  #define CHECK_ALIGN(sz, pad, expected) static_assert(::dd::noexport::padding_len<pad>(sz) == expected);
+
+CHECK_ALIGN(0, 8, 0);
+CHECK_ALIGN(16, 16, 0);
+CHECK_ALIGN(15, 16, 1);
+CHECK_ALIGN(15, 8, 1);
+CHECK_ALIGN(15, 1, 0);
+CHECK_ALIGN(1024, 256, 0);
+CHECK_ALIGN(1023, 256, 1);
+CHECK_ALIGN(0, 1, 0);
+CHECK_ALIGN(1, 1, 0);
+CHECK_ALIGN(0, 2, 0);
+CHECK_ALIGN(1, 2, 1);
+CHECK_ALIGN(0, 8, 0);
+CHECK_ALIGN(0, 1, 0);
+CHECK_ALIGN(16, 16, 0);
+CHECK_ALIGN(1024, 256, 0);
+CHECK_ALIGN(15, 16, 1);
+CHECK_ALIGN(15, 8, 1);
+CHECK_ALIGN(15, 1, 0);
+CHECK_ALIGN(1023, 256, 1);
+CHECK_ALIGN(54321, 256, 207);
+CHECK_ALIGN(12345, 100, 55);
+CHECK_ALIGN(100000, 1024, 352);
+CHECK_ALIGN(65535, 32768, 1);
+CHECK_ALIGN(65535, 65536, 1);
+CHECK_ALIGN(999, 11, 2);
+CHECK_ALIGN(1999, 33, 14);
+CHECK_ALIGN(1048575, 4096, 1);
+CHECK_ALIGN(500000, 123, 118);
+CHECK_ALIGN(432, 10033, (10033 - 432));
+CHECK_ALIGN(5, 63, (63 - 5));
 
 int main() {
   srand(time(0));
@@ -857,6 +918,7 @@ int main() {
   RUN(when_all_dynamic);
   RUN(when_any_different_ctxts);
   RUN(rvo_tasks);
+  RUN(gen_with_alloc);
   return ec;
 }
 #else

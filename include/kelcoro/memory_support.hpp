@@ -17,13 +17,6 @@ concept memory_resource = (!std::is_reference_v<T>)&&requires(T value, size_t sz
   requires !(std::is_empty_v<T> && !std::default_initializable<T>);
 };
 
-namespace noexport {
-
-template <typename T>
-concept coro = requires { typename T::promise_type; };
-
-}
-
 namespace pmr {
 
 struct polymorphic_resource {
@@ -70,6 +63,21 @@ inline void pass_resource(std::pmr::memory_resource& m) noexcept {
   polymorphic_resource::passed_resource() = &m;
 }
 
+struct std_pmr_resource {
+ private:
+  std::pmr::memory_resource* mr;
+
+ public:
+  std_pmr_resource(std::pmr::memory_resource& r) noexcept : mr(&r) {
+  }
+  void* allocate(size_t sz, size_t align) {
+    return mr->allocate(sz, align);
+  }
+  void deallocate(void* p, std::size_t sz, std::size_t align) noexcept {
+    mr->deallocate(p, sz, align);
+  }
+};
+
 }  // namespace pmr
 
 consteval size_t coroframe_align() {
@@ -96,42 +104,63 @@ template <typename X>
 with_resource(X&&) -> with_resource<std::remove_cvref_t<X>>;
 with_resource(std::pmr::memory_resource&) -> with_resource<pmr::polymorphic_resource>;
 
+// specialization for implicit ctor
+template <>
+struct with_resource<pmr::std_pmr_resource> {
+  pmr::std_pmr_resource resource;
+
+  with_resource(std::pmr::memory_resource& mr) noexcept : resource(mr) {
+  }
+  with_resource(pmr::std_pmr_resource mr) noexcept : resource(std::move(mr)) {
+  }
+};
+
+using with_pmr_resource = with_resource<pmr::std_pmr_resource>;
+
 namespace noexport {
 
+template <typename T>
+struct type_identity_special {
+  using type = T;
+
+  template <typename U>
+  type_identity_special<U> operator=(type_identity_special<U>);
+};
+
+// TODO optimize when pack indexing will be possible
+// void when Args is empty
 template <typename... Args>
-struct find_resource_tag : std::type_identity<void> {};
-template <typename R, typename... Args>
-struct find_resource_tag<with_resource<R>, Args...> : std::type_identity<R> {};
-template <typename Head, typename... Tail>
-struct find_resource_tag<Head, Tail...> : find_resource_tag<Tail...> {};
+using last_type_t = typename std::remove_cvref_t<decltype((type_identity_special<void>{} = ... =
+                                                               type_identity_special<Args>{}))>::type;
+
+template <typename T>
+struct memory_resource_info : std::false_type {
+  using resource_type = void;
+};
+template <typename R>
+struct memory_resource_info<with_resource<R>> : std::true_type {
+  using resource_type = R;
+};
 
 }  // namespace noexport
 
-// searches for 'with_resource' in Types and returns first finded or void if no such
-template <typename... Types>
-using find_resource_tag_t = typename noexport::find_resource_tag<std::remove_cvref_t<Types>...>::type;
+template <typename... Args>
+using get_memory_resource_info =
+    noexport::memory_resource_info<std::remove_cvref_t<noexport::last_type_t<Args...>>>;
+
+template <typename... Args>
+constexpr inline bool last_is_memory_resource_tag = get_memory_resource_info<Args...>::value;
+
+template <typename... Args>
+using resource_type_t = typename get_memory_resource_info<Args...>::resource_type;
 
 namespace noexport {
-
-template <typename... Types>
-consteval bool contains_1_resource_tag() {
-  return 1 == (!std::is_void_v<find_resource_tag_t<Types>> + ... + 0);
-}
-
-constexpr auto only_for_resource(auto&& foo, auto&&... args) {
-  static_assert(contains_1_resource_tag<decltype(args)...>());
-  auto try_one = [&](auto& x) {
-    if constexpr (contains_1_resource_tag<decltype(x)>())
-      foo(x.resource);
-  };
-  (try_one(args), ...);
-}
 
 template <size_t RequiredPadding>
 constexpr size_t padding_len(size_t sz) noexcept {
   enum { P = RequiredPadding };
   static_assert(P != 0);
-  return ((P - sz) % P) % P;
+  return (P - sz % P) % P;
 }
 
 }  // namespace noexport
@@ -162,12 +191,16 @@ struct overload_new_delete {
     R r{};
     return do_allocate(frame_sz, r);
   }
+
   template <typename... Args>
-    requires(std::same_as<find_resource_tag_t<Args...>, R> && noexport::contains_1_resource_tag<Args...>())
+    requires(last_is_memory_resource_tag<Args...> && std::is_same_v<R, resource_type_t<Args...>>)
   static void* operator new(std::size_t frame_sz, Args&&... args) {
-    void* p;
-    noexport::only_for_resource([&](auto& resource) { p = do_allocate(frame_sz, resource); }, args...);
-    return p;
+    static_assert(std::is_same_v<std::remove_cvref_t<noexport::last_type_t<Args...>>, with_resource<R>>);
+    // TODO when possible
+    // return do_allocate(frame_sz, (args...[sizeof...(Args) - 1]).resource);
+    auto voidify = [](auto& x) { return const_cast<void*>((const void volatile*)std::addressof(x)); };
+    void* p = (voidify(args), ...);
+    return do_allocate(frame_sz, static_cast<with_resource<R>*>(p)->resource);
   }
   static void operator delete(void* ptr, std::size_t frame_sz) noexcept {
     if constexpr (std::is_empty_v<R>) {
@@ -249,26 +282,16 @@ struct operation_hash<std::coroutine_handle<resourced_promise<Promise, R>>> {
 
 namespace std {
 
-template <::dd::noexport::coro Coro, ::dd::memory_resource R, typename... Args>
+template <typename Coro, ::dd::memory_resource R, typename... Args>
 struct coroutine_traits<::dd::resourced<Coro, R>, Args...> {
   using promise_type = ::dd::resourced_promise<typename Coro::promise_type, R>;
 };
 
-template <::dd::noexport::coro Coro, typename... Args>
-  requires derived_from<Coro, ::dd::enable_resource_deduction>
+// enable_resource_deduction always uses last argument if present (memory_resource<R>)
+template <typename Coro, typename... Args>
+  requires(derived_from<Coro, ::dd::enable_resource_deduction> && dd::last_is_memory_resource_tag<Args...>)
 struct coroutine_traits<Coro, Args...> {
- private:
-  template <typename Promise>
-  static auto deduct_promise() {
-    if constexpr (::dd::noexport::contains_1_resource_tag<Args...>())
-      return std::type_identity<::dd::resourced_promise<Promise, ::dd::find_resource_tag_t<Args...>>>{};
-    else
-      return std::type_identity<Promise>{};
-  }
-
- public:
-  // if Args contain exactly ONE(1) 'with_resource<X>' it is used, otherwise Coro::promise_type selected
-  using promise_type = typename decltype(deduct_promise<typename Coro::promise_type>())::type;
+  using promise_type = ::dd::resourced_promise<typename Coro::promise_type, ::dd::resource_type_t<Args...>>;
 };
 
 }  // namespace std
