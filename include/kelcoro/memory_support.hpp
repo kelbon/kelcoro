@@ -8,14 +8,87 @@
 
 namespace dd {
 
+consteval size_t coroframe_align() {
+  // Question: what will be if coroutine local contains alignas(64) int i; ?
+  // Answer: (quote from std::generator paper)
+  //  "Let BAlloc be allocator_traits<A>::template rebind_alloc<U> where U denotes an unspecified type
+  // whose size and alignment are both _STDCPP_DEFAULT_NEW_ALIGNMENT__"
+  return __STDCPP_DEFAULT_NEW_ALIGNMENT__;
+}
+
 template <typename T>
-concept memory_resource = (!std::is_reference_v<T>)&&requires(T value, size_t sz, size_t align, void* ptr) {
-  { value.allocate(sz, align) } -> std::convertible_to<void*>;
-  { value.deallocate(ptr, sz, align) } noexcept -> std::same_as<void>;
+concept memory_resource = !std::is_reference_v<T> && requires(T value, size_t sz, void* ptr) {
+  // align of result must be atleast aligned as dd::coroframe_align()
+  // align arg do not required, because standard do not provide interface
+  // for passing alignment to promise_type::new
+  { value.allocate(sz) } -> std::convertible_to<void*>;
+  { value.deallocate(ptr, sz) } noexcept -> std::same_as<void>;
   requires std::is_nothrow_move_constructible_v<T>;
   requires alignof(T) <= alignof(std::max_align_t);
   requires !(std::is_empty_v<T> && !std::default_initializable<T>);
 };
+
+// typical usage:
+//  using with_my_resource = dd::with_resource<chunk_from<MyResource>>;
+//  coro foo(int, double, with_my_resource);
+// ...
+//  foo(5, 3.14, my_resource);
+template <typename R>
+struct chunk_from {
+ private:
+  KELCORO_NO_UNIQUE_ADDRESS std::conditional_t<std::is_empty_v<R>, R, R*> _resource;
+
+ public:
+  R& resource() noexcept {
+    if constexpr (std::is_empty_v<R>)
+      return _resource;
+    else
+      return *_resource;
+  }
+
+  // implicit
+  chunk_from(R& r) noexcept {
+    if constexpr (!std::is_empty_v<R>)
+      _resource = std::addressof(r);
+  }
+
+  void* allocate(size_t sz) {
+    return std::assume_aligned<dd::coroframe_align()>(resource().allocate(sz));
+  }
+
+  void deallocate(void* p, std::size_t sz) noexcept {
+    resource().deallocate(p, sz);
+  }
+};
+
+// default resource for with_memory_resource
+struct new_delete_resource {
+  static void* allocate(size_t sz) {
+    // not malloc because of memory alignment requirement
+    return new char[sz];
+  }
+  static void deallocate(void* p, std::size_t) noexcept {
+    delete[] static_cast<char*>(p);
+  }
+};
+
+// when passed into coroutine as last argument coro will allocate/deallocate memory using this resource
+// example:
+//   generator<int> gen(int, float, with_resource<MyResource>);
+template <memory_resource R>
+struct with_resource {
+  KELCORO_NO_UNIQUE_ADDRESS R resource;
+
+  // implicit
+  template <typename... Args>
+  with_resource(Args&&... args) noexcept(std::is_nothrow_constructible_v<R, Args&&...>)
+      : resource(std::forward<Args>(args)...) {
+  }
+};
+
+template <typename X>
+with_resource(X&&) -> with_resource<std::remove_cvref_t<X>>;
+with_resource(std::pmr::memory_resource&) -> with_resource<chunk_from<std::pmr::memory_resource>>;
 
 namespace pmr {
 
@@ -44,11 +117,11 @@ struct polymorphic_resource {
   }
   polymorphic_resource(std::pmr::memory_resource& m) noexcept : passed(&m) {
   }
-  void* allocate(size_t sz, size_t align) {
-    return passed->allocate(sz, align);
+  void* allocate(size_t sz) {
+    return passed->allocate(sz, coroframe_align());
   }
-  void deallocate(void* p, std::size_t sz, std::size_t align) noexcept {
-    passed->deallocate(p, sz, align);
+  void deallocate(void* p, std::size_t sz) noexcept {
+    passed->deallocate(p, sz, coroframe_align());
   }
 };
 
@@ -63,59 +136,10 @@ inline void pass_resource(std::pmr::memory_resource& m) noexcept {
   polymorphic_resource::passed_resource() = &m;
 }
 
-struct std_pmr_resource {
- private:
-  std::pmr::memory_resource* mr;
-
- public:
-  std_pmr_resource(std::pmr::memory_resource& r) noexcept : mr(&r) {
-  }
-  void* allocate(size_t sz, size_t align) {
-    return mr->allocate(sz, align);
-  }
-  void deallocate(void* p, std::size_t sz, std::size_t align) noexcept {
-    mr->deallocate(p, sz, align);
-  }
-};
-
 }  // namespace pmr
 
-consteval size_t coroframe_align() {
-  // Question: what will be if coroutine local contains alignas(64) int i; ?
-  // Answer: (quote from std::generator paper)
-  //  "Let BAlloc be allocator_traits<A>::template rebind_alloc<U> where U denotes an unspecified type
-  // whose size and alignment are both _STDCPP_DEFAULT_NEW_ALIGNMENT__"
-  return __STDCPP_DEFAULT_NEW_ALIGNMENT__;
-}
-
-// TODO free list with customizable max blocks
-//  must be good because coroutines have same sizes,
-//  its easy to reuse memory for them
-// TODO info about current channel/generator call, is_top, handle, iteration from top to bot/reverse, swap two
-//  generators in chain
-//  struct co_memory_resource { ... };
-
-// when passed into coroutine coro will allocate/deallocate memory using this resource
-template <memory_resource R>
-struct with_resource {
-  KELCORO_NO_UNIQUE_ADDRESS R resource;
-};
-template <typename X>
-with_resource(X&&) -> with_resource<std::remove_cvref_t<X>>;
-with_resource(std::pmr::memory_resource&) -> with_resource<pmr::polymorphic_resource>;
-
-// specialization for implicit ctor
-template <>
-struct with_resource<pmr::std_pmr_resource> {
-  pmr::std_pmr_resource resource;
-
-  with_resource(std::pmr::memory_resource& mr) noexcept : resource(mr) {
-  }
-  with_resource(pmr::std_pmr_resource mr) noexcept : resource(std::move(mr)) {
-  }
-};
-
-using with_pmr_resource = with_resource<pmr::std_pmr_resource>;
+using with_default_resource = with_resource<new_delete_resource>;
+using with_pmr_resource = with_resource<chunk_from<std::pmr::memory_resource>>;
 
 namespace noexport {
 
@@ -170,16 +194,13 @@ constexpr size_t padding_len(size_t sz) noexcept {
 template <memory_resource R>
 struct overload_new_delete {
  private:
-  enum { frame_align = std::max(coroframe_align(), alignof(R)) };
   static void* do_allocate(size_t frame_sz, R& r) {
     if constexpr (std::is_empty_v<R>)
-      return (void*)r.allocate(frame_sz, coroframe_align());
+      return (void*)r.allocate(frame_sz);
     else {
-      const size_t padding = noexport::padding_len<frame_align>(frame_sz);
-      const size_t bytes_count = frame_sz + padding + sizeof(R);
-      std::byte* p = (std::byte*)r.allocate(bytes_count, frame_align);
-      std::byte* resource_place = p + frame_sz + padding;
-      std::construct_at((R*)resource_place, std::move(r));
+      frame_sz += noexport::padding_len<alignof(R)>(frame_sz);
+      std::byte* p = (std::byte*)r.allocate(frame_sz + sizeof(R));
+      new (p + frame_sz) R(std::move(r));
       return p;
     }
   }
@@ -205,15 +226,19 @@ struct overload_new_delete {
   static void operator delete(void* ptr, std::size_t frame_sz) noexcept {
     if constexpr (std::is_empty_v<R>) {
       R r{};
-      r.deallocate(ptr, frame_sz, coroframe_align());
+      r.deallocate(ptr, frame_sz);
     } else {
-      const size_t padding = noexport::padding_len<frame_align>(frame_sz);
-      const size_t bytes_count = frame_sz + padding + sizeof(R);
-      R* onframe_resource = (R*)((std::byte*)ptr + frame_sz + padding);
+      frame_sz += noexport::padding_len<alignof(R)>(frame_sz);
+      R* onframe_resource = (R*)((std::byte*)ptr + frame_sz);
       assert((((uintptr_t)onframe_resource % alignof(R)) == 0));
-      R r = std::move(*onframe_resource);
-      std::destroy_at(onframe_resource);
-      r.deallocate(ptr, bytes_count, frame_align);
+      if constexpr (std::is_trivially_destructible_v<R>) {
+        onframe_resource->deallocate(ptr, frame_sz + sizeof(R));
+      } else {
+        // save to stack from deallocated memory
+        R r = std::move(*onframe_resource);
+        std::destroy_at(onframe_resource);
+        r.deallocate(ptr, frame_sz + sizeof(R));
+      }
     }
   }
 };
@@ -289,7 +314,8 @@ struct coroutine_traits<::dd::resourced<Coro, R>, Args...> {
 
 // enable_resource_deduction always uses last argument if present (memory_resource<R>)
 template <typename Coro, typename... Args>
-  requires(derived_from<Coro, ::dd::enable_resource_deduction> && dd::last_is_memory_resource_tag<Args...>)
+  requires(derived_from<Coro, ::dd::enable_resource_deduction> && dd::last_is_memory_resource_tag<Args...> &&
+           !std::is_same_v<dd::noexport::last_type_t<Args...>, dd::with_default_resource>)
 struct coroutine_traits<Coro, Args...> {
   using promise_type = ::dd::resourced_promise<typename Coro::promise_type, ::dd::resource_type_t<Args...>>;
 };
