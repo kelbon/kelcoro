@@ -93,8 +93,8 @@ TEST(allocations) {
     static_assert(std::is_same_v<decltype(x0), with_resource<r>>);
   }
   struct some_resource {
-    void* allocate(size_t, size_t);
-    void deallocate(void*, size_t, size_t) noexcept;
+    void* allocate(size_t);
+    void deallocate(void*, size_t) noexcept;
   };
   // resource deduction
   {
@@ -110,7 +110,8 @@ TEST(allocations) {
     EXPECT_PROMISE(expected, test_t, float, float, double, int, with_resource<r>);              \
     EXPECT_PROMISE(default_promise, test_t, float, float, double, int, with_resource<r>, int);  \
     EXPECT_PROMISE(some_resource_promise, test_t, float, float, double, int, with_resource<r>&, \
-                   with_resource<some_resource>)
+                   with_resource<some_resource>);                                               \
+    EXPECT_PROMISE(default_promise, test_t, float, dd::with_default_resource)
     TEST_DEDUCTED;
   }
   {
@@ -827,7 +828,7 @@ struct test_mem_resource : std::pmr::memory_resource {
 };
 
 dd::generator<int> gen_with_alloc(std::string val, dd::with_pmr_resource = *std::pmr::new_delete_resource()) {
-  for (int i = 0; i < 100; ++i)
+  for (alignas(64) int i = 0; i < 100; ++i)
     co_yield i;
 }
 

@@ -659,18 +659,7 @@ struct log_resource : std::pmr::memory_resource {
   }
 
 inline auto sz = size_t(-1);
-struct new_delete_resource {
-  void* allocate(size_t s, size_t a) {
-    sz = s;
-    (void)a;  // cannot use new with 'align_val_t' on msvc... Its broken
-    return malloc(s);
-  }
-  void deallocate(void* p, size_t s, size_t a) noexcept {
-    sz -= s;
-    (void)a;
-    free(p);
-  }
-};
+using new_delete_resource = dd::new_delete_resource;
 dd::generator_r<int, new_delete_resource> new_ints() {
   co_yield 1;
 }
