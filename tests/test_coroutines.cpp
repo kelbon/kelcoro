@@ -23,7 +23,6 @@
 #include "kelcoro/logical_thread.hpp"
 #include "kelcoro/task.hpp"
 #include "kelcoro/events.hpp"
-#include "kelcoro/noexcept_task.hpp"
 #include "kelcoro/thread_pool.hpp"
 #include "kelcoro/algorithm.hpp"
 
@@ -461,16 +460,6 @@ dd::task<std::string> do_smth() {
   co_return "hello from task";
 }
 
-dd::noexcept_task<std::string> do_smth_noexcept() {
-  (void)co_await dd::jump_on(TP);
-  co_return "hello from task";
-}
-
-TEST(task_blocking_wait_noexcept) {
-  error_if(do_smth_noexcept().get() != "hello from task");
-  return error_count;
-}
-
 TEST(task_start_and_detach) {
   std::atomic_bool flag = false;
   dd::task task = [](std::atomic_bool& flag) -> dd::task<void> {
@@ -893,6 +882,10 @@ CHECK_ALIGN(432, 10033, (10033 - 432));
 CHECK_ALIGN(5, 63, (63 - 5));
 
 int main() {
+  dd::with_resource<statefull_resource> r;
+  auto copy(r);
+  auto mv(std::move(r));
+  auto copy2 = std::as_const(r);
   srand(time(0));
   size_t ec = 0;
   RUN(generator);
@@ -910,7 +903,6 @@ int main() {
   RUN(detached_tasks);
   RUN(task_blocking_wait);
   RUN(task_with_exception);
-  RUN(task_blocking_wait_noexcept);
   RUN(task_start_and_detach);
   RUN(contexted_task);
   RUN(complex_ret);
