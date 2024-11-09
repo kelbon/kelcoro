@@ -22,7 +22,7 @@ concept memory_resource = !std::is_reference_v<T> && requires(T value, size_t sz
   // align arg do not required, because standard do not provide interface
   // for passing alignment to promise_type::new
   { value.allocate(sz) } -> std::convertible_to<void*>;
-  { value.deallocate(ptr, sz) } noexcept -> std::same_as<void>;
+  { value.deallocate(ptr, sz) } -> std::same_as<void>;
   requires std::is_nothrow_move_constructible_v<T>;
   requires alignof(T) <= alignof(std::max_align_t);
   requires !(std::is_empty_v<T> && !std::default_initializable<T>);
@@ -83,6 +83,15 @@ struct with_resource {
   template <typename... Args>
   with_resource(Args&&... args) noexcept(std::is_nothrow_constructible_v<R, Args&&...>)
       : resource(std::forward<Args>(args)...) {
+  }
+
+  // do not overlap with first ctor
+
+  with_resource(with_resource&&) = default;
+  with_resource(const with_resource&) = default;
+  with_resource(const with_resource&& o) : with_resource(o) {
+  }
+  with_resource(with_resource& o) : with_resource(std::as_const(o)) {
   }
 };
 
