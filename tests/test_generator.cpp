@@ -891,7 +891,6 @@ size_t check_gen() {
   error_if(gen);
   error_if(gen.raw_handle());
   gen = recursive_generator<T>(4);
-  gen.prepare_to_start();
   // generate first value
   ++gen.cur_iterator();
   error_if(gen.empty());
@@ -935,6 +934,26 @@ TEST(coawait_in_generator) {
   return error_count;
 }
 
+dd::generator<int> ints() {
+  for (int i = 0; i < 10; ++i)
+    co_yield i;
+}
+
+TEST(generator_swap) {
+  dd::generator<int>* r = new auto(ints());
+  r->begin();
+  error_if(r->raw_handle().promise()._consumer != r);
+  dd::generator<int> r2;
+  r2.swap(*r);
+  error_if(r2.raw_handle().promise()._consumer != &r2);
+  delete r;
+  for (int i = 0; i < 10; ++i) {
+    error_if(*r2.cur_iterator() != i);
+    ++r2.cur_iterator();
+  }
+  return error_count;
+}
+
 int main() {
   static_assert(::dd::memory_resource<new_delete_resource>);
   (void)flip();  // initalize random
@@ -964,6 +983,7 @@ int main() {
   }
   dd::scope_exit e = [&] { std::flush(std::cout), std::flush(std::cerr); };
   size_t ec = 0;
+  RUN(generator_swap);
   RUN(base_channel);
   RUN(empty_channel);
   RUN(reuse_channel);

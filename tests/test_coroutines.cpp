@@ -882,6 +882,8 @@ CHECK_ALIGN(432, 10033, (10033 - 432));
 CHECK_ALIGN(5, 63, (63 - 5));
 
 int main() {
+  // default constructible for empty typpes
+  (void)dd::chunk_from<dd::new_delete_resource>{};
   dd::with_resource<statefull_resource> r;
   auto copy(r);
   auto mv(std::move(r));

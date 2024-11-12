@@ -267,6 +267,13 @@ struct generator : enable_resource_deduction {
   // precondition: 'handle' != nullptr, handle does not have other owners
   // used from promise::get_return_object
   constexpr explicit generator(handle_type top) noexcept : top(top) {
+    prepare_to_start();
+  }
+
+  void prepare_to_start() noexcept {
+    assert(raw_handle() != nullptr);
+    if constexpr (!std::is_same_v<nothing_t, Yield>)
+      top.promise()._consumer = this;
   }
 
  public:
@@ -285,6 +292,10 @@ struct generator : enable_resource_deduction {
   constexpr void swap(generator& other) noexcept {
     std::swap(current_result, other.current_result);
     std::swap(top, other.top);
+    if (top)
+      prepare_to_start();
+    if (other.top)
+      other.prepare_to_start();
   }
   friend constexpr void swap(generator& a, generator& b) noexcept {
     a.swap(b);
@@ -335,23 +346,14 @@ struct generator : enable_resource_deduction {
   // iterator invalidated only when generator dies
   iterator begin() KELCORO_LIFETIMEBOUND {
     iterator it(*this);
-    if (!empty()) [[likely]] {
-      prepare_to_start();
+    if (!empty()) [[likely]]
       ++it;
-    }
     return it;
   }
   static constexpr std::default_sentinel_t end() noexcept {
     return std::default_sentinel;
   }
 
-  // Note: this method usually dont required, use it only when you know what you do
-  // precondition: raw_handle() != nullptr
-  void prepare_to_start() noexcept {
-    assert(raw_handle() != nullptr);
-    if constexpr (!std::is_same_v<nothing_t, Yield>)
-      top.promise()._consumer = this;
-  }
   // precondition: !raw_handle() != nullptr &&  .begin() or .prepare_to_start() was called
   // if generator is not started, its 'before_begin' iterator, which may not be dereferenced
   iterator cur_iterator() noexcept {

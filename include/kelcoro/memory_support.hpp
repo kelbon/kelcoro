@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory_resource>
 #include <cassert>
 
@@ -45,6 +46,10 @@ struct chunk_from {
     else
       return *_resource;
   }
+
+  chunk_from()
+    requires(std::is_empty_v<R>)
+  = default;
 
   // implicit
   chunk_from(R& r) noexcept {
