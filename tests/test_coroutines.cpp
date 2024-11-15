@@ -15,6 +15,7 @@
 #include <iostream>
 #include <array>
 #include <algorithm>
+#include <latch>
 
 #include "kelcoro/async_task.hpp"
 #include "kelcoro/channel.hpp"
@@ -836,6 +837,22 @@ TEST(rvo_tasks) {
   return error_count;
 }
 
+inline std::latch detach_task_latch(1);
+
+dd::task<void> detach_task(std::string& s) {
+  s += " world";
+  detach_task_latch.count_down();
+  co_return;
+}
+
+TEST(detached_task) {
+  std::string s = "hello";
+  TP.schedule(detach_task(s).detach());
+  detach_task_latch.wait();
+  error_if(s != "hello world");
+  return error_count;
+}
+
   #define RUN(TEST_NAME)                             \
     {                                                \
       std::cout << "- " << #TEST_NAME << std::flush; \
@@ -914,6 +931,7 @@ int main() {
   RUN(when_any_different_ctxts);
   RUN(rvo_tasks);
   RUN(gen_with_alloc);
+  RUN(detached_task);
   return ec;
 }
 #else
