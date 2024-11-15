@@ -57,7 +57,7 @@ struct chunk_from {
       _resource = std::addressof(r);
   }
 
-  void* allocate(size_t sz) {
+  [[nodiscard]] void* allocate(size_t sz) {
     return std::assume_aligned<dd::coroframe_align()>(resource().allocate(sz));
   }
 
