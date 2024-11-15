@@ -151,16 +151,29 @@ struct [[nodiscard]] task : enable_resource_deduction {
   handle_type start_and_detach(bool stop_at_end = false) {
     if (!handle_)
       return nullptr;
-    handle_type h = std::exchange(handle_, nullptr);
+    handle_type h = detach();
     if (h.done()) {
-      if (!stop_at_end)
+      if (!stop_at_end) {
         h.destroy();
+        return nullptr;
+      }
       return h;
     }
     // task resumes itself at end and destroys itself or just stops with noop_coroutine
     h.promise().who_waits = stop_at_end ? std::noop_coroutine() : std::coroutine_handle<>(nullptr);
     h.promise().ctx.on_start(h);
     h.resume();
+    return h;
+  }
+
+  // same as release() + prepare to start
+  // example: thread_pool.schedule(mytask().detach())
+  // postcondiion: empty()
+  // precondition: not started yet
+  [[nodiscard("must be resumed or destroyed")]] handle_type detach() noexcept {
+    handle_type h = release();
+    if (h)
+      h.promise().who_waits = nullptr;
     return h;
   }
 
