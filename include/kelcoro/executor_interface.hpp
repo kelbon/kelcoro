@@ -27,6 +27,14 @@ struct task_node {
   task_node* next = nullptr;
   std::coroutine_handle<> task = nullptr;
   schedule_errc status = schedule_errc::ok;
+
+  static task_node deadpill() {
+    return task_node{.next = nullptr, .task = nullptr};
+  }
+
+  bool is_deadpill() const noexcept {
+    return task == nullptr;
+  }
 };
 
 template <typename T>
