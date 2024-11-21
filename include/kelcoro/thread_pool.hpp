@@ -106,10 +106,21 @@ struct task_queue {
     assert(!!nodes);
     return nodes;
   }
+
+  // precondition: node && node->task && node.status == ok
+  // executor interface
+  void attach(task_node* node) noexcept {
+    assert(node && node->task && node->status == schedule_errc::ok);
+    push(node);
+  }
 };
+
+static_assert(executor<task_queue>);
 
 namespace noexport {
 
+// We push the deadpill, and behind it ourselves,
+// in a chain, so that the deadpill is definitely alive.
 struct deadpill_pusher {
   task_queue& queue;
   task_node this_node;
