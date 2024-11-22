@@ -132,7 +132,7 @@ struct deadpill_pusher {
   void await_suspend(std::coroutine_handle<> handle) {
     this_node.task = handle;
     pill.next = &this_node;
-    queue.push_list(&this_node);
+    queue.push_list(&pill);
   }
   void await_resume() noexcept {
     assert(this_node.status == schedule_errc::cancelled);
