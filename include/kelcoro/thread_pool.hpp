@@ -324,12 +324,15 @@ struct thread_pool {
   // NOTE: can't be called from workers
   // NOTE: can't be called more than once
   // Wait for the job to complete (after calling `request_stop`)
-  void wait_stop() {
+  void wait_stop() && {
     assert(!is_worker());
     for (auto& w : workers) {
       if (w.thread.joinable()) {
         w.thread.join();
       }
+    }
+    for (auto& w : workers) {
+      noexport::cancel_tasks(w.queue.pop_all());
     }
   }
 };

@@ -126,21 +126,20 @@ TEST(latch_waiters) {
 }
 
 TEST(request_stop) {
-  std::optional<dd::thread_pool> pool;
   auto tsize = dd::thread_pool::default_thread_count();
   srand(42);
   for (std::size_t i = 0; i < 1000; i++) {
-    pool.emplace();
+    dd::thread_pool pool;
     std::vector<dd::async_task<void>> tasks;
     std::atomic_int counter{0};
     std::vector<std::atomic_bool> cancelled(tsize);
     std::vector<int> request_stop_on(tsize);
     auto maker_task = [&](std::size_t idx) -> dd::async_task<void> {
-      (void)co_await dd::jump_on(*pool);
+      (void)co_await dd::jump_on(pool);
       request_stop_on[idx] = rand() % 1000 + 1;
-      while (co_await dd::jump_on(*pool)) {
+      while (co_await dd::jump_on(pool)) {
         if (counter.fetch_add(1) >= request_stop_on[idx]) {
-          pool->request_stop();
+          pool.request_stop();
         }
       }
       cancelled[idx] = true;
@@ -148,8 +147,7 @@ TEST(request_stop) {
     for (std::size_t i = 0; i < tsize; i++) {
       tasks.push_back(maker_task(i));
     }
-    pool->wait_stop();
-    pool.reset();
+    std::move(pool).wait_stop();
     for (std::size_t i = 0; i < tsize; i++) {
       error_if(!tasks[i].ready());
       error_if(!cancelled[i]);
