@@ -3,8 +3,9 @@
 #include "kelcoro/thread_pool.hpp"
 #include "kelcoro/latch.hpp"
 
+#include <atomic>
+#include <cstdlib>
 #include <latch>
-#include <iostream>
 #include <string>
 
 static_assert(dd::executor<dd::any_executor_ref> && dd::executor<dd::strand> &&
@@ -123,11 +124,44 @@ TEST(latch_waiters) {
   return error_count;
 }
 
+TEST(request_stop) {
+  dd::thread_pool pool;
+  auto tsize = pool.workers_range().size();
+  srand(42);
+  for (std::size_t i = 0; i < 10000; i++) {
+    std::vector<dd::async_task<void>> tasks;
+    std::atomic_int counter{0};
+    std::vector<std::atomic_bool> cancelled(tsize);
+    std::vector<int> request_stop_on(tsize);
+    auto maker_task = [&](std::size_t idx) -> dd::async_task<void> {
+      (void)co_await dd::jump_on(pool);
+      request_stop_on[idx] = rand() % 1000 + 1;
+      while (co_await dd::jump_on(pool)) {
+        if (counter.fetch_add(1) >= request_stop_on[idx]) {
+          pool.request_stop();
+        }
+      }
+      cancelled[idx] = true;
+    };
+    for (std::size_t i = 0; i < tsize; i++) {
+      tasks.push_back(maker_task(i));
+    }
+    pool.wait_stop();
+    for (std::size_t i = 0; i < tsize; i++) {
+      error_if(!tasks[i].ready());
+      error_if(!cancelled[i]);
+    }
+  }
+
+  return error_count;
+}
+
 int main() {
   size_t ec = 0;
   ec += test_latch();
   ec += test_thread_pool();
   ec += test_latch_waiters();
+  ec += test_request_stop();
   return ec;
 }
 #ifdef _WIN32

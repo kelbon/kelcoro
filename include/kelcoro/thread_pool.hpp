@@ -19,13 +19,14 @@ static void cancel_tasks(task_node* top) noexcept {
   // assume after getting 'cancelled' status task do not produce new task
   while (top) {
     // if this task is the final one, then the work must be completed.
-    if (top->is_deadpill()) {
-      continue;
+    // after resume top deleted
+    auto next = top->next;
+    if (!top->is_deadpill()) {
+      std::coroutine_handle task = top->task;
+      top->status = schedule_errc::cancelled;
+      top->task.resume();
     }
-    std::coroutine_handle task = top->task;
-    top->status = schedule_errc::cancelled;
-    top = top->next;
-    task.resume();
+    top = next;
   }
 }
 
@@ -49,12 +50,18 @@ struct task_queue {
   // precondition: node != nullptr && node is not contained in queue
   void push(task_node* node) {
     node->next = nullptr;
+    push_list(node, node);
+  }
+
+  void push_list(task_node* first_, task_node* last_) {
+    assert(first_ && last_);
     std::lock_guard l{mtx};
     if (first) {
-      last->next = node;
-      last = node;
+      last->next = first_;
+      last = last_;
     } else {
-      first = last = node;
+      first = first_;
+      last = last_;
       // notify under lock, because of loop in 'pop_all_not_empty'
       // while (!first) |..missed notify..| wait
       // this may block worker thread forever if no one notify after that
@@ -62,26 +69,15 @@ struct task_queue {
     }
   }
 
-  void push_list(task_node* node) {
-    if (!node) {
+  void push_list(task_node* first_) {
+    if (!first_) {
       return;
     }
-    auto last_list = node;
-    while (last_list->next) {
-      last_list = last_list->next;
+    auto last_ = first_;
+    while (last_->next) {
+      last_ = last_->next;
     }
-    std::lock_guard l{mtx};
-    if (first) {
-      last->next = node;
-      last = last_list;
-    } else {
-      first = node;
-      last = last_list;
-      // notify under lock, because of loop in 'pop_all_not_empty'
-      // while (!first) |..missed notify..| wait
-      // this may block worker thread forever if no one notify after that
-      not_empty.notify_one();
-    }
+    push_list(first_, last_);
   }
 
   [[nodiscard]] task_node* pop_all() {
@@ -123,16 +119,19 @@ namespace noexport {
 // in a chain, so that the deadpill is definitely alive.
 struct deadpill_pusher {
   task_queue& queue;
-  task_node this_node;
+
+  // put deadpill on this awater and push them together.
   task_node pill = task_node::deadpill();
+  task_node this_node;
 
   static bool await_ready() noexcept {
     return false;
   }
   void await_suspend(std::coroutine_handle<> handle) {
-    this_node.task = handle;
     pill.next = &this_node;
-    queue.push_list(&pill);
+    this_node.task = handle;
+    // avoiding race between tasks
+    queue.push_list(&pill, &this_node);
   }
   void await_resume() noexcept {
     assert(this_node.status == schedule_errc::cancelled);
@@ -173,6 +172,9 @@ struct worker {
   friend struct thread_pool;
 
  public:
+  // the function must process the queue, pop tasks from it,
+  // and also be able to process task_node::deadpill
+  // for example: default_worker_job
   using job_t = void (&)(task_queue&);
 
   worker(job_t job = default_worker_job) : queue(), thread(job, std::ref(queue)) {
@@ -272,7 +274,6 @@ struct thread_pool {
   void operator=(thread_pool&&) = delete;
 
   // use co_await jump_on(pool) to schedule coroutine
-
   void attach(task_node* node) noexcept {
     worker& w = select_worker(calculate_operation_hash(node->task));
     w.attach(node);
@@ -320,6 +321,9 @@ struct thread_pool {
     }
   }
 
+  // NOTE: can't be called from workers
+  // NOTE: can't be called more than once
+  // Wait for the job to complete (after calling `request_stop`)
   void wait_stop() {
     assert(!is_worker());
     for (auto& w : workers) {
