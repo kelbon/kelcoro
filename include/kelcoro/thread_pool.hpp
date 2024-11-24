@@ -20,13 +20,12 @@ static void cancel_tasks(task_node* top) noexcept {
   while (top) {
     // if this task is the final one, then the work must be completed.
     // after resume top deleted
-    auto next = top->next;
-    if (!top->is_deadpill()) {
-      std::coroutine_handle task = top->task;
-      top->status = schedule_errc::cancelled;
-      top->task.resume();
+    std::coroutine_handle task = top->task;
+    top->status = schedule_errc::cancelled;
+    top = top->next;
+    if (task) {
+      task.resume();
     }
-    top = next;
   }
 }
 
@@ -53,6 +52,7 @@ struct task_queue {
     push_list(node, node);
   }
 
+  // attach a whole linked list
   void push_list(task_node* first_, task_node* last_) {
     assert(first_ && last_);
     std::lock_guard l{mtx};
