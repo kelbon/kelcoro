@@ -30,6 +30,7 @@ struct fixed_array {
     std::swap(arr, rhs.arr);
     std::swap(n, rhs.n);
     std::swap(resourse, rhs.resourse);
+    return *this;
   }
   fixed_array(size_t n, std::pmr::memory_resource& resource = *std::pmr::new_delete_resource())
       : fixed_array(n, default_factory(), resource) {
