@@ -249,8 +249,10 @@ struct thread_pool {
   }
 
   explicit thread_pool(size_t thread_count = default_thread_count(),
-                       std::pmr::memory_resource& r = *std::pmr::get_default_resource())
-      : workers(std::max<size_t>(1, thread_count), r) {
+                       std::pmr::memory_resource& r = *std::pmr::get_default_resource(),
+                       worker::job_t job = default_worker_job)
+      : workers(
+            std::max<size_t>(1, thread_count), [&](std::size_t) { return worker(job); }, r) {
   }
 
   ~thread_pool() {
