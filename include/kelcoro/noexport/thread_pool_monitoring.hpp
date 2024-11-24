@@ -1,14 +1,14 @@
 #pragma once
 
 #if !defined(NDEBUG) && !defined(KELCORO_DISABLE_MONITORING) && defined(KELCORO_ENABLE_THREADPOOL_MONITORING)
-#define KELCORO_THREADPOOL_MONITORING_IS_ENABLED
+  #define KELCORO_THREADPOOL_MONITORING_IS_ENABLED
 #endif
 
 #ifdef KELCORO_THREADPOOL_MONITORING_IS_ENABLED
 
-#include <vector>
-#include <atomic>
-#include <cassert>
+  #include <vector>
+  #include <atomic>
+  #include <cassert>
 
 namespace dd {
 
@@ -61,14 +61,14 @@ struct monitoring_t {
 // only for debug with access from one thread
 static inline std::vector<monitoring_t> monitorings;
 
-#define KELCORO_MONITORING(...) __VA_ARGS__
-#define KELCORO_MONITORING_INC(x) KELCORO_MONITORING(x.fetch_add(1, ::std::memory_order::relaxed))
+  #define KELCORO_MONITORING(...) __VA_ARGS__
+  #define KELCORO_MONITORING_INC(x) KELCORO_MONITORING(x.fetch_add(1, ::std::memory_order::relaxed))
 
 }  // namespace dd
 
 #else
 
-#define KELCORO_MONITORING(...)
-#define KELCORO_MONITORING_INC(x)
+  #define KELCORO_MONITORING(...)
+  #define KELCORO_MONITORING_INC(x)
 
 #endif  // !KELCORO_ENABLE_THREADPOOL_MONITORING

@@ -39,9 +39,8 @@ TEST(latch) {
     --counter;
   };
   std::vector<dd::async_task<void>> test_tasks;
-  for (int i = 0; i < task_count; ++i) {
+  for (int i = 0; i < task_count; ++i)
     test_tasks.emplace_back(create_test());
-  }
   for (auto& t : test_tasks)
     t.wait();
   error_if(counter != 0);
@@ -137,16 +136,13 @@ TEST(request_stop) {
     auto maker_task = [&](std::size_t idx) -> dd::async_task<void> {
       (void)co_await dd::jump_on(pool);
       request_stop_on[idx] = rand() % 1000 + 1;
-      while (co_await dd::jump_on(pool)) {
-        if (counter.fetch_add(1) >= request_stop_on[idx]) {
+      while (co_await dd::jump_on(pool))
+        if (counter.fetch_add(1) >= request_stop_on[idx])
           pool.request_stop();
-        }
-      }
       cancelled[idx] = true;
     };
-    for (std::size_t i = 0; i < tsize; i++) {
+    for (std::size_t i = 0; i < tsize; i++)
       tasks.push_back(maker_task(i));
-    }
     std::move(pool).wait_stop();
     for (std::size_t i = 0; i < tsize; i++) {
       error_if(!tasks[i].ready());

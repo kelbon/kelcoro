@@ -23,9 +23,8 @@ static void cancel_tasks(task_node* top) noexcept {
     std::coroutine_handle task = top->task;
     top->status = schedule_errc::cancelled;
     top = top->next;
-    if (task) {
+    if (task)
       task.resume();
-    }
   }
 }
 
@@ -70,13 +69,11 @@ struct task_queue {
   }
 
   void push_list(task_node* first_) {
-    if (!first_) {
+    if (!first_)
       return;
-    }
     auto last_ = first_;
-    while (last_->next) {
+    while (last_->next)
       last_ = last_->next;
-    }
     push_list(first_, last_);
   }
 
@@ -265,9 +262,8 @@ struct thread_pool {
         w.thread.join();
       }
     }
-    for (auto& w : workers) {
+    for (auto& w : workers)
       noexport::cancel_tasks(w.queue.pop_all());
-    }
   }
 
   thread_pool(thread_pool&&) = delete;
@@ -280,11 +276,9 @@ struct thread_pool {
   }
 
   [[nodiscard]] bool is_worker(std::thread::id id = std::this_thread::get_id()) {
-    for (worker& w : workers) {
-      if (w.thread.get_id() == id) {
+    for (worker& w : workers)
+      if (w.thread.get_id() == id)
         return true;
-      }
-    }
     return false;
   }
 
@@ -316,9 +310,8 @@ struct thread_pool {
   }
 
   void request_stop() {
-    for (auto& w : workers) {
+    for (auto& w : workers)
       noexport::push_deadpill(w.queue);
-    }
   }
 
   // NOTE: can't be called from workers
@@ -326,14 +319,11 @@ struct thread_pool {
   // Wait for the job to complete (after calling `request_stop`)
   void wait_stop() && {
     assert(!is_worker());
-    for (auto& w : workers) {
-      if (w.thread.joinable()) {
+    for (auto& w : workers)
+      if (w.thread.joinable())
         w.thread.join();
-      }
-    }
-    for (auto& w : workers) {
+    for (auto& w : workers)
       noexport::cancel_tasks(w.queue.pop_all());
-    }
   }
 };
 
