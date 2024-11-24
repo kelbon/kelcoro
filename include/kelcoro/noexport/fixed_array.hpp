@@ -67,7 +67,7 @@ struct fixed_array {
   void reset() noexcept {
     if (!arr)
       return;
-    // If someone somehow thought of calling reset on array in their destructor
+    // avoid double destroy if element destructor calls reset again
     auto moved = std::move(*this);
     std::destroy_n(moved.arr, moved.n);
     // assume noexcept
