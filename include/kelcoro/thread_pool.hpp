@@ -136,7 +136,7 @@ struct deadpill_pusher {
 };
 
 inline dd::job push_deadpill(task_queue& queue) {
-  co_await deadpill_pusher(queue);
+  co_await deadpill_pusher{queue};
 }
 
 }  // namespace noexport
@@ -255,6 +255,9 @@ struct thread_pool {
   }
 
   ~thread_pool() {
+    // You can't just reset it because the queue is inside the worker,
+    // and in that case, while the stop was
+    // going on, someone could push into the dead queue.
     task_node pill = task_node::deadpill();
     for (auto& w : workers) {
       if (w.thread.joinable()) {
