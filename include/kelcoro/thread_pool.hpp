@@ -309,6 +309,7 @@ struct thread_pool {
     return *resource;
   }
 
+  // can be called as many times as you want from any threads
   void request_stop() {
     for (auto& w : workers)
       noexport::push_deadpill(w.queue);
