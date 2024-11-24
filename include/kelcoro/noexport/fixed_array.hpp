@@ -49,6 +49,11 @@ struct fixed_array {
     fail = false;
   }
 
+  std::pmr::memory_resource* get_resource() const {
+    assert(resourse);
+    return resourse;
+  }
+
   T* data() {
     return &arr[0];
   }

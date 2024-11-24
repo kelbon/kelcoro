@@ -241,7 +241,6 @@ struct strand {
 struct thread_pool {
  private:
   noexport::fixed_array<worker> workers;  // invariant: size > 0
-  std::pmr::memory_resource* resource;    // invariant: != 0
 
  public:
   static size_t default_thread_count() {
@@ -251,7 +250,7 @@ struct thread_pool {
 
   explicit thread_pool(size_t thread_count = default_thread_count(),
                        std::pmr::memory_resource& r = *std::pmr::get_default_resource())
-      : workers(std::max<size_t>(1, thread_count), r), resource(&r) {
+      : workers(std::max<size_t>(1, thread_count), r) {
   }
 
   ~thread_pool() {
@@ -288,7 +287,7 @@ struct thread_pool {
   // same as schedule_to(pool), but uses pool memory resource to allocate tasks
   void schedule(std::invocable auto&& foo, operation_hash_t hash) {
     worker& w = select_worker(hash);
-    schedule_to(w, std::forward<decltype(foo)>(foo), with_resource{*resource});
+    schedule_to(w, std::forward<decltype(foo)>(foo), with_resource{*workers.get_resource()});
   }
   void schedule(std::invocable auto&& foo) {
     schedule(std::forward<decltype(foo)>(foo), calculate_operation_hash(foo));
@@ -308,8 +307,7 @@ struct thread_pool {
     return workers[op_hash % workers.size()];
   }
   std::pmr::memory_resource& get_resource() const noexcept {
-    assert(resource);
-    return *resource;
+    return *workers.get_resource();
   }
 
   // can be called as many times as you want from any threads
