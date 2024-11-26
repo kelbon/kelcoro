@@ -293,7 +293,7 @@ struct thread_pool {
   }
 
   KELCORO_PURE std::span<std::thread> workers_range() noexcept KELCORO_LIFETIMEBOUND {
-    return std::span(threads);
+    return std::span(threads.data(), threads.size());
   }
   KELCORO_PURE std::span<const std::thread> workers_range() const noexcept KELCORO_LIFETIMEBOUND {
     return std::span(threads.data(), threads.size());
