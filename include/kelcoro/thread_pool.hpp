@@ -169,9 +169,15 @@ struct worker {
   friend struct thread_pool;
 
  public:
-  // the function must process the queue, pop tasks from it,
-  // and also be able to process task_node::deadpill
-  // for example: default_worker_job
+  /*
+  The function must execute tasks from queue until got `task_node::deadpill`
+
+  and cancel all pending tasks after.
+
+  Cancel task == (resume with status `schedule_errc::cancelled`).
+
+  Example impl: `default_worker_job`.
+  */
   using job_t = void (*)(task_queue&);
 
   worker(job_t job = default_worker_job) : queue(), thread(job, std::ref(queue)) {
