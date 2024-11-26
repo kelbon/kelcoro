@@ -1,6 +1,7 @@
 #pragma once
 
 #include <coroutine>
+#include <memory>
 
 #include "noexport/macro.hpp"
 

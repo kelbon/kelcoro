@@ -1,10 +1,13 @@
 #include "kelcoro/async_task.hpp"
+#include "kelcoro/common.hpp"
 #include "kelcoro/task.hpp"
 #include "kelcoro/thread_pool.hpp"
 #include "kelcoro/latch.hpp"
 
+#include <atomic>
+#include <cstdlib>
 #include <latch>
-#include <iostream>
+#include <random>
 #include <string>
 
 static_assert(dd::executor<dd::any_executor_ref> && dd::executor<dd::strand> &&
@@ -37,9 +40,8 @@ TEST(latch) {
     --counter;
   };
   std::vector<dd::async_task<void>> test_tasks;
-  for (int i = 0; i < task_count; ++i) {
+  for (int i = 0; i < task_count; ++i)
     test_tasks.emplace_back(create_test());
-  }
   for (auto& t : test_tasks)
     t.wait();
   error_if(counter != 0);
@@ -69,9 +71,9 @@ TEST(thread_pool) {
   dd::latch start(COUNT, p);
   std::span workers = p.workers_range();
   for (int i = 0; i < workers.size(); ++i) {
-    (void)pin_thread_to_cpu_core(workers[i].get_thread(), i);
+    (void)pin_thread_to_cpu_core(workers[i], i);
     std::string name = "number " + std::to_string(i);
-    (void)set_thread_name(workers[i].get_thread(), name.c_str());
+    (void)set_thread_name(workers[i], name.c_str());
   }
   for (int ind = 0; ind < COUNT; ++ind) {
     foo(p, start, i, l);
@@ -123,17 +125,50 @@ TEST(latch_waiters) {
   return error_count;
 }
 
+TEST(request_stop) {
+  auto tsize = dd::thread_pool::default_thread_count();
+  thread_local std::minstd_rand rand(42);
+  for (size_t i = 0; i <= 1000; i++) {
+    dd::thread_pool pool;
+    std::vector<dd::async_task<void>> tasks;
+    std::atomic_int counter{0};
+    std::vector<std::atomic_bool> cancelled(tsize);
+    std::vector<std::atomic_int> request_stop_on(tsize);
+
+    for (auto& i : request_stop_on)
+      i.store(RAND_MAX);
+    auto maker_task = [&](size_t idx) -> dd::async_task<void> {
+      auto distr = std::uniform_int_distribution<size_t>(0, i);
+      request_stop_on[idx] = distr(rand);
+      while (co_await dd::jump_on(pool))
+        if (counter.fetch_add(1) >= request_stop_on[idx])
+          pool.request_stop();
+      cancelled[idx] = true;
+    };
+    for (size_t i = 0; i < tsize; i++)
+      tasks.push_back(maker_task(i));
+    std::move(pool).wait_stop();
+    for (size_t i = 0; i < tsize; i++) {
+      error_if(!tasks[i].ready());
+      error_if(!cancelled[i]);
+    }
+  }
+
+  return error_count;
+}
+
 int main() {
   size_t ec = 0;
   ec += test_latch();
   ec += test_thread_pool();
   ec += test_latch_waiters();
+  ec += test_request_stop();
   return ec;
 }
 #ifdef _WIN32
-#include <windows.h>
+  #include <windows.h>
 #elif defined(__unix__)
-#include <pthread.h>
+  #include <pthread.h>
 #else
 #endif
 

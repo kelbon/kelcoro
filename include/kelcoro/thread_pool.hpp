@@ -1,29 +1,32 @@
 #pragma once
 
+#include <memory_resource>
 #include <span>
 #include <mutex>
 #include <condition_variable>
 
 #include "job.hpp"
 #include "executor_interface.hpp"
+#include "kelcoro/common.hpp"
+#include "memory_support.hpp"
+#include "noexport/fixed_array.hpp"
+#include "noexport/macro.hpp"
 #include "noexport/thread_pool_monitoring.hpp"
-#include "common.hpp"
 
 namespace dd::noexport {
 
-static auto cancel_tasks(task_node* top) noexcept {
+static void cancel_tasks(task_node* top) noexcept {
   // set status and invoke tasks once,
-  // assume after getting 'cancelled' status task do not produce new tasks
-  KELCORO_MONITORING(size_t count = 0;)
+  // assume after getting 'cancelled' status task do not produce new task
   while (top) {
+    // if this task is the final one, then the work must be completed.
+    // after resume top deleted
     std::coroutine_handle task = top->task;
-    assert(task && "dead pill must be consumed by worker");
     top->status = schedule_errc::cancelled;
     top = top->next;
-    task.resume();
-    KELCORO_MONITORING(++count);
+    if (task)
+      task.resume();
   }
-  KELCORO_MONITORING(return count);
 }
 
 }  // namespace dd::noexport
@@ -46,17 +49,33 @@ struct task_queue {
   // precondition: node != nullptr && node is not contained in queue
   void push(task_node* node) {
     node->next = nullptr;
+    push_list(node, node);
+  }
+
+  // attach a whole linked list
+  void push_list(task_node* first_, task_node* last_) {
+    assert(first_ && last_);
     std::lock_guard l{mtx};
     if (first) {
-      last->next = node;
-      last = node;
+      last->next = first_;
+      last = last_;
     } else {
-      first = last = node;
+      first = first_;
+      last = last_;
       // notify under lock, because of loop in 'pop_all_not_empty'
       // while (!first) |..missed notify..| wait
       // this may block worker thread forever if no one notify after that
       not_empty.notify_one();
     }
+  }
+
+  void push_list(task_node* first_) {
+    if (!first_)
+      return;
+    auto last_ = first_;
+    while (last_->next)
+      last_ = last_->next;
+    push_list(first_, last_);
   }
 
   [[nodiscard]] task_node* pop_all() {
@@ -81,7 +100,47 @@ struct task_queue {
     assert(!!nodes);
     return nodes;
   }
+
+  // precondition: node && node->task
+  // executor interface
+  void attach(task_node* node) noexcept {
+    assert(node && node->task);
+    push(node);
+  }
 };
+
+static_assert(executor<task_queue>);
+
+namespace noexport {
+
+// We push the deadpill, and behind it ourselves,
+// in a chain, so that the deadpill is definitely alive.
+struct deadpill_pusher {
+  task_queue& queue;
+
+  // put deadpill on this awater and push them together.
+  task_node pill = task_node::deadpill();
+  task_node this_node;
+
+  static bool await_ready() noexcept {
+    return false;
+  }
+  void await_suspend(std::coroutine_handle<> handle) {
+    pill.next = &this_node;
+    this_node.task = handle;
+    // avoiding race between tasks
+    queue.push_list(&pill, &this_node);
+  }
+  void await_resume() noexcept {
+    assert(this_node.status == schedule_errc::cancelled);
+  }
+};
+
+inline dd::job push_deadpill(task_queue& queue) {
+  co_await deadpill_pusher{queue};
+}
+
+}  // namespace noexport
 
 // schedules execution of 'foo' to executor 'e'
 [[maybe_unused]] job schedule_to(auto& e KELCORO_LIFETIMEBOUND, auto foo) {
@@ -96,42 +155,54 @@ template <memory_resource R>
     co_return;
   foo();
 }
+
+void default_worker_job(task_queue& queue) noexcept;
+
 // executes tasks on one thread, not movable
 // expensive to create
 struct worker {
  private:
   task_queue queue;
-  KELCORO_MONITORING(monitoring_t mon);
   std::thread thread;
 
   friend struct strand;
   friend struct thread_pool;
-  static void worker_job(worker* w) noexcept;
 
  public:
-  worker() : queue(), thread(&worker_job, this) {
+  /*
+  The function must execute tasks from queue until got `task_node::deadpill`
+
+  and cancel all pending tasks after.
+
+  Cancel task == (resume with status `schedule_errc::cancelled`).
+
+  Example impl: `default_worker_job`.
+  */
+  using job_t = void (*)(task_queue&);
+
+  worker(job_t job = default_worker_job) : queue(), thread(job, std::ref(queue)) {
   }
   worker(worker&&) = delete;
   void operator=(worker&&) = delete;
 
   ~worker() {
-    if (!thread.joinable())
+    if (!thread.joinable()) {
+      noexport::cancel_tasks(queue.pop_all());
       return;
-    task_node pill{.next = nullptr, .task = nullptr};
+    }
+    auto pill = task_node::deadpill();
     queue.push(&pill);
     thread.join();
     noexport::cancel_tasks(queue.pop_all());
   }
   // use co_await jump_on(worker) to schedule coroutine
 
-  // precondition: node && node->task && node.status == ok
+  // precondition: node && node->task
+  // executor interface
   void attach(task_node* node) noexcept {
-    assert(node && node->task && node->status == schedule_errc::ok);
+    assert(node && node->task);
     queue.push(node);
-    KELCORO_MONITORING_INC(mon.pushed);
   }
-
-  KELCORO_MONITORING(const monitoring_t& get_moniroting() const noexcept { return mon; })
 
   std::thread::id get_id() const noexcept {
     return thread.get_id();
@@ -152,19 +223,20 @@ struct worker {
 struct strand {
  private:
   // invariant: != nullptr, ptr for trivial copy/move
-  worker* w = nullptr;
+  task_queue* q = nullptr;
 
  public:
-  explicit strand(worker& wo KELCORO_LIFETIMEBOUND) : w(&wo) {
-    KELCORO_MONITORING_INC(w->mon.strands_count);
+  explicit strand(worker& wo KELCORO_LIFETIMEBOUND) : q(&wo.queue) {
+  }
+  explicit strand(task_queue& qu KELCORO_LIFETIMEBOUND) : q(&qu) {
   }
   // use co_await jump_on(strand) to schedule coroutine
 
   void attach(task_node* node) const noexcept {
-    w->attach(node);
+    q->attach(node);
   }
-  worker& get_worker() const noexcept {
-    return *w;
+  task_queue& get_queue() const noexcept {
+    return *q;
   }
 };
 
@@ -173,71 +245,109 @@ struct strand {
 // note: when thread pool dies, all pending tasks invoked with schedule_errc::cancelled
 struct thread_pool {
  private:
-  worker* workers;                      // invariant: != 0
-  size_t workers_size;                  // invariant: > 0
-  std::pmr::memory_resource* resource;  // invariant: != 0
-
+  noexport::fixed_array<task_queue> queues;    // invariant: queues.size() == threads.size()
+  noexport::fixed_array<std::thread> threads;  // invariant: size > 0
  public:
   static size_t default_thread_count() {
     unsigned c = std::thread::hardware_concurrency();
     return c < 2 ? 1 : c - 1;
   }
 
-  explicit thread_pool(size_t thread_count = default_thread_count(),
-                       std::pmr::memory_resource* r = std::pmr::get_default_resource());
+  explicit thread_pool(size_t thread_count = default_thread_count(), worker::job_t job = default_worker_job,
+                       std::pmr::memory_resource& r = *std::pmr::get_default_resource())
+      : queues(std::max<size_t>(1, thread_count), r), threads(std::max<size_t>(1, thread_count), r) {
+    bool failed = true;
+
+    scope_exit _{[&]() {
+      if (!failed)
+        return;
+      task_node pill = task_node::deadpill();
+      for (size_t i = 0; i < threads.size(); i++) {
+        if (!threads[i].joinable())
+          break;
+        queues[i].push(&pill);
+        threads[i].join();
+      }
+    }};
+    for (size_t i = 0; i < threads.size(); i++)
+      threads[i] = std::thread(job, std::ref(queues[i]));
+    failed = false;
+  }
 
   ~thread_pool() {
-    // if destructor started, then it is undefined behavior to push tasks
-    // because its data race (between destruction and accessing to 'this' for scheduling new task)
-    //
-    // But there is special case - workers, which may invoke task, which schedules next task
-    // in this case, .stop waits for workers consume dead pill, grab all operations from all queues
-    // and cancel them (resume with special errc)
-    // So, no one pushes and all what was pushed by tasks executed on workers is cancelled,
-    // no memory leak, profit!
-    stop(workers, workers_size);
+    // You can't just reset it because the queue is inside the worker,
+    // and in that case, while the stop was
+    // going on, someone could push into the dead queue.
+    task_node pill = task_node::deadpill();
+    for (size_t i = 0; i < threads.size(); i++) {
+      if (threads[i].joinable()) {
+        queues[i].push(&pill);
+        threads[i].join();
+      }
+    }
+    for (auto& q : queues)
+      noexport::cancel_tasks(q.pop_all());
   }
 
   thread_pool(thread_pool&&) = delete;
   void operator=(thread_pool&&) = delete;
 
   // use co_await jump_on(pool) to schedule coroutine
-
   void attach(task_node* node) noexcept {
-    worker& w = select_worker(calculate_operation_hash(node->task));
-    w.attach(node);
+    task_queue& q = select_queue(calculate_operation_hash(node->task));
+    q.attach(node);
+  }
+
+  [[nodiscard]] bool is_worker(std::thread::id id = std::this_thread::get_id()) {
+    for (auto& t : threads)
+      if (t.get_id() == id)
+        return true;
+    return false;
   }
 
   // same as schedule_to(pool), but uses pool memory resource to allocate tasks
   void schedule(std::invocable auto&& foo, operation_hash_t hash) {
-    worker& w = select_worker(hash);
-    schedule_to(w, std::forward<decltype(foo)>(foo), with_resource{*resource});
+    task_queue& w = select_queue(hash);
+    schedule_to(w, std::forward<decltype(foo)>(foo), with_resource{*queues.get_resource()});
   }
   void schedule(std::invocable auto&& foo) {
     schedule(std::forward<decltype(foo)>(foo), calculate_operation_hash(foo));
   }
 
-  KELCORO_PURE std::span<worker> workers_range() noexcept KELCORO_LIFETIMEBOUND {
-    return std::span(workers, workers_size);
+  KELCORO_PURE std::span<std::thread> workers_range() noexcept KELCORO_LIFETIMEBOUND {
+    return std::span(threads.data(), threads.size());
   }
-  KELCORO_PURE std::span<const worker> workers_range() const noexcept KELCORO_LIFETIMEBOUND {
-    return std::span(workers, workers_size);
+  KELCORO_PURE std::span<const std::thread> workers_range() const noexcept KELCORO_LIFETIMEBOUND {
+    return std::span(threads.data(), threads.size());
   }
 
   strand get_strand(operation_hash_t op_hash) KELCORO_LIFETIMEBOUND {
-    return strand(select_worker(op_hash));
+    return strand(select_queue(op_hash));
   }
-  worker& select_worker(operation_hash_t op_hash) noexcept KELCORO_LIFETIMEBOUND {
-    return workers[op_hash % workers_size];
+  task_queue& select_queue(operation_hash_t op_hash) noexcept KELCORO_LIFETIMEBOUND {
+    return queues[op_hash % queues.size()];
   }
   std::pmr::memory_resource& get_resource() const noexcept {
-    assert(resource);
-    return *resource;
+    return *queues.get_resource();
   }
 
- private:
-  // should be called exactly once
-  void stop(worker* w, size_t count) noexcept;
+  // can be called as many times as you want from any threads
+  void request_stop() {
+    for (auto& q : queues)
+      noexport::push_deadpill(q);
+  }
+
+  // NOTE: can't be called from workers
+  // NOTE: can't be called more than once
+  // Wait for the job to complete (after calling `request_stop`)
+  void wait_stop() && {
+    assert(!is_worker());
+    for (auto& t : threads)
+      if (t.joinable())
+        t.join();
+    for (auto& q : queues)
+      noexport::cancel_tasks(q.pop_all());
+  }
 };
 
 // specialization for thread pool uses hash to maximize parallel execution
@@ -245,7 +355,7 @@ inline void attach_list(thread_pool& e, task_node* top) {
   operation_hash_t hash = noexport::do_hash(top);
   while (top) {
     task_node* next = top->next;
-    e.select_worker(hash).attach(top);
+    e.select_queue(hash).attach(top);
     ++hash;
     top = next;
   }
@@ -264,23 +374,20 @@ struct jump_on_thread_pool : private create_node_and_attach<thread_pool> {
   void await_suspend(std::coroutine_handle<P> handle) noexcept {
     // set task before it is attached
     task = handle;
-    worker& w = e.select_worker(calculate_operation_hash(task));
-    w.attach(this);
+    task_queue& q = e.select_queue(calculate_operation_hash(task));
+    q.attach(this);
   }
 };
 
-KELCORO_CO_AWAIT_REQUIRED inline co_awaiter auto jump_on(thread_pool& tp KELCORO_LIFETIMEBOUND) noexcept {
+KELCORO_CO_AWAIT_REQUIRED inline jump_on_thread_pool jump_on(thread_pool& tp KELCORO_LIFETIMEBOUND) noexcept {
   return jump_on_thread_pool(tp);
 }
 
-inline void worker::worker_job(worker* w) noexcept {
-  assert(w);
+inline void default_worker_job(task_queue& queue) noexcept {
   task_node* top;
   std::coroutine_handle task;
-  task_queue* queue = &w->queue;
   for (;;) {
-    top = queue->pop_all_not_empty();
-    KELCORO_MONITORING_INC(w->mon.pop_count);
+    top = queue.pop_all_not_empty();
     assert(top);
     do {
       // grab task from memory which will be invalidated after task.resume()
@@ -291,52 +398,11 @@ inline void worker::worker_job(worker* w) noexcept {
         goto work_end;  // dead pill
       // if exception thrown, std::terminate called
       task.resume();
-      KELCORO_MONITORING_INC(w->mon.finished);
     } while (top);
   }
 work_end:
   // after this point .stop in thread pool cancels all pending tasks in queues for all workers
-  KELCORO_MONITORING(w->mon.cancelled +=) noexport::cancel_tasks(top);
-}
-
-inline thread_pool::thread_pool(size_t thread_count, std::pmr::memory_resource* r) {
-  resource = r ? r : std::pmr::new_delete_resource();
-  workers_size = std::max<size_t>(1, thread_count);
-  workers = (worker*)r->allocate(sizeof(worker) * workers_size, alignof(worker));
-
-  bool exception = true;
-  size_t i = 0;
-  scope_exit _([&] {
-    if (exception)
-      stop(workers, i);
-  });
-  for (; i < workers_size; ++i) {
-    worker* ptr = &workers[i];
-    new (ptr) worker;
-  }
-  exception = false;
-}
-
-inline void thread_pool::stop(worker* w, size_t count) noexcept {
-  task_node pill{.next = nullptr, .task = nullptr};
-  std::span workers(w, count);
-  for (auto& w : workers)
-    w.queue.push(&pill);
-  for (auto& w : workers) {
-    assert(w.thread.joinable());
-    w.thread.join();
-  }
-  // here all workers stopped, cancel tasks
-  for (auto& w : workers) {
-    KELCORO_MONITORING(w.mon.cancelled +=) noexport::cancel_tasks(w.queue.pop_all());
-  }
-#ifdef KELCORO_ENABLE_THREADPOOL_MONITORING
-  monitorings.clear();
-  for (auto& w : workers)
-    monitorings.emplace_back(w.get_moniroting());
-#endif
-  std::destroy(begin(workers), end(workers));
-  resource->deallocate(this->workers, sizeof(worker) * workers_size, alignof(worker));
+  noexport::cancel_tasks(top);
 }
 
 }  // namespace dd
