@@ -101,7 +101,7 @@ struct task_queue {
     return nodes;
   }
 
-  // precondition: node && node->task && node.status == ok
+  // precondition: node && node->task
   // executor interface
   void attach(task_node* node) noexcept {
     assert(node && node->task);
@@ -191,7 +191,8 @@ struct worker {
   }
   // use co_await jump_on(worker) to schedule coroutine
 
-  // precondition: node && node->task && node.status == ok
+  // precondition: node && node->task
+  // executor interface
   void attach(task_node* node) noexcept {
     assert(node && node->task);
     queue.push(node);
