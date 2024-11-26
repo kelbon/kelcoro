@@ -19,9 +19,6 @@ struct fixed_array {
 
  public:
   static_assert(std::is_same_v<T, std::decay_t<T>>);
-  static auto default_factory() {
-    return [](size_t) { return T{}; };
-  }
   fixed_array() = default;
   fixed_array(fixed_array&& rhs) noexcept {
     *this = std::move(rhs);
@@ -32,24 +29,9 @@ struct fixed_array {
     std::swap(resourse, rhs.resourse);
     return *this;
   }
-  fixed_array(size_t n, std::pmr::memory_resource& resource = *std::pmr::new_delete_resource())
-      : fixed_array(n, default_factory(), resource) {
-  }
-  fixed_array(size_t n, std::invocable<size_t> auto&& factory,
-              std::pmr::memory_resource& resource = *std::pmr::new_delete_resource()) noexcept
-      : n(n), resourse(&resource) {
+  fixed_array(size_t n, std::pmr::memory_resource& resource = *std::pmr::new_delete_resource()) : n(n) {
     arr = (T*)resource.allocate(sizeof(T) * n, alignof(T));
-    size_t constructed = 0;
-    bool fail = true;
-    scope_exit _{[&] {
-      if (fail) {
-        std::destroy_n(arr, constructed);
-        resourse->deallocate(arr, sizeof(T) * n, alignof(T));
-      }
-    }};
-    for (; constructed < n; constructed++)
-      new (arr + constructed) T(factory(constructed));
-    fail = false;
+    std::uninitialized_default_construct_n(arr, n);
   }
 
   std::pmr::memory_resource* get_resource() const {
@@ -63,18 +45,6 @@ struct fixed_array {
 
   T* data() const {
     return arr;
-  }
-
-  void reset() noexcept {
-    if (!arr)
-      return;
-    // avoid double destroy if element destructor calls reset again
-    auto moved = std::move(*this);
-    std::destroy_n(moved.arr, moved.n);
-    // assume noexcept
-    moved.resourse->deallocate(moved.arr, sizeof(T) * moved.n, alignof(T));
-    moved.arr = nullptr;
-    moved.n = 0;
   }
 
   size_t size() const noexcept {
@@ -110,7 +80,9 @@ struct fixed_array {
   }
 
   ~fixed_array() {
-    reset();
+    std::destroy_n(arr, n);
+    // assume noexcept
+    resourse->deallocate(arr, sizeof(T) * n, alignof(T));
   }
 };
 
