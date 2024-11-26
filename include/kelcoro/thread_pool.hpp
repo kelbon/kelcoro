@@ -7,6 +7,7 @@
 
 #include "job.hpp"
 #include "executor_interface.hpp"
+#include "kelcoro/common.hpp"
 #include "memory_support.hpp"
 #include "noexport/fixed_array.hpp"
 #include "noexport/macro.hpp"
@@ -248,8 +249,22 @@ struct thread_pool {
   explicit thread_pool(size_t thread_count = default_thread_count(), worker::job_t job = default_worker_job,
                        std::pmr::memory_resource& r = *std::pmr::get_default_resource())
       : queues(std::max<size_t>(1, thread_count), r), threads(std::max<size_t>(1, thread_count), r) {
+    bool failed = true;
+
+    scope_exit _{[&]() {
+      if (!failed)
+        return;
+      task_node pill = task_node::deadpill();
+      for (size_t i = 0; i < threads.size(); i++) {
+        if (!threads[i].joinable())
+          break;
+        queues[i].push(&pill);
+        threads[i].join();
+      }
+    }};
     for (size_t i = 0; i < threads.size(); i++)
       threads[i] = std::thread(job, std::ref(queues[i]));
+    failed = false;
   }
 
   ~thread_pool() {
