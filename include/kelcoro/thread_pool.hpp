@@ -5,13 +5,12 @@
 #include <mutex>
 #include <condition_variable>
 
-#include "kelcoro/common.hpp"
-#include "kelcoro/job.hpp"
-#include "kelcoro/executor_interface.hpp"
-#include "kelcoro/memory_support.hpp"
-#include "kelcoro/noexport/fixed_array.hpp"
-#include "kelcoro/noexport/macro.hpp"
-#include "kelcoro/noexport/thread_pool_monitoring.hpp"
+#include "job.hpp"
+#include "executor_interface.hpp"
+#include "memory_support.hpp"
+#include "noexport/fixed_array.hpp"
+#include "noexport/macro.hpp"
+#include "noexport/thread_pool_monitoring.hpp"
 
 namespace dd::noexport {
 
@@ -366,7 +365,7 @@ struct jump_on_thread_pool : private create_node_and_attach<thread_pool> {
   }
 };
 
-KELCORO_CO_AWAIT_REQUIRED inline co_awaiter auto jump_on(thread_pool& tp KELCORO_LIFETIMEBOUND) noexcept {
+KELCORO_CO_AWAIT_REQUIRED inline jump_on_thread_pool jump_on(thread_pool& tp KELCORO_LIFETIMEBOUND) noexcept {
   return jump_on_thread_pool(tp);
 }
 
