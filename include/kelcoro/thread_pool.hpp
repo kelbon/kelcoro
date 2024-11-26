@@ -256,8 +256,6 @@ struct thread_pool {
       : queues(std::max<size_t>(1, thread_count), r), threads(std::max<size_t>(1, thread_count), r) {
     for (size_t i = 0; i < threads.size(); i++)
       threads[i] = std::thread(job, std::ref(queues[i]));
-
-    //[job](size_t) { return worker(default_worker_job); }
   }
 
   ~thread_pool() {
