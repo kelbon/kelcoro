@@ -162,7 +162,6 @@ void default_worker_job(task_queue& queue) noexcept;
 struct worker {
  private:
   task_queue queue;
-  KELCORO_MONITORING(monitoring_t mon);
   std::thread thread;
 
   friend struct strand;
@@ -195,10 +194,7 @@ struct worker {
   void attach(task_node* node) noexcept {
     assert(node && node->task);
     queue.push(node);
-    KELCORO_MONITORING_INC(mon.pushed);
   }
-
-  KELCORO_MONITORING(const monitoring_t& get_moniroting() const noexcept { return mon; })
 
   std::thread::id get_id() const noexcept {
     return thread.get_id();
@@ -223,10 +219,8 @@ struct strand {
 
  public:
   explicit strand(worker& wo KELCORO_LIFETIMEBOUND) : q(&wo.queue) {
-    KELCORO_MONITORING_INC(w->mon.strands_count);
   }
   explicit strand(task_queue& qu KELCORO_LIFETIMEBOUND) : q(&qu) {
-    KELCORO_MONITORING_INC(w->mon.strands_count);
   }
   // use co_await jump_on(strand) to schedule coroutine
 
