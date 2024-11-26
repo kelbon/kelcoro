@@ -103,7 +103,7 @@ struct task_queue {
   // precondition: node && node->task && node.status == ok
   // executor interface
   void attach(task_node* node) noexcept {
-    assert(node && node->task && node->status == schedule_errc::ok);
+    assert(node && node->task);
     push(node);
   }
 };
@@ -193,7 +193,7 @@ struct worker {
 
   // precondition: node && node->task && node.status == ok
   void attach(task_node* node) noexcept {
-    assert(node && node->task && node->status == schedule_errc::ok);
+    assert(node && node->task);
     queue.push(node);
     KELCORO_MONITORING_INC(mon.pushed);
   }
