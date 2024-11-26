@@ -263,8 +263,8 @@ struct thread_pool {
         threads[i].join();
       }
     }
-    for (size_t i = 0; i < threads.size(); i++)
-      noexport::cancel_tasks(queues[i].pop_all());
+    for (auto& q : queues)
+      noexport::cancel_tasks(q.pop_all());
   }
 
   thread_pool(thread_pool&&) = delete;
