@@ -1,12 +1,10 @@
 #pragma once
 
-#include <cstddef>
+#include <cassert>
 #include <memory>
 #include <memory_resource>
 #include <type_traits>
 #include <utility>
-
-#include "kelcoro/common.hpp"
 
 namespace dd::noexport {
 
