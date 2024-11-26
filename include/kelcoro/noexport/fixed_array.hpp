@@ -13,7 +13,7 @@ struct fixed_array {
  private:
   T* arr = nullptr;
   size_t n = 0;
-  std::pmr::memory_resource* resourse = std::pmr::new_delete_resource();
+  std::pmr::memory_resource* resource = std::pmr::new_delete_resource();
 
  public:
   static_assert(std::is_same_v<T, std::decay_t<T>>);
@@ -24,7 +24,7 @@ struct fixed_array {
   fixed_array& operator=(fixed_array&& rhs) noexcept {
     std::swap(arr, rhs.arr);
     std::swap(n, rhs.n);
-    std::swap(resourse, rhs.resourse);
+    std::swap(resource, rhs.resource);
     return *this;
   }
   fixed_array(size_t n, std::pmr::memory_resource& resource = *std::pmr::new_delete_resource()) : n(n) {
@@ -33,8 +33,8 @@ struct fixed_array {
   }
 
   std::pmr::memory_resource* get_resource() const {
-    assert(resourse);
-    return resourse;
+    assert(resource);
+    return resource;
   }
 
   T* data() {
@@ -80,7 +80,7 @@ struct fixed_array {
   ~fixed_array() {
     std::destroy_n(arr, n);
     // assume noexcept
-    resourse->deallocate(arr, sizeof(T) * n, alignof(T));
+    resource->deallocate(arr, sizeof(T) * n, alignof(T));
   }
 };
 
