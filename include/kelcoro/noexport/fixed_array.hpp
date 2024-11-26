@@ -28,6 +28,8 @@ struct fixed_array {
     return *this;
   }
   fixed_array(size_t n, std::pmr::memory_resource& resource = *std::pmr::new_delete_resource()) : n(n) {
+    if (n == 0)
+      return;
     arr = (T*)resource.allocate(sizeof(T) * n, alignof(T));
     std::uninitialized_default_construct_n(arr, n);
   }
@@ -78,9 +80,11 @@ struct fixed_array {
   }
 
   ~fixed_array() {
-    std::destroy_n(arr, n);
-    // assume noexcept
-    resource->deallocate(arr, sizeof(T) * n, alignof(T));
+    if (arr) {
+      std::destroy_n(arr, n);
+      // assume noexcept
+      resource->deallocate(arr, sizeof(T) * n, alignof(T));
+    }
   }
 };
 
