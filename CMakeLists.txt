@@ -21,4 +21,3 @@ if(KELCORO_ENABLE_TESTING)
 	include(CTest)
 	add_subdirectory(tests)
 endif()
-
