@@ -314,11 +314,18 @@ struct thread_pool {
     schedule(std::forward<decltype(foo)>(foo), calculate_operation_hash(foo));
   }
 
-  KELCORO_PURE std::span<std::thread> workers_range() noexcept KELCORO_LIFETIMEBOUND {
+  [[nodiscard]] std::span<std::thread> workers_range() noexcept KELCORO_LIFETIMEBOUND {
     return std::span(threads.data(), threads.size());
   }
-  KELCORO_PURE std::span<const std::thread> workers_range() const noexcept KELCORO_LIFETIMEBOUND {
+  [[nodiscard]] std::span<const std::thread> workers_range() const noexcept KELCORO_LIFETIMEBOUND {
     return std::span(threads.data(), threads.size());
+  }
+
+  [[nodiscard]] std::span<task_queue> queues_range() noexcept KELCORO_LIFETIMEBOUND {
+    return std::span(queues.data(), queues.size());
+  }
+  [[nodiscard]] std::span<const task_queue> queues_range() const noexcept KELCORO_LIFETIMEBOUND {
+    return std::span(queues.data(), queues.size());
   }
 
   strand get_strand(operation_hash_t op_hash) KELCORO_LIFETIMEBOUND {
