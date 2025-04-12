@@ -3,6 +3,7 @@
 #include <atomic>
 #include <memory_resource>
 #include <cassert>
+#include <utility>
 
 #include "noexport/macro.hpp"
 #include "operation_hash.hpp"
