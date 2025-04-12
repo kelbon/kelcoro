@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.05)
 
-set(KELCORO_PARTS coroutines generator thread_pool stack_resource)
+set(KELCORO_PARTS coroutines generator thread_pool stack_resource gate)
 foreach(PART ${KELCORO_PARTS})
   add_executable(${PART} "${CMAKE_CURRENT_SOURCE_DIR}/test_${PART}.cpp")
   target_link_libraries(${PART} PUBLIC kelcorolib)
