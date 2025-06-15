@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.05)
+cmake_minimum_required(VERSION 3.24)
 project(kelcoro LANGUAGES CXX)
 
 option(KELCORO_ENABLE_TESTING "enables testing" OFF)
