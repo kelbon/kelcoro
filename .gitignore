@@ -7,3 +7,4 @@
 /.vscode
 /Testing
 /msvc_build
+compile_commands.json

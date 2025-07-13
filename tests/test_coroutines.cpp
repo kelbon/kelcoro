@@ -193,7 +193,7 @@ TEST(generator) {
   static_assert(std::ranges::input_range<dd::generator<int>>);
   int i = 1;
   dd::generator gen = foo();
-  for (auto value : gen | ::std::views::take(100) | std::views::filter([](auto v) { return v % 2; })) {
+  for (auto value : gen | std::views::take(100) | std::views::filter([](auto v) { return v % 2; })) {
     error_if(value != i);
     i += 2;
   }
@@ -211,9 +211,8 @@ TEST(zip_generator) {
   vec.resize(12, 20);
   std::string sz = "Hello world";
   std::string_view sz_view = sz;
-  for (auto [a, b, c] : zip(vec, sz, sz_view)) {
+  for (auto [a, b, c] : zip(vec, sz, sz_view))
     error_if(a != 20);
-  }
   return error_count;
 }
 
@@ -853,6 +852,23 @@ TEST(detached_task) {
   return error_count;
 }
 
+TEST(expected_e) {
+  using et = dd::expected<int, std::exception_ptr>;
+  et e;
+  error_if(!e);  // default constructed int
+  et e2(5);
+  error_if(!e2 || *e2 != 5);
+  e = e2;
+  error_if(!e2 || !e2 || *e2 != *e || *e2 != 5);
+  dd::expected e3 = std::move(e2);
+  static_assert(std::is_same_v<decltype(e3), et>);  // deduction guide
+  error_if(!e2 || !e3 || *e3 != 5);
+  e2 = std::move(e3);
+  error_if(!e2 || !e3 || *e2 != 5);
+  // moved out state also contains value
+  return error_count;
+}
+
   #define RUN(TEST_NAME)                             \
     {                                                \
       std::cout << "- " << #TEST_NAME << std::flush; \
@@ -907,7 +923,7 @@ int main() {
   auto copy2 = std::as_const(r);
   srand(time(0));
   size_t ec = 0;
-  RUN(generator);
+  RUN(expected_e);
   RUN(generator);
   RUN(zip_generator);
   RUN(logical_thread);
