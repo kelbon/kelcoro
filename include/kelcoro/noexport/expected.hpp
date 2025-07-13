@@ -19,7 +19,7 @@ struct unexpected {
 template <typename T>
 unexpected(T&&) -> unexpected<std::remove_cvref_t<T>>;
 
-// used only as return of when_all etc
+// used only as return of when_all, subset of std::expected for using before C++23
 template <typename T, typename E>
 struct expected {
   struct void_t {};
@@ -28,10 +28,18 @@ struct expected {
 
   expected() = default;
 
-  template <typename U = T>
+  expected(const expected&) = default;
+  expected(expected&&) = default;
+
+  expected& operator=(expected&&) = default;
+  expected& operator=(const expected&) = default;
+
+  template <typename U = std::remove_cv_t<T>>
+    requires(!std::same_as<expected, std::remove_cvref_t<U>> && std::is_constructible_v<T, U &&>)
   expected(U&& arg) : data(std::forward<U>(arg)) {
   }
   template <typename U>
+    requires(std::is_constructible_v<E, U &&>)
   expected(unexpected<U> u) : data(std::move(u.value)) {
   }
 
