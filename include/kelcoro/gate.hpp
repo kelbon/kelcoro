@@ -2,12 +2,15 @@
 
 #include <coroutine>
 #include <cassert>
+#include <exception>
 #include <utility>
 #include <cstddef>
 
 #include <kelcoro/noexport/macro.hpp>
 
 namespace dd {
+
+struct gate_closed_exception : std::exception {};
 
 // Note: all methods should be called from one thread
 struct gate {
@@ -25,6 +28,11 @@ struct gate {
     return true;
   }
 
+  void enter() {
+    if (!try_enter())
+      throw gate_closed_exception{};
+  }
+
   // must be invoked only after invoking 'try_enter'
   void leave() noexcept {
     assert(count != 0);
@@ -33,26 +41,26 @@ struct gate {
       close_waiter.resume();
   }
 
-  struct gate_leave_guard {
+  struct holder {
     gate* g = nullptr;
 
-    gate_leave_guard(gate* g) noexcept : g(g) {
+    holder(gate* g) : g(g) {
+      g->enter();
     }
-    ~gate_leave_guard() {
+    ~holder() {
       if (g)
         g->leave();
     }
-    gate_leave_guard(gate_leave_guard&& other) noexcept : g(std::exchange(other.g, nullptr)) {
+    holder(holder&& other) noexcept : g(std::exchange(other.g, nullptr)) {
     }
-    gate_leave_guard& operator=(gate_leave_guard&& other) noexcept {
+    holder& operator=(holder&& other) noexcept {
       std::swap(other.g, g);
       return *this;
     }
   };
 
-  [[nodiscard]] gate_leave_guard leave_guard() noexcept KELCORO_LIFETIMEBOUND {
-    assert(count != 0);  // avoid leave_guard before first 'try_enter' which may be unsuccessful
-    return gate_leave_guard{this};
+  [[nodiscard]] holder hold() KELCORO_LIFETIMEBOUND {
+    return holder{this};
   }
 
   // now many successfull 'try_enter' calls not finished by 'leave' now

@@ -12,12 +12,11 @@
 inline std::vector<std::coroutine_handle<>> handles;
 
 dd::job gate_user(dd::gate& g) {
-  if (!g.try_enter())
+  if (g.is_closed())
     co_return;
-  auto guard = g.leave_guard();
+  auto guard = g.hold();
   while (!g.is_closed()) {
-    error_if(!g.try_enter());
-    auto guard2 = g.leave_guard();
+    auto guard2 = g.hold();
     co_await dd::suspend_and_t{[](std::coroutine_handle<> h) { handles.push_back(h); }};
   }
 }
