@@ -88,7 +88,10 @@ struct task_promise : return_block<Result> {
   auto get_return_object() {
     return self_handle();
   }
-  void unhandled_exception() noexcept {
+  void unhandled_exception() {
+    // if no one waits, throw exception to last .resume caller
+    if (who_waits == nullptr)
+      throw;
     exception = std::current_exception();
   }
   auto final_suspend() noexcept {

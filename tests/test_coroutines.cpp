@@ -914,6 +914,31 @@ CHECK_ALIGN(500000, 123, 118);
 CHECK_ALIGN(432, 10033, (10033 - 432));
 CHECK_ALIGN(5, 63, (63 - 5));
 
+dd::task<void> throw_smth() {
+  throw 42;
+  co_return;
+}
+
+TEST(task_throw) {
+  auto t = throw_smth();
+  try {
+    t.start_and_detach();
+    error_if(true);
+  } catch (int i) {
+    error_if(i != 42);
+  } catch (...) {
+    error_if(true);
+  }
+  auto t2 = throw_smth();
+  try {
+    auto h = t2.start_and_detach(/*stop_at_end=*/true);
+    error_if(h.promise().exception == nullptr);
+  } catch (...) {
+    error_if(true);
+  }
+  return error_count;
+}
+
 int main() {
   // default constructible for empty typpes
   (void)dd::chunk_from<dd::new_delete_resource>{};
@@ -923,6 +948,7 @@ int main() {
   auto copy2 = std::as_const(r);
   srand(time(0));
   size_t ec = 0;
+  RUN(task_throw);
   RUN(expected_e);
   RUN(generator);
   RUN(zip_generator);
