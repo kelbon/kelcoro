@@ -15,13 +15,10 @@ job job_for_when_all(task<T, Ctx>& child, std::coroutine_handle<OwnerPromise> ow
 
   if (child.raw_handle().promise().exception) [[unlikely]]
     result.data.template emplace<1>(child.raw_handle().promise().exception);
-  else {
-    if constexpr (!std::is_void_v<T>) {
-      result.data.template emplace<0>(child.raw_handle().promise().result());
-    } else {
-      result.data.template emplace<0>();
-    }
-  }
+  else if constexpr (!std::is_void_v<T>)
+    result.data.template emplace<0>(child.raw_handle().promise().result());
+  else
+    result.data.template emplace<0>();
   size_t i = count.fetch_sub(1, std::memory_order_acq_rel);
   if (i == 1)  // im last, now 'count' == 0
     co_await this_coro::destroy_and_transfer_control_to(owner);
@@ -53,10 +50,15 @@ struct when_any_state {
   template <size_t I, typename... Args>
   [[nodiscard]] std::coroutine_handle<> set_result(Args&&... args) {
     static_assert(I != 0);
-    std::lock_guard l(mtx);
+    std::unique_lock l(mtx);
     if (!owner)
       return nullptr;
-    result.template emplace<I>(std::forward<Args>(args)...);
+    try {
+      result.template emplace<I>(std::forward<Args>(args)...);
+    } catch (...) {
+      l.unlock();  // prevent deadlock
+      return set_exception<I>(std::current_exception());
+    }
     return std::exchange(owner, nullptr);
   }
 };
@@ -78,13 +80,75 @@ job job_for_when_any(task<T, Ctx> child, std::weak_ptr<when_any_state<Ts...>> st
   std::coroutine_handle<> owner;
   if (child_promise.exception) [[unlikely]]
     owner = state_s->template set_exception<I>(child_promise.exception);
-  else {
-    if constexpr (!std::is_void_v<T>) {
-      owner = state_s->template set_result<I>(child_promise.result());
-    } else {
-      owner = state_s->template set_result<I>();
-    }
+  else if constexpr (!std::is_void_v<T>)
+    owner = state_s->template set_result<I>(child_promise.result());
+  else
+    owner = state_s->template set_result<I>();
+  if (owner)
+    co_await this_coro::destroy_and_transfer_control_to(owner);
+}
+
+template <typename T>
+struct when_any_state_dyn {
+  std::mutex mtx;
+  std::variant<std::monostate, expected<T, std::exception_ptr>> result;
+  size_t index = size_t(-1);
+  size_t count_waiters = 0;
+  std::coroutine_handle<> owner = nullptr;
+
+  explicit when_any_state_dyn(size_t count_waiters, std::coroutine_handle<> owner) noexcept
+      : count_waiters(count_waiters), owner(owner) {
   }
+
+  // returns owner if called must resume it
+  [[nodiscard]] std::coroutine_handle<> set_exception(size_t I, std::exception_ptr p) noexcept {
+    std::lock_guard l(mtx);
+    if (!owner)  // do not overwrite value, if set_result setted
+      return nullptr;
+    result.template emplace<1>(unexpected(std::move(p)));
+    index = I;
+    --count_waiters;
+    // returns true only if all tasks ended with exception
+    return count_waiters == 0 ? owner : nullptr;
+  }
+  // returns owner if caller must resume it
+  template <typename... Args>
+  [[nodiscard]] std::coroutine_handle<> set_result(size_t I, Args&&... args) {
+    std::unique_lock l(mtx);
+    if (!owner)
+      return nullptr;
+    try {
+      result.template emplace<1>(std::forward<Args>(args)...);
+    } catch (...) {
+      l.unlock();  // prevent deadlock
+      return set_exception(I, std::current_exception());
+    }
+    index = I;
+    return std::exchange(owner, nullptr);
+  }
+};
+
+template <typename T, typename Ctx>
+job job_for_when_any_dyn(task<T, Ctx> child, std::weak_ptr<when_any_state_dyn<T>> state, size_t I) {
+  // stop at entry and give when_any do its preparations
+  co_await std::suspend_always{};
+  if (state.expired()) {
+    // someone sets result while we was starting without awaiting
+    co_return;
+  }
+  // without proxy owner, because real owner may be destroyed while this task is running
+  co_await child.wait();
+  std::shared_ptr state_s = state.lock();
+  if (!state_s)  // no one waits
+    co_return;
+  auto& child_promise = child.raw_handle().promise();
+  std::coroutine_handle<> owner;
+  if (child_promise.exception) [[unlikely]]
+    owner = state_s->set_exception(I, child_promise.exception);
+  else if constexpr (!std::is_void_v<T>)
+    owner = state_s->set_result(I, child_promise.result());
+  else
+    owner = state_s->set_result(I);
   if (owner)
     co_await this_coro::destroy_and_transfer_control_to(owner);
 }
@@ -146,7 +210,7 @@ auto when_any(task<Ts, Ctx>... tasks)
 
   co_await this_coro::suspend_and([&](std::coroutine_handle<>) {
     [&]<size_t... Is>(std::index_sequence<Is...>) {
-      // guard for case when someone destroys 'when_all' while we are starting
+      // guard for case when someone destroys 'when_any' while we are starting
       // (return result and ends coroutine)
       std::weak_ptr guard = state;
       // to stack for case when one of them throws/returns without await and destroys 'when_any' task
@@ -161,7 +225,101 @@ auto when_any(task<Ts, Ctx>... tasks)
   co_return std::move(state->result);
 }
 
-// TODO when any dynamic count, fail-fast policy with returning ANY first result?
-// TODO different contexts when_all Tuple contextes + attach one to one...
+template <typename T>
+struct when_any_dyn_result {
+  expected<T, std::exception_ptr> value;
+  size_t indx = size_t(-1);
+
+  size_t index() const noexcept {
+    return indx;
+  }
+};
+// precondition: all tasks not .empty()
+// returns value and index of first not failed or last exception if all failed
+// returns only index if T is void
+// Note: unlike static `when_any` version, returns actual index, not variant with index + 1
+template <typename T, typename Ctx>
+auto when_any(std::vector<task<T, Ctx>> tasks)
+    -> task<when_any_dyn_result<T>, typename first_type<Ctx>::type> {
+  assert(!tasks.empty());
+  std::shared_ptr state =
+      std::make_shared<noexport::when_any_state_dyn<T>>(tasks.size(), co_await this_coro::handle);
+
+  co_await this_coro::suspend_and([&](std::coroutine_handle<>) {
+    // guard for case when someone destroys 'when_any' while we are starting
+    // (return result and ends coroutine)
+    std::weak_ptr guard = state;
+    // to stack for case when one of them throws/returns without await and destroys 'when_any' task
+    // + 1 bcs of monostate in results
+    std::vector<job> jobs;
+    size_t i = 0;
+    for (auto& t : tasks)
+      jobs.push_back(noexport::job_for_when_any_dyn(std::move(t), guard, i++));
+    // must not throw
+    for (job& j : jobs)
+      j.handle.resume();
+  });
+
+  co_return when_any_dyn_result{std::move(std::get<1>(state->result)), state->index};
+}
+
+// binds arguments to a task so that they will be destroyed after the task is executed
+// example:
+//   unique_ptr<X> x = ...;
+//   with(mytask(x.get()), std::move(x)).start_and_detach();
+// precondition: !t.empty()
+template <typename T>
+task<T> with(task<T> t, auto...) {
+  co_return co_await t;
+}
+
+// helper struct to return avaitable and just value at same time
+// behaves as std::suspend_never, but returns `T` from co_await
+// example:
+//   dd::task<string> mytask();
+//   ...
+//   string s = co_await chain(mytask(), [] (string s) { return dd::avalue(s + "abc"); })
+// also may be used as shortcut. Instead of
+//   chain(mytask(), [t = mytask2()] (auto&&...) mutable { return std::move(mytask); }
+// just:
+//   chain(mytask(), dd::avalue(mytask2()));
+//
+template <typename T>
+struct avalue {
+  T value;
+
+  static constexpr bool await_ready() noexcept {
+    return true;
+  }
+  static constexpr void await_suspend(std::coroutine_handle<>) noexcept {
+  }
+  constexpr T&& await_resume() noexcept KELCORO_LIFETIMEBOUND {
+    return std::move(value);
+  }
+
+  // for using with `chain`
+  T&& operator()(auto&&...) noexcept {
+    return std::move(value);
+  }
+};
+
+// `foo` should be invocable as foo(T{}) -> awaitable
+// precondition: !t.empty() && foo returns smth avaitable
+template <typename T, typename U>
+auto chain(task<T> t, U foo) -> task<std::remove_cvref_t<await_result_t<std::invoke_result_t<U, T>>>> {
+  co_return co_await foo(co_await t);
+}
+
+// U should be invocable as foo()
+template <typename U>
+auto chain(task<void> t, U foo) -> task<std::remove_cvref_t<await_result_t<std::invoke_result_t<U>>>> {
+  co_await t;
+  co_return co_await foo();
+}
+
+template <typename T, typename Head, typename Tail1, typename... Tail>
+auto chain(task<T> t, Head foo, Tail1 tail1, Tail... tail) {
+  return chain(chain(std::move(t), std::move(foo)), std::move(tail1), std::move(tail)...);
+}
 
 }  // namespace dd

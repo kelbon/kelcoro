@@ -16,6 +16,7 @@
 #include <array>
 #include <algorithm>
 #include <latch>
+#include <iostream>
 
 #include "kelcoro/async_task.hpp"
 #include "kelcoro/channel.hpp"
@@ -34,7 +35,11 @@ inline dd::thread_pool TP(8);
 
   #define error_if(Cond) error_count += static_cast<bool>((Cond))
   #define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
-
+  #define REQUIRE(COND)                          \
+    if (!bool(COND)) {                           \
+      std::cout << "ERROR ON LINE " << __LINE__; \
+      std::exit(-1);                             \
+    }
 inline size_t some_task(int i) {
   return i;
 }
@@ -665,6 +670,15 @@ dd::task<void> task_fast_throw() {
   co_return;
 }
 
+dd::task<std::string> task_fast_throw_str() {
+  throw 4;
+  co_return "";
+}
+
+dd::task<std::string> task_fast_value_str() {
+  co_return "str";
+}
+
 dd::task<size_t> waiter_of_all() {
   size_t error_count = 0;
   (void)co_await dd::jump_on(TP);
@@ -773,6 +787,182 @@ TEST(when_any) {
     error_if(y.index() == 0);
   }
 
+  return error_count;
+}
+
+TEST(when_any_dyn) {
+  // basic cases
+  auto makevec = []<typename T>(dd::task<T> t, auto... args) {
+    std::vector<dd::task<T>> v;
+    v.push_back(std::move(t));
+    (v.push_back(std::move(args)), ...);
+    return v;
+  };
+
+  {
+    auto x = dd::when_any(makevec(task_fast_throw())).get();
+    error_if(x.index() != 0);
+  }
+  {
+    auto [x, i] = dd::when_any(makevec(task_fast_value())).get();
+    error_if(i != 0);
+    error_if(!x || *x != 42);
+  }
+  // full failure cases
+  {
+    auto y = dd::when_any(makevec(task_fast_throw(), task_fast_throw(), task_fast_throw())).get();
+    error_if(y.index() != 2);  // must return last exception
+  }
+  {
+    auto y = dd::when_any(makevec(task_fast_throw_str(), task_throw(), task_fast_throw_str())).get();
+    // may be 2, but its race, dont know
+    error_if(y.index() == size_t(-1));
+  }
+  {
+    auto y = dd::when_any(makevec(task_throw(), task_throw(), task_fast_throw_str())).get();
+    error_if(y.index() == size_t(-1));
+  }
+  {
+    auto y = dd::when_any(makevec(task_fast_throw_str(), task_throw(), task_throw())).get();
+    error_if(y.index() == size_t(-1));
+  }
+  {
+    auto y = dd::when_any(makevec(task_throw(), task_throw(), task_throw())).get();
+    error_if(y.index() == size_t(-1));
+  }
+  // party failed cases, one pretendent
+  {
+    auto y = dd::when_any(makevec(task_throw(), task_throw(), task_value())).get();
+    error_if(y.index() != 2);
+  }
+  {
+    auto y = dd::when_any(makevec(task_throw(), task_value(), task_throw())).get();
+    error_if(y.index() != 1);
+  }
+  {
+    auto y = dd::when_any(makevec(task_value(), task_throw(), task_throw())).get();
+    error_if(y.index() != 0);
+  }
+  {
+    auto y = dd::when_any(makevec(task_throw(), task_throw(), task_fast_value_str())).get();
+    error_if(y.index() != 2);
+  }
+  {
+    auto y = dd::when_any(makevec(task_throw(), task_fast_value_str(), task_throw())).get();
+    error_if(y.index() != 1);
+  }
+  {
+    auto y = dd::when_any(makevec(task_value(), task_fast_throw_str(), task_throw())).get();
+    error_if(y.index() != 0);
+  }
+  // partial fail many pretendenst cases
+  {
+    auto y = dd::when_any(makevec(task_throw(), task_fast_value_str(), task_value())).get();
+    error_if(y.index() != 1);
+  }
+  {
+    auto y = dd::when_any(makevec(task_throw(), task_value(), task_fast_value_str())).get();
+    error_if(y.index() == size_t(-1));  // dont know order
+  }
+  {
+    auto y = dd::when_any(makevec(task_fast_value_str(), task_value(), task_throw())).get();
+    error_if(y.index() != 0);
+  }
+  // full success cases
+  {
+    auto y = dd::when_any(makevec(task_fast_value(), task_fast_value(), task_fast_value())).get();
+    error_if(y.index() != 0);
+  }
+  {
+    auto y = dd::when_any(makevec(task_fast_value_str(), task_fast_value_str(), task_value())).get();
+    error_if(y.index() != 0);
+  }
+  {
+    auto y = dd::when_any(makevec(task_value(), task_value(), task_value())).get();
+    error_if(y.index() == size_t(-1));
+  }
+
+  return error_count;
+}
+
+dd::task<void> foo10() {
+  (void)co_await dd::jump_on(TP);
+}
+
+struct with_alg_tester {
+  bool* deleted = nullptr;
+
+  with_alg_tester() = default;
+  with_alg_tester(with_alg_tester&& other) noexcept : deleted(std::exchange(other.deleted, nullptr)) {
+  }
+  ~with_alg_tester() {
+    if (deleted)
+      *deleted = true;
+  }
+};
+
+TEST(with_alg) {
+  bool deleted = false;
+  with_alg_tester tester;
+  tester.deleted = &deleted;
+  error_if(deleted);
+  dd::with(foo10(), std::move(tester)).get();
+  error_if(!deleted);
+
+  return error_count;
+}
+
+dd::task<void> chain0() {
+  (void)co_await dd::jump_on(TP);
+}
+
+dd::task<int> chain00(int) {
+  (void)co_await dd::jump_on(TP);
+  co_return 22;
+}
+
+dd::task<int> chain0i(int i) {
+  REQUIRE(i == 10);
+  (void)co_await dd::jump_on(TP);
+  co_return 10;
+}
+
+dd::task<int> chain_strsize(std::string s) {
+  (void)co_await dd::jump_on(TP);
+  co_return s.size();
+}
+
+dd::task<int> chain_inc(int i) {
+  co_return i + 1;
+}
+
+TEST(chain_alg) {
+  static_assert(std::is_same_v<dd::await_result_t<dd::task<void>>, void>);
+  static_assert(std::is_same_v<dd::await_result_t<std::suspend_never>, void>);
+  static_assert(std::is_same_v<dd::await_result_t<dd::task<int>>, int&&>);
+  int i = dd::chain(chain0(), dd::avalue{chain0i(10)}).get();
+  error_if(i != 10);
+  i = dd::chain(chain_strsize("0123456789"), [](int i) { return chain0i(i); }).get();
+  error_if(i != 10);
+  dd::chain(chain_strsize("0123456789"), [](int i) { return chain0i(i); }, dd::avalue{chain0()}).get();
+  dd::chain(chain_strsize("str"), [](int) { return dd::avalue{10}; }).get();
+  i = dd::chain(chain0i(10), chain_inc, chain_inc, chain_inc, chain_inc).get();
+  error_if(i != 14);
+  bool invoked = false;
+  dd::chain(
+      chain0i(10), chain_inc, chain_inc, chain_inc, chain_inc,
+      [](int i) {
+        REQUIRE(i == 14);
+        return chain_strsize("0123456789");
+      },
+      chain0i, chain00,
+      [&](int i) {
+        REQUIRE(i == 22);
+        invoked = true;
+        return dd::avalue{std::suspend_never{}};
+      })
+      .get();
+  error_if(!invoked);
   return error_count;
 }
 
@@ -971,6 +1161,9 @@ int main() {
   RUN(when_any);
   RUN(when_all_dynamic);
   RUN(when_any_different_ctxts);
+  RUN(when_any_dyn);
+  RUN(chain_alg);
+  RUN(with_alg);
   RUN(rvo_tasks);
   RUN(gen_with_alloc);
   RUN(detached_task);
