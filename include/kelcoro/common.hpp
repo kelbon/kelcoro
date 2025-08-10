@@ -307,4 +307,27 @@ template <co_awaitable T>
     return std::forward<T>(value).operator co_await();
 }
 
+namespace noexport {
+
+template <typename T>
+consteval auto do_await_result() {
+  static_assert(!ambigious_co_await_lookup<T>);
+  if constexpr (has_global_co_await<T>) {
+    return std::type_identity<
+        decltype(std::declval<decltype(operator co_await(std::declval<T>()))>().await_resume())>{};
+  } else if constexpr (has_member_co_await<T>) {
+    return std::type_identity<
+        decltype(std::declval<decltype(std::declval<T>().operator co_await())>().await_resume())>{};
+  } else {
+    // co_awaiter
+    return std::type_identity<decltype(std::declval<decltype(std::declval<T>())>().await_resume())>{};
+  }
+}
+
+}  // namespace noexport
+
+// Note: ignores await_transform!
+template <co_awaitable T>
+using await_result_t = typename decltype(noexport::do_await_result<T>())::type;
+
 }  // namespace dd
