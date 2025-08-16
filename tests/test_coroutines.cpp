@@ -1129,7 +1129,62 @@ TEST(task_throw) {
   return error_count;
 }
 
+struct err1 : std::exception {
+  int errc = 0;
+  std::string dbginfo;
+
+  err1() = default;
+  explicit err1(int merrc) noexcept : errc(merrc) {
+  }
+
+  explicit err1(int merrc, std::string mdbginfo) : errc(merrc), dbginfo("some string 2 sedrfwetrfgrifoik") {
+  }
+
+  char const* what() const noexcept override {
+    return dbginfo.c_str();
+  }
+};
+
+struct err2 : err1 {
+  int streamid;
+
+  // precondition: streamid != 0
+  err2(int e, int id, std::string msg) : err1(e), streamid(id) {
+    assert(streamid != 0);
+    this->dbginfo = "some string fdsfdswerewfgrt";
+  }
+};
+
+struct abc {
+  void mda() {
+    throw err2(15, 1, "abc");
+  }
+};
+
+void bar(abc& a) {
+  a.mda();
+}
+dd::task<int> foo1(int i) try {
+  abc c;
+  for (;;) {
+    if (i == 42)
+      co_return 0;
+    co_await std::suspend_always{};
+
+    try {
+      bar(c);
+      break;
+    } catch (std::exception& e) {
+      std::cout << '"' << e.what() << '"';
+    }
+  }
+  throw "";
+} catch (...) {
+  co_return 0;
+}
+
 int main() {
+  foo1(2).start_and_detach().resume();
   // default constructible for empty typpes
   (void)dd::chunk_from<dd::new_delete_resource>{};
   dd::with_resource<statefull_resource> r;
