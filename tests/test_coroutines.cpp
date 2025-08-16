@@ -1129,62 +1129,44 @@ TEST(task_throw) {
   return error_count;
 }
 
-struct err1 : std::exception {
-  int errc = 0;
-  std::string dbginfo;
+struct job_promise;
 
-  err1() = default;
-  explicit err1(int merrc) noexcept : errc(merrc) {
+struct job {
+  using promise_type = job_promise;
+  std::coroutine_handle<> handle;
+};
+
+struct job_promise {
+  static constexpr std::suspend_never initial_suspend() noexcept {
+    return {};
   }
-
-  explicit err1(int merrc, std::string mdbginfo) : errc(merrc), dbginfo("some string 2 sedrfwetrfgrifoik") {
+  static constexpr std::suspend_never final_suspend() noexcept {
+    return {};
   }
-
-  char const* what() const noexcept override {
-    return dbginfo.c_str();
+  job get_return_object() noexcept {
+    return job(std::coroutine_handle<job_promise>::from_promise(*this));
+  }
+  static constexpr void return_void() noexcept {
+  }
+  [[noreturn]] static void unhandled_exception() noexcept {
+    std::terminate();
   }
 };
 
-struct err2 : err1 {
-  int streamid;
-
-  // precondition: streamid != 0
-  err2(int e, int id, std::string msg) : err1(e), streamid(id) {
-    assert(streamid != 0);
-    this->dbginfo = "some string fdsfdswerewfgrt";
-  }
-};
-
-struct abc {
-  void mda() {
-    throw err2(15, 1, "abc");
-  }
-};
-
-void bar(abc& a) {
-  a.mda();
-}
-dd::task<int> foo1(int i) try {
-  abc c;
+job foo1() {
   for (;;) {
-    if (i == 42)
-      co_return 0;
     co_await std::suspend_always{};
 
     try {
-      bar(c);
-      break;
+      throw std::exception();
     } catch (std::exception& e) {
       std::cout << '"' << e.what() << '"';
     }
   }
-  throw "";
-} catch (...) {
-  co_return 0;
 }
 
 int main() {
-  foo1(2).start_and_detach().resume();
+  foo1().handle.resume();
   // default constructible for empty typpes
   (void)dd::chunk_from<dd::new_delete_resource>{};
   dd::with_resource<statefull_resource> r;
