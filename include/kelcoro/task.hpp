@@ -110,7 +110,7 @@ struct task_promise : return_block<Result> {
 
 // single value generator that returns a value with a co_return
 template <typename Result, typename Ctx = null_context>
-struct [[nodiscard]] task : enable_resource_deduction {
+struct KELCORO_ELIDABLE [[nodiscard]] task : enable_resource_deduction {
   using result_type = Result;
   using promise_type = task_promise<Result, Ctx>;
   using handle_type = std::coroutine_handle<promise_type>;

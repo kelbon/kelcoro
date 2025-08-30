@@ -55,8 +55,22 @@
   #else
     #define KELCORO_NO_UNIQUE_ADDRESS
   #endif
+
+  #if __has_cpp_attribute(clang::coro_await_elidable)
+    #define KELCORO_ELIDABLE [[clang::coro_await_elidable]]
+  #else
+    #define KELCORO_ELIDABLE
+  #endif
+
+  #if __has_cpp_attribute(clang::coro_await_elidable_argument)
+    #define KELCORO_ELIDABLE_ARG [[clang::coro_await_elidable_argument]]
+  #else
+    #define KELCORO_ELIDABLE_ARG
+  #endif
 #else
   #define KELCORO_NO_UNIQUE_ADDRESS
+  #define KELCORO_ELIDABLE
+  #define KELCORO_ELIDABLE_ARG
 #endif
 
 // used in coroutine promise type to get default behavior
