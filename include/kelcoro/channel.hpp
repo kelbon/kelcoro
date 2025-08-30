@@ -177,15 +177,23 @@ struct channel_iterator {
     KELCORO_ASSUME(!chan->empty());
     return transfer_control_to{chan->top.promise().current_worker};
   }
+};
+
+template <yieldable Yield>
+struct channel_scope_guard {
+  channel<Yield>& chan;
 
   // on the end of loop, when current_value == nullptr reached
   // lifetime of this iterator ends and it checks for exception.
   // its for performance(no 'if' on each ++, only one for channel)
-  ~channel_iterator() noexcept(false) {
-    if (chan->exception) [[unlikely]]
-      std::rethrow_exception(chan->take_exception());
+  ~channel_scope_guard() noexcept(false) {
+    if (chan.exception) [[unlikely]]
+      std::rethrow_exception(chan.take_exception());
   }
 };
+
+template <typename Y>
+channel_scope_guard(channel<Y>) -> channel_scope_guard<Y>;
 
 // same as 'generator', but may suspend before 'yield'
 //
@@ -201,6 +209,7 @@ struct channel : enable_resource_deduction {
   using value_type = std::decay_t<Yield>;
 
  private:
+  friend channel_scope_guard<Yield>;
   friend channel_promise<Yield>;
   friend channel_iterator<Yield>;
   friend noexport::attach_leaf<channel<Yield>>;
@@ -331,6 +340,8 @@ struct channel : enable_resource_deduction {
     return std::default_sentinel;
   }
 
+  // does not propagate exceptions, if await resume returns nullptr
+  // it may mean you need to check take_exception()
   KELCORO_CO_AWAIT_REQUIRED next_awaiter next() noexcept {
     return next_awaiter(*this);
   }
@@ -357,12 +368,25 @@ struct operation_hash<std::coroutine_handle<channel_promise<Y>>> {
 //  co_foreach(std::string s, mychannel) use(s);
 // OR
 //  co_foreach(YieldType&& x, mychannel) { ..use(std::move(x)).. };
-#define co_foreach(VARDECL, ... /*CHANNEL, may be expression produces channel*/)      \
-  if (auto&& dd_channel_ = __VA_ARGS__; true)                                         \
-    for (auto dd_b_ = co_await dd_channel_.begin(); dd_b_ != ::std::default_sentinel; \
-         (void)(co_await (++dd_b_)))                                                  \
-      if (VARDECL = *dd_b_; true)
+#define co_foreach(VARDECL, ... /*CHANNEL, may be expression produces channel*/)        \
+  if (auto&& dd_channel_ = __VA_ARGS__; true)                                           \
+    if (::dd::channel_scope_guard dd_guard{dd_channel_}; true)                          \
+      for (auto dd_b_ = co_await dd_channel_.begin(); dd_b_ != ::std::default_sentinel; \
+           (void)(co_await (++dd_b_)))                                                  \
+        if (VARDECL = *dd_b_; true)
 // note: (void)(co_await) (++dd_b)) only because gcc has bug, its not required
+
+// same as `co_for_each`, but does not throw exception
+// and accepts name of existing channel, not expression to create it
+// usage example:
+//  dd::channel chan = mychannel();
+//  co_foreach_nt(int i, chan) { ... }
+//  handle(chan.take_exception());
+#define co_foreach_nt(VARDECL, CHANNEL_NAME)                                         \
+  for (auto dd_b_ = co_await CHANNEL_NAME.begin(); dd_b_ != ::std::default_sentinel; \
+       (void)(co_await (++dd_b_)))                                                   \
+    if (VARDECL = *dd_b_; true)
+
 }  // namespace dd
 
 #ifdef __GNUC__
