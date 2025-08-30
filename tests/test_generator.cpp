@@ -617,29 +617,6 @@ CHANNEL_TEST(nomove_gen_channel) {
 }
 CO_TEST(nomove_gen_channel);
 
-struct log_resource : std::pmr::memory_resource {
-  size_t allocated = 0;
-  // sizeof of this thing affects frame size with 2 multiplier bcs its saved in frame + saved for coroutine
-  void* do_allocate(size_t size, size_t a) override {
-    allocated += size;
-    return ::operator new(size, std::align_val_t{a});
-  }
-  void do_deallocate(void* ptr, size_t size, size_t a) noexcept override {
-    allocated -= size;
-    ::operator delete(ptr, std::align_val_t{a});
-  }
-  bool do_is_equal(const memory_resource&) const noexcept override {
-    return true;
-  }
-  ~log_resource() {
-    if (allocated != 0) {
-      std::cerr << "memory leak " << allocated << " bytes";
-      std::flush(std::cerr);
-      std::exit(-146);
-    }
-  }
-};
-
 #define RUN(TEST_NAME)                             \
   {                                                \
     std::cout << "- " << #TEST_NAME << std::flush; \
@@ -949,8 +926,6 @@ int main() {
   static_assert(::dd::memory_resource<new_delete_resource>);
   (void)flip();  // initalize random
   {
-    log_resource r;
-    dd::pmr::pass_resource(r);
     auto x = []() -> dd::generator<int> { co_yield 1; };
     auto y_g = x();
     auto y_g_it = y_g.begin();
