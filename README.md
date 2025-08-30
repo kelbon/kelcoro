@@ -28,13 +28,6 @@ for example:
 generator<int> g();                                // will use operator new if required
 generator<int> g(int, dd::with_resource<Resource>) // will use 'Resource' if allocation required
 ```
-Also all coroutines have `dd::pmr::*` version which can use std::pmr::memory_resource using `dd::pass_resource` or default, if not passed (you can set default polymorphic memory resource globally)
-```C++
-std::pmr::memory_resource& get_default_resource() noexcept
-std::pmr::memory_resource& set_default_resource(std::pmr::memory_resource& r) noexcept;
-// next coroutine with 'dd::polymorphic_resource' on this thread will use 'm' for allocation
-void pass_resource(std::pmr::memory_resource& m) noexcept;
-```
 </details>
 	
 * Functions or seems like functions

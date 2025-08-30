@@ -111,24 +111,8 @@ struct polymorphic_resource {
  private:
   std::pmr::memory_resource* passed;
 
-  static auto& default_resource() {
-    // never null
-    static std::atomic<std::pmr::memory_resource*> r = std::pmr::new_delete_resource();
-    return r;
-  }
-  static auto& passed_resource() {
-    thread_local constinit std::pmr::memory_resource* r = nullptr;
-    return r;
-  }
-  friend std::pmr::memory_resource& get_default_resource() noexcept;
-  friend std::pmr::memory_resource& set_default_resource(std::pmr::memory_resource&) noexcept;
-  friend void pass_resource(std::pmr::memory_resource&) noexcept;
-
  public:
-  polymorphic_resource() noexcept : passed(std::exchange(passed_resource(), nullptr)) {
-    if (!passed)
-      passed = std::pmr::get_default_resource();
-    assert(passed != nullptr);
+  polymorphic_resource() noexcept : passed(std::pmr::get_default_resource()) {
   }
   polymorphic_resource(std::pmr::memory_resource& m) noexcept : passed(&m) {
   }
@@ -139,17 +123,6 @@ struct polymorphic_resource {
     passed->deallocate(p, sz, coroframe_align());
   }
 };
-
-inline std::pmr::memory_resource& get_default_resource() noexcept {
-  return *polymorphic_resource::default_resource().load(std::memory_order_acquire);
-}
-
-inline std::pmr::memory_resource& set_default_resource(std::pmr::memory_resource& r) noexcept {
-  return *polymorphic_resource::default_resource().exchange(&r, std::memory_order_acq_rel);
-}
-inline void pass_resource(std::pmr::memory_resource& m) noexcept {
-  polymorphic_resource::passed_resource() = &m;
-}
 
 }  // namespace pmr
 
@@ -264,7 +237,7 @@ struct enable_resource_deduction {};
 // disables resource deduction
 // typical usage: aliases like generator_r/channel_r/etc
 // for not duplicating code and not changing signature with default constructible resources
-// see dd::pmr::generator as example
+// see dd::generator_r as example
 template <typename Coro, memory_resource R>
 struct KELCORO_ELIDABLE KELCORO_MSVC_EBO resourced : Coro {
   using resource_type = R;
