@@ -568,7 +568,7 @@ TEST(detached_tasks) {
   return error_count;
 }
 
-struct ctx {
+struct ctx : dd::null_context {
   std::vector<std::string>* s = nullptr;
   std::string name;
 
@@ -1104,25 +1104,39 @@ CHECK_ALIGN(500000, 123, 118);
 CHECK_ALIGN(432, 10033, (10033 - 432));
 CHECK_ALIGN(5, 63, (63 - 5));
 
-dd::task<void> throw_smth() {
-  throw 42;
+inline std::coroutine_handle<> HANDLE = nullptr;
+
+struct test_ctx : dd::null_context {
+  void on_ignored_exception(auto h) {
+    HANDLE = h;
+    throw;
+  }
+};
+
+dd::task<void, test_ctx> throw_smth() {
+  throw std::runtime_error("correct exception message");
   co_return;
 }
 
 TEST(task_throw) {
   auto t = throw_smth();
+  static_assert(noexcept(dd::task_promise<int, dd::null_context>{}.unhandled_exception()));
+  error_if(HANDLE);
   try {
     t.start_and_detach();
-    error_if(true);
-  } catch (int i) {
-    error_if(i != 42);
+  } catch (std::exception& e) {
+    error_if(e.what() != std::string_view("correct exception message"));  // good path
+    error_if(!HANDLE);
   } catch (...) {
     error_if(true);
   }
+  HANDLE.destroy();
+  HANDLE = nullptr;
   auto t2 = throw_smth();
   try {
     auto h = t2.start_and_detach(/*stop_at_end=*/true);
     error_if(h.promise().exception == nullptr);
+    h.destroy();
   } catch (...) {
     error_if(true);
   }

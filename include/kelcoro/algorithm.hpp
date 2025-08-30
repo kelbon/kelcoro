@@ -268,8 +268,8 @@ auto when_any(std::vector<task<T, Ctx>> tasks)
 //   unique_ptr<X> x = ...;
 //   with(mytask(x.get()), std::move(x)).start_and_detach();
 // precondition: !t.empty()
-template <typename T>
-task<T> with(task<T> t, auto...) {
+template <typename T, typename Ctx>
+task<T, Ctx> with(task<T, Ctx> t, auto...) {
   co_return co_await t;
 }
 
@@ -305,20 +305,22 @@ struct avalue {
 
 // `foo` should be invocable as foo(T{}) -> awaitable
 // precondition: !t.empty() && foo returns smth avaitable
-template <typename T, typename U>
-auto chain(task<T> t, U foo) -> task<std::remove_cvref_t<await_result_t<std::invoke_result_t<U, T>>>> {
+template <typename T, typename U, typename Ctx>
+auto chain(task<T, Ctx> t, U foo)
+    -> task<std::remove_cvref_t<await_result_t<std::invoke_result_t<U, T>>>, Ctx> {
   co_return co_await foo(co_await t);
 }
 
 // U should be invocable as foo()
-template <typename U>
-auto chain(task<void> t, U foo) -> task<std::remove_cvref_t<await_result_t<std::invoke_result_t<U>>>> {
+template <typename U, typename Ctx>
+auto chain(task<void, Ctx> t, U foo)
+    -> task<std::remove_cvref_t<await_result_t<std::invoke_result_t<U>>>, Ctx> {
   co_await t;
   co_return co_await foo();
 }
 
-template <typename T, typename Head, typename Tail1, typename... Tail>
-auto chain(task<T> t, Head foo, Tail1 tail1, Tail... tail) {
+template <typename T, typename Head, typename Tail1, typename... Tail, typename Ctx>
+auto chain(task<T, Ctx> t, Head foo, Tail1 tail1, Tail... tail) {
   return chain(chain(std::move(t), std::move(foo)), std::move(tail1), std::move(tail)...);
 }
 

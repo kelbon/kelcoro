@@ -41,17 +41,25 @@ struct null_context {
   // invoked when task is scheduled to execute, 'owner' is handle of coroutine, which awaits task
   // never invoked with nullptrs
   // note: one task may have only one owner, but one owner can have many child tasks (when_all/when_any)
-  template <typename OwnerPromise, typename TaskPromise>
-  static void on_owner_setted(std::coroutine_handle<OwnerPromise>,
-                              std::coroutine_handle<TaskPromise>) noexcept {
+  template <typename OwnerPromise, typename P>
+  static void on_owner_setted(std::coroutine_handle<OwnerPromise>, std::coroutine_handle<P>) noexcept {
   }
   // may be invoked even without 'on_owner_setted' before, if task is detached
-  template <typename TaskPromise>
-  static void on_start(std::coroutine_handle<TaskPromise>) noexcept {
+  template <typename P>
+  static void on_start(std::coroutine_handle<P>) noexcept {
   }
   // invoked when task ended with/without exception
-  template <typename TaskPromise>
-  static void on_end(std::coroutine_handle<TaskPromise>) noexcept {
+  template <typename P>
+  static void on_end(std::coroutine_handle<P>) noexcept {
+  }
+
+  // invoked when no one waits for task and exception thrown
+  // precondition: std::current_exception() != nullptr
+  // Note: if exception thrown memory leak possible (no one will destroy handle)
+  // this function MUST NOT destroy handle (UB) and handle must not be destroyed while exception alive
+  // Note: passed coroutine handle will became invalid after this call
+  template <typename P>
+  static void on_ignored_exception(std::coroutine_handle<P>) noexcept {
   }
 };
 
@@ -72,7 +80,7 @@ struct task_promise : return_block<Result> {
   }
   KELCORO_DEFAULT_AWAIT_TRANSFORM;
 
-  auto self_handle() {
+  auto self_handle() noexcept {
     return std::coroutine_handle<task_promise>::from_promise(*this);
   }
   // precondition: not running && .done
@@ -85,13 +93,13 @@ struct task_promise : return_block<Result> {
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
-  auto get_return_object() {
+  auto get_return_object() noexcept {
     return self_handle();
   }
-  void unhandled_exception() {
+  void unhandled_exception() noexcept(noexcept(ctx.on_ignored_exception(self_handle()))) {
     // if no one waits, throw exception to last .resume caller
-    if (who_waits == nullptr)
-      throw;
+    if (who_waits == nullptr) [[unlikely]]
+      ctx.on_ignored_exception(self_handle());
     exception = std::current_exception();
   }
   auto final_suspend() noexcept {

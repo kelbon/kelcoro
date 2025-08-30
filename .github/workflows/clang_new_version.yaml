@@ -41,3 +41,35 @@ jobs:
         run: |
           cd build
           ctest --output-on-failure -C ${{matrix.build_type}} -V
+      - name: Configure CMake (ASAN)
+        run:  |
+          cmake . -DKELCORO_ENABLE_TESTING=ON             \
+            -DCMAKE_BUILD_TYPE=${{matrix.build_type}}     \
+            -DCMAKE_CXX_COMPILER=clang++-${{matrix.version}}     \
+            -DCMAKE_CXX_STANDARD=${{matrix.cpp_standard}} \
+            -DKELCORO_ENABLE_ASAN=ON                \
+            -B build_asan -G "Ninja"
+      - name: Build (ASAN)
+        run:
+          cmake --build build_asan
+
+      - name: Test (ASAN)
+        run: |
+          cd build_asan
+          ctest --output-on-failure -C ${{matrix.build_type}} -V
+      - name: Configure CMake (UBSAN)
+        run:  |
+          cmake . -DKELCORO_ENABLE_TESTING=ON             \
+            -DCMAKE_BUILD_TYPE=${{matrix.build_type}}     \
+            -DCMAKE_CXX_COMPILER=clang++-${{matrix.version}}     \
+            -DCMAKE_CXX_STANDARD=${{matrix.cpp_standard}} \
+            -DKELCORO_ENABLE_UBSAN=ON                \
+            -B build_ubsan -G "Ninja"
+      - name: Build (UBSAN)
+        run:
+          cmake --build build_ubsan
+
+      - name: Test (UBSAN)
+        run: |
+          cd build_ubsan
+          ctest --output-on-failure -C ${{matrix.build_type}} -V

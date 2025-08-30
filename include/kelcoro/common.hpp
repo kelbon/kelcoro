@@ -259,7 +259,18 @@ struct [[nodiscard("co_await it!")]] destroy_and_transfer_control_to {
   static bool await_ready() noexcept {
     return false;
   }
-  KELCORO_ASSUME_NOONE_SEES std::coroutine_handle<> await_suspend(std::coroutine_handle<> self) noexcept {
+
+  // ASAN produces false positive here (understandable)
+#if defined(__has_feature)
+  #if __has_feature(address_sanitizer)
+  [[gnu::no_sanitize_address]]
+  #else
+  KELCORO_ASSUME_NOONE_SEES
+  #endif
+#else
+  KELCORO_ASSUME_NOONE_SEES
+#endif
+  std::coroutine_handle<> await_suspend(std::coroutine_handle<> self) noexcept {
     // move it to stack memory to save from destruction
     auto w = who_waits;
     self.destroy();
