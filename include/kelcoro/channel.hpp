@@ -282,12 +282,6 @@ struct channel : enable_resource_deduction {
     return std::exchange(exception, nullptr);
   }
 
-  bool operator==(const channel& other) const noexcept {
-    if (this == &other)  // invariant: coro handle has only one owner
-      return true;
-    return empty() && other.empty();
-  }
-
  private:
   struct starter : not_movable {
     channel& self;

@@ -42,7 +42,6 @@ static_assert(std::input_iterator<dd::generator_iterator<int>>);
 TEST(empty) {
   dd::generator<int> g;
   error_if(!g.empty());
-  error_if(g != dd::generator<int>{});
   for (auto x : g)
     error_if(true);
   return error_count;
@@ -62,14 +61,11 @@ TEST(base) {
     error_if(j != i);
     ++j;
   }
-  error_if(g != dd::generator<int>{});
   return error_count;
 }
 channel<float> base_case_chan() {
   channel<int> c = base_case<channel>();
   co_yield elements_of(c);
-  if (c != channel<int>{})
-    throw std::runtime_error{"base case chan failed"};
 }
 CHANNEL_TEST(chan_yield) {
   std::vector<int> v;
@@ -110,7 +106,6 @@ CO_TEST(base_channel);
 CHANNEL_TEST(empty_channel) {
   dd::channel<int> g;
   error_if(!g.empty());
-  error_if(g != dd::channel<int>{});
   co_foreach(auto&& x, g) error_if(true);
   co_return error_count;
 }
@@ -580,9 +575,8 @@ G<int> inp() {
   co_yield elements_of(std::views::istream<int>(s));
 }
 TEST(input_rng) {
-  for (auto x : inp<generator>()) {
+  for (auto x : inp<generator>())
     error_if(true);
-  }
   return error_count;
 }
 CHANNEL_TEST(input_rng_channel) {
@@ -781,9 +775,8 @@ dd::generator<const int&> recursive_ref_gen() {
 
 static_assert(std::input_iterator<dd::generator<int&>::iterator>);
 TEST(reference_generators) {
-  for (int& x : ref_generator()) {
+  for (int& x : ref_generator())
     ++x;
-  }
   dd::generator g = recursive_ref_gen();
   auto b = g.begin();
   error_if(*b != 5);
@@ -791,9 +784,8 @@ TEST(reference_generators) {
     ++b;
     error_if(*b != 5);
   }
-  for (const int& x : g) {
+  for (const int& x : g)
     ++(*const_cast<int*>(&x));
-  }
   return error_count;
 }
 dd::channel<int&> ref_channel() {
@@ -847,9 +839,8 @@ TEST(inplace_generator) {
   return error_count;
 }
 TEST(empty_inplace_generator) {
-  for (int x : inplace_iota(0, 0)) {
+  for (int x : inplace_iota(0, 0))
     error_if(true);
-  }
   return error_count;
 }
 TEST(inplace_generator_move) {

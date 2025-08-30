@@ -265,7 +265,7 @@ struct [[nodiscard("co_await it!")]] destroy_and_transfer_control_to {
     self.destroy();
     return w ? w : std::noop_coroutine();  // symmetric transfer here
   }
-  static void await_resume() noexcept {
+  [[noreturn]] static void await_resume() noexcept {
     KELCORO_UNREACHABLE;
   }
 };
