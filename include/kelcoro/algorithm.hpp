@@ -158,7 +158,8 @@ job job_for_when_any_dyn(task<T, Ctx> child, std::weak_ptr<when_any_state_dyn<T>
 // all tasks contexts will be attached to one owner
 // precondition: all tasks not .empty()
 template <typename... Ts, typename Ctx>
-auto when_all(task<Ts, Ctx>... tasks) -> task<std::tuple<expected<Ts, std::exception_ptr>...>, Ctx> {
+auto when_all(KELCORO_ELIDABLE_ARG task<Ts, Ctx>... tasks)
+    -> task<std::tuple<expected<Ts, std::exception_ptr>...>, Ctx> {
   assert((tasks && ...));
   if constexpr (sizeof...(tasks) == 0)
     co_return {};
@@ -269,7 +270,7 @@ auto when_any(std::vector<task<T, Ctx>> tasks)
 //   with(mytask(x.get()), std::move(x)).start_and_detach();
 // precondition: !t.empty()
 template <typename T, typename Ctx>
-task<T, Ctx> with(task<T, Ctx> t, auto...) {
+task<T, Ctx> with(KELCORO_ELIDABLE_ARG task<T, Ctx> t, auto...) {
   co_return co_await t;
 }
 
@@ -306,21 +307,22 @@ struct avalue {
 // `foo` should be invocable as foo(T{}) -> awaitable
 // precondition: !t.empty() && foo returns smth avaitable
 template <typename T, typename U, typename Ctx>
-auto chain(task<T, Ctx> t, U foo)
+auto chain(KELCORO_ELIDABLE_ARG task<T, Ctx> t, KELCORO_ELIDABLE_ARG U foo)
     -> task<std::remove_cvref_t<await_result_t<std::invoke_result_t<U, T>>>, Ctx> {
   co_return co_await foo(co_await t);
 }
 
 // U should be invocable as foo()
 template <typename U, typename Ctx>
-auto chain(task<void, Ctx> t, U foo)
+auto chain(KELCORO_ELIDABLE_ARG task<void, Ctx> t, KELCORO_ELIDABLE_ARG U foo)
     -> task<std::remove_cvref_t<await_result_t<std::invoke_result_t<U>>>, Ctx> {
   co_await t;
   co_return co_await foo();
 }
 
 template <typename T, typename Head, typename Tail1, typename... Tail, typename Ctx>
-auto chain(task<T, Ctx> t, Head foo, Tail1 tail1, Tail... tail) {
+auto chain(KELCORO_ELIDABLE_ARG task<T, Ctx> t, KELCORO_ELIDABLE_ARG Head foo,
+           KELCORO_ELIDABLE_ARG Tail1 tail1, KELCORO_ELIDABLE_ARG Tail... tail) {
   return chain(chain(std::move(t), std::move(foo)), std::move(tail1), std::move(tail)...);
 }
 
