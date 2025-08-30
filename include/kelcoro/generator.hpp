@@ -78,9 +78,8 @@ struct generator_promise : not_movable, yield_block<generator_promise<Yield>, Yi
     return _owner;
   }
   void set_result(pointer_to_yielded_t<Yield> p) const noexcept {
-    if constexpr (!std::is_same_v<nothing_t, Yield>) {
+    if constexpr (!std::is_same_v<nothing_t, Yield>)
       root->_consumer->current_result = p;
-    }
   }
   KELCORO_PURE handle_type self_handle() noexcept {
     return handle_type::from_promise(*this);
@@ -174,19 +173,17 @@ struct generator_iterator {
   }
 
   constexpr bool operator==(std::default_sentinel_t) const noexcept {
-    if constexpr (!std::is_same_v<nothing_t, Yield>) {
+    if constexpr (!std::is_same_v<nothing_t, Yield>)
       return self->current_result == nullptr;
-    } else {
+    else
       return self->top.done();
-    }
   }
   constexpr reference operator*() const noexcept {
     KELCORO_ASSUME(*this != std::default_sentinel);
-    if constexpr (!std::is_same_v<nothing_t, Yield>) {
+    if constexpr (!std::is_same_v<nothing_t, Yield>)
       return static_cast<reference>(*self->current_result);
-    } else {
+    else
       return reference{};
-    }
   }
   constexpr std::add_pointer_t<reference> operator->() const noexcept
     requires(!std::is_same_v<nothing_t, Yield>)
@@ -335,12 +332,6 @@ struct generator : enable_resource_deduction {
     return !empty();
   }
 
-  bool operator==(const generator& other) const noexcept {
-    if (this == &other)  // invariant: coro handle has only one owner
-      return true;
-    return empty() && other.empty();
-  }
-
   // * if .empty(), then begin() == end()
   // * produces next value(often first)
   // iterator invalidated only when generator dies
@@ -354,7 +345,7 @@ struct generator : enable_resource_deduction {
     return std::default_sentinel;
   }
 
-  // precondition: !raw_handle() != nullptr &&  .begin() or .prepare_to_start() was called
+  // precondition: !raw_handle() != nullptr
   // if generator is not started, its 'before_begin' iterator, which may not be dereferenced
   iterator cur_iterator() noexcept {
     assert(raw_handle() != nullptr);
