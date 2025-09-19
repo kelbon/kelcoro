@@ -6,7 +6,7 @@ namespace dd {
 
 struct job_promise;
 
-struct job : enable_resource_deduction {
+struct KELCORO_ELIDE_CTX job : enable_resource_deduction {
   using promise_type = job_promise;
   using handle_type = std::coroutine_handle<promise_type>;
 

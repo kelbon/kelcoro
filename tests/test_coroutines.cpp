@@ -1143,9 +1143,7 @@ TEST(task_throw) {
   return error_count;
 }
 
-  #if 0
 inline int allocated = 0;
-
 
 struct noise_resource {
   void* allocate(size_t sz) {
@@ -1157,9 +1155,9 @@ struct noise_resource {
   }
 };
 
-using ttask = dd::task_r<int, noise_resource>;
+using wnr = dd::with_resource<dd::chunk_from<noise_resource>>;
 
-ttask mytask(int x) {
+dd::task<int> mytask(int x, wnr = {}) {
   co_return x;
 }
 
@@ -1172,15 +1170,20 @@ dd::job abc(int x) {
 
 TEST(elide) {
   (void)abc(42);
-    #if defined(__clang__) && defined(NDEBUG) && !defined(_WIN32)
+  #if defined(__clang__) && defined(NDEBUG)
+    #if __has_cpp_attribute(clang::coro_await_elidable)
+
   if (allocated > 0) {
-    std::cout << "allocated " << allocated << " bytes, elide test failed" << std::endl;
+    std::cout << " allocated " << allocated << " bytes, elide test failed" << std::endl;
     error_if(true);
+  } else {
+    std::cout << " ELIDE TEST SUCCESS\n";
   }
     #endif
+  #endif
   return error_count;
 }
-  #endif
+
 int main() {
   // default constructible for empty typpes
   (void)dd::chunk_from<dd::new_delete_resource>{};
@@ -1190,9 +1193,8 @@ int main() {
   auto copy2 = std::as_const(r);
   srand(time(0));
   size_t ec = 0;
-  #if 0
+
   RUN(elide);
-  #endif
   RUN(task_throw);
   RUN(expected_e);
   RUN(generator);

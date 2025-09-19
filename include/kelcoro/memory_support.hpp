@@ -239,7 +239,7 @@ struct enable_resource_deduction {};
 // for not duplicating code and not changing signature with default constructible resources
 // see dd::generator_r as example
 template <typename Coro, memory_resource R>
-struct KELCORO_ELIDABLE KELCORO_MSVC_EBO resourced : Coro {
+struct KELCORO_ELIDE_CTX KELCORO_MSVC_EBO resourced : Coro {
   using resource_type = R;
 
   using Coro::Coro;

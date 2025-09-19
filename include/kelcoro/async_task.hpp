@@ -53,7 +53,7 @@ struct async_task_promise : return_block<Result> {
 
 // one producer, one consumer
 template <typename Result>
-struct async_task : enable_resource_deduction {
+struct KELCORO_ELIDE_CTX async_task : enable_resource_deduction {
   using promise_type = async_task_promise<Result>;
   using handle_type = std::coroutine_handle<promise_type>;
 

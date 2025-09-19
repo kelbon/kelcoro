@@ -57,9 +57,9 @@
   #endif
 
   #if __has_cpp_attribute(clang::coro_await_elidable)
-    #define KELCORO_ELIDABLE [[clang::coro_await_elidable]]
+    #define KELCORO_ELIDE_CTX [[clang::coro_await_elidable]]
   #else
-    #define KELCORO_ELIDABLE
+    #define KELCORO_ELIDE_CTX
   #endif
 
   #if __has_cpp_attribute(clang::coro_await_elidable_argument)
@@ -69,7 +69,7 @@
   #endif
 #else
   #define KELCORO_NO_UNIQUE_ADDRESS
-  #define KELCORO_ELIDABLE
+  #define KELCORO_ELIDE_CTX
   #define KELCORO_ELIDABLE_ARG
 #endif
 
