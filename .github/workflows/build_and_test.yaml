@@ -17,13 +17,21 @@ jobs:
     runs-on: ${{matrix.os}}
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install ninja-build lld gcc-12 gcc-14 clang-14 clang-17
-          sudo ln -sf /usr/local/bin/ld /usr/bin/lld
+          sudo apt-get install ninja-build
+
+          if [[ "${{ matrix.compiler }}" == g++-12* ]]; then
+            sudo apt-get install gcc-12
+          elif [[ "${{ matrix.compiler }}" == g++-14* ]]; then
+            sudo apt-get install gcc-14
+          elif [[ "${{ matrix.compiler }}" == clang++-14* ]]; then
+            sudo apt-get install clang-14
+          elif [[ "${{ matrix.compiler }}" == clang++-17* ]]; then
+            sudo apt-get install clang-17
+          fi
       - name: Configure CMake
         run:  |
           cmake . -DKELCORO_ENABLE_TESTING=ON             \
@@ -55,5 +63,3 @@ jobs:
         run: |
           cd build_asan
           ctest --output-on-failure -C ${{matrix.build_type}} -V
-
-
