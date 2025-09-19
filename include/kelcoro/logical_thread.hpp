@@ -121,7 +121,7 @@ struct logical_thread_promise {
 
 // shared owning of coroutine handle between coroutine object and coroutine frame.
 // Frame always dies with a coroutine object, except it was detached(then it deletes itself after co_return)
-struct logical_thread : enable_resource_deduction {
+struct KELCORO_ELIDE_CTX logical_thread : enable_resource_deduction {
   using promise_type = logical_thread_promise;
   using handle_type = std::coroutine_handle<promise_type>;
 

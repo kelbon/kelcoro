@@ -203,7 +203,7 @@ channel_scope_guard(channel<Y>) -> channel_scope_guard<Y>;
 //       auto&& v = *it;
 //
 template <yieldable Yield>
-struct channel : enable_resource_deduction {
+struct KELCORO_ELIDE_CTX channel : enable_resource_deduction {
   using promise_type = channel_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;
   using value_type = std::decay_t<Yield>;

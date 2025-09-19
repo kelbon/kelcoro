@@ -246,7 +246,7 @@ auto generator_iterator<Yield>::out() const&& noexcept {
 //  * its caller responsibility to not use co_await with real suspend in generator
 // (or you must know what you do)
 template <yieldable Yield>
-struct generator : enable_resource_deduction {
+struct KELCORO_ELIDE_CTX generator : enable_resource_deduction {
   using promise_type = generator_promise<Yield>;
   using handle_type = std::coroutine_handle<promise_type>;
   using value_type = std::decay_t<Yield>;
