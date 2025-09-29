@@ -38,12 +38,12 @@ dd::async_task<void> gate_holder() {
   gate_user(g);
   error_if(g.is_closed());
   error_if(g.active_count() != 4);
-  g.request_close();
+  auto closeg = g.close();
   error_if(!g.is_closed());
   for (std::coroutine_handle<> h : handles)
     h.resume();  // cancel operations
   error_if(g.active_count() != 0);
-  co_await g.close();
+  co_await closeg;
   error_if(!g.is_closed());
   error_if(g.active_count() != 0);
   g.reopen();
