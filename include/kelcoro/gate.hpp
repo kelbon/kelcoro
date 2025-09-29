@@ -7,6 +7,7 @@
 #include <cstddef>
 
 #include <kelcoro/noexport/macro.hpp>
+#include <kelcoro/road.hpp>
 
 namespace dd {
 
@@ -16,13 +17,18 @@ struct gate_closed_exception : std::exception {};
 struct gate {
  private:
   size_t count = 0;
-  std::coroutine_handle<> close_waiter = nullptr;
+  awaiters_queue<task_node> close_waiters;
+  bool close_requested = false;
+
+  void request_close() noexcept {
+    close_requested = true;
+  }
 
  public:
   // if gate is closed, returns false.
   // Otherwise returns true and caller must call 'leave' in future
   [[nodiscard]] bool try_enter() noexcept {
-    if (close_waiter) [[unlikely]]
+    if (is_closed()) [[unlikely]]
       return false;
     ++count;
     return true;
@@ -34,11 +40,14 @@ struct gate {
   }
 
   // must be invoked only after invoking 'try_enter'
+  // Note: may resume close awaiters.
+  // Sometimes it makes sense to push them into task list instead of executing now
+  // e.g. someone who call `leave` uses resources, which they will destroy
   void leave() noexcept {
     assert(count != 0);
     --count;
-    if (close_waiter && count == 0) [[unlikely]]
-      close_waiter.resume();
+    if (is_closed() && count == 0) [[unlikely]]
+      attach_list(this_thread_executor, close_waiters.pop_all());
   }
 
   struct holder {
@@ -67,70 +76,63 @@ struct gate {
   [[nodiscard]] size_t active_count() const noexcept {
     return count;
   }
-  // this method has 2 proposes.
-  // first - if caller want to not use 'close', instead looping while 'active_count() != 0'
-  // and second - if canceling operations may produce more operations (and they will observe not closed gate)
-  // in this case, caller firstly call 'request_close', then canceling operations and then awaiting .close()
-  void request_close() noexcept {
-    assert(!is_closed());
-    close_waiter = std::noop_coroutine();
-  }
 
-  struct gate_close_awaiter {
+  struct gate_close_awaiter : task_node {
     gate* g = nullptr;
+
+    gate_close_awaiter(gate* g) noexcept : g(g) {
+    }
 
     bool await_ready() noexcept {
       return g->count == 0;
     }
     void await_suspend(std::coroutine_handle<> waiter) noexcept {
-      g->close_waiter = waiter;
+      this->task = waiter;
+      g->close_waiters.push(this);
     }
-    void await_resume() noexcept {
-      assert(g->count == 0);
-      // avoid storing handle to dead coroutine
-      // + guarantee, that after calling 'close' gate is closed, even if count == 0
-      g->close_waiter = std::noop_coroutine();
+    static void await_resume() noexcept {
     }
   };
 
-  // must not be called twice.
-  // postcondition: is_closed() == true.
+  // postcondition: is_closed() == true && `active_count()` == 0
+  // Note: is_closed() true even before co_await
+  // Note: several coroutines may wait `close`. All close awaiters will be resumed.
   // reopen() will allow calling 'close' again
   KELCORO_CO_AWAIT_REQUIRED gate_close_awaiter close() noexcept {
+    request_close();
     return gate_close_awaiter{this};
   }
 
   [[nodiscard]] bool is_closed() const noexcept {
-    return close_waiter != nullptr;
+    return close_requested;
   }
 
-  // precondition: .close() was awaited or try_enter was not called
+  // after `reopen` gate may be `entered` or `closed` again
+  // precondition: .active_count() == 0 && no one waits for `close`
   void reopen() noexcept {
     assert(count == 0);
-    close_waiter = nullptr;
+    assert(close_waiters.empty());
+    close_requested = false;
   }
 
   gate() = default;
 
-#ifndef NDEBUG
   ~gate() {
     assert(count == 0 && "gate closed with unfinished requests");
   }
-  gate(gate&& other) noexcept {
+  gate(gate&& other) noexcept
+      : count(0),
+        close_waiters(std::exchange(other.close_waiters, {})),
+        close_requested(std::exchange(other.close_requested, false)) {
     assert(other.count == 0);
-    count = 0;
-    close_waiter = std::exchange(other.close_waiter, nullptr);
   }
   gate& operator=(gate&& other) noexcept {
     assert(count == 0 && other.count == 0);
-    std::swap(close_waiter, other.close_waiter);
+    assert(close_waiters.empty() && other.close_waiters.empty());
+    close_waiters = std::exchange(other.close_waiters, {}),
+    close_requested = std::exchange(other.close_requested, false);
     return *this;
   }
-#else
-  ~gate() = default;
-  gate(gate&&) = default;
-  gate& operator=(gate&&) = default;
-#endif
 };
 
 }  // namespace dd
