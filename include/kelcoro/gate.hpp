@@ -53,6 +53,7 @@ struct gate {
   struct holder {
     gate* g = nullptr;
 
+    holder() = default;
     holder(gate* g) : g(g) {
       g->enter();
     }
@@ -65,6 +66,15 @@ struct gate {
     holder& operator=(holder&& other) noexcept {
       std::swap(other.g, g);
       return *this;
+    }
+
+    void release() noexcept {
+      if (g)
+        std::exchange(g, nullptr)->leave();
+    }
+
+    [[nodiscard]] gate* get_gate() const noexcept {
+      return g;
     }
   };
 
