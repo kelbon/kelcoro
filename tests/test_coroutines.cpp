@@ -939,7 +939,9 @@ dd::task<int> chain_inc(int i) {
 TEST(chain_alg) {
   static_assert(std::is_same_v<dd::await_result_t<dd::task<void>>, void>);
   static_assert(std::is_same_v<dd::await_result_t<std::suspend_never>, void>);
-  static_assert(std::is_same_v<dd::await_result_t<dd::task<int>>, int&&>);
+  static_assert(std::is_same_v<dd::await_result_t<dd::task<int>>, int>);
+  static_assert(std::is_same_v<dd::await_result_t<dd::task<int>&&>, int>);
+  static_assert(std::is_same_v<dd::await_result_t<dd::task<int>&>, int&&>);
   int i = dd::chain(chain0(), dd::avalue{chain0i(10)}).get();
   error_if(i != 10);
   i = dd::chain(chain_strsize("0123456789"), [](int i) { return chain0i(i); }).get();

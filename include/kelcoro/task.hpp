@@ -189,7 +189,7 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
   }
 
   // blocking (if not done yet)
-  // Note: .get() when task is not scheduled to another thread will lead to deadlock
+  // Note: .get() on not ready task which is not scheduled to another thread will lead to deadlock
   // precondition: !task.empty() && task not started yet or already done (after .wait for example)
   result_type get() {
     assert(!empty());
@@ -209,10 +209,11 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
     promise.ctx.on_start(task_handle);
   }
 
-  struct remember_waiter_and_start_task_t {
+  // remembers handle of coroutine where co_await happen and starts task
+  struct starter {
     handle_type task_handle;
 
-    explicit remember_waiter_and_start_task_t(handle_type t) noexcept : task_handle(t) {
+    explicit starter(handle_type t) noexcept : task_handle(t) {
     }
     bool await_ready() noexcept {
       // for case when awaited after start or second co_await
@@ -225,17 +226,36 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
       return task_handle;
     }
   };
-  struct wait_and_get_result_or_rethrow : remember_waiter_and_start_task_t {
-    using remember_waiter_and_start_task_t::remember_waiter_and_start_task_t;
+
+  struct wait_and_get_ref_awaiter : starter {
+    using starter::starter;
+
+    using starter::await_ready;
+    using starter::await_suspend;
     [[nodiscard]] std::add_rvalue_reference_t<result_type> await_resume() {
       return this->task_handle.promise().result_or_rethrow();
     }
   };
-  struct wait_awaiter : remember_waiter_and_start_task_t {
-    using remember_waiter_and_start_task_t::remember_waiter_and_start_task_t;
+
+  struct wait_and_get_value_awaiter : starter {
+    using starter::starter;
+
+    using starter::await_ready;
+    using starter::await_suspend;
+    [[nodiscard]] result_type await_resume() {
+      return this->task_handle.promise().result_or_rethrow();
+    }
+  };
+
+  struct wait_awaiter : starter {
+    using starter::starter;
+
+    using starter::await_ready;
+    using starter::await_suspend;
     static void await_resume() noexcept {
     }
   };
+
   template <typename OwnerPromise>
   struct wait_with_proxy_owner_awaiter : wait_awaiter {
     std::coroutine_handle<OwnerPromise> proxy_owner;
@@ -256,16 +276,26 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
 
  public:
   // precondition: !empty()
-  constexpr auto operator co_await() noexcept {
+  // await_resume returns reference (result_type&& or void for void)
+  constexpr auto operator co_await() & noexcept {
     assert(!empty());
-    return wait_and_get_result_or_rethrow{handle_};
+    return wait_and_get_ref_awaiter{handle_};
   }
+
+  // precondition: !empty()
+  // await_resume returns value  (task is &&)
+  constexpr auto operator co_await() && noexcept {
+    assert(!empty());
+    return wait_and_get_value_awaiter{handle_};
+  }
+
   // precondition: !empty()
   // postcondition: .get() will return without blocking
   auto wait() noexcept {
     assert(!empty());
     return wait_awaiter(handle_);
   }
+
   // same as .wait, but uses context of another coroutine, see when_all for example
   // postcondition: .get() will return without blocking
   template <typename OwnerPromise>
