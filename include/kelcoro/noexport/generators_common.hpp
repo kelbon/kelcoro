@@ -21,11 +21,9 @@ template <typename R>
 struct elements_of {
   KELCORO_NO_UNIQUE_ADDRESS R rng;
 
-#if !KELCORO_AGGREGATE_PAREN_INIT
-  // may be clang will never support aggregate () initialization...
-  constexpr elements_of(std::type_identity_t<R> rng) noexcept : rng(static_cast<R&&>(rng)) {
+  constexpr elements_of([[clang::coro_elide_unsafe]] std::type_identity_t<R> rng) noexcept
+      : rng(static_cast<R&&>(rng)) {
   }
-#endif
 };
 template <typename R>
 elements_of(R&&) -> elements_of<R&&>;
