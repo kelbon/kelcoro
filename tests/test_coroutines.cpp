@@ -624,7 +624,7 @@ dd::task<int, ctx> ctxed_foo() {
 
 TEST(contexted_task) {
   auto h = ctxed_foo().start_and_detach(/*stop_at_end=*/true);
-  error_if(h.promise().exception);
+  error_if(h.promise().has_exception());
   error_if(!locations.empty());
   h.destroy();
   return error_count;
@@ -996,6 +996,11 @@ dd::task<int&> rvo_task_ref(int& x) {
   co_return dd::rvo;
 }
 
+dd::task<int&> norvo_task_ref(int& x) {
+  (void)co_await jump_on(TP);
+  co_return x;
+}
+
 struct test_mem_resource : std::pmr::memory_resource {
   void* do_allocate(size_t bytes, size_t align) override {
     return std::pmr::new_delete_resource()->allocate(bytes, align);
@@ -1024,6 +1029,7 @@ TEST(rvo_tasks) {
   error_if(rvo_task().get() != "hello world");
   int x = 0;
   error_if(&rvo_task_ref(x).get() != &x);
+  error_if(&norvo_task_ref(x).get() != &x);
   return error_count;
 }
 
@@ -1136,7 +1142,7 @@ TEST(task_throw) {
   auto t2 = throw_smth();
   try {
     auto h = t2.start_and_detach(/*stop_at_end=*/true);
-    error_if(h.promise().exception == nullptr);
+    error_if(!h.promise().has_exception());
     h.destroy();
   } catch (...) {
     error_if(true);

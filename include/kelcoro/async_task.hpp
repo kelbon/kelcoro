@@ -12,7 +12,6 @@ struct async_task;
 
 template <typename Result>
 struct async_task_promise : return_block<Result> {
-  std::exception_ptr exception = nullptr;
   std::atomic_bool ready = false;
   // only owner and coroutine itself are owners
   std::atomic_int8_t ref_count = 1;
@@ -24,8 +23,19 @@ struct async_task_promise : return_block<Result> {
     return async_task<Result>(std::coroutine_handle<async_task_promise<Result>>::from_promise(*this));
   }
   void unhandled_exception() noexcept {
-    exception = std::current_exception();
+    return_block<Result>::set_exception(std::current_exception());
     // goes to final suspend
+  }
+
+  bool has_exception() const noexcept {
+    return return_block<Result>::has_exception();
+  }
+  // precondition: has_exception()
+  std::exception_ptr take_exception() noexcept {
+    return return_block<Result>::take_exception();
+  }
+  void set_exception(std::exception_ptr&& e) noexcept {
+    return_block<Result>::set_exception(std::move(e));
   }
 
  private:
@@ -108,8 +118,8 @@ struct KELCORO_ELIDE_CTX async_task : enable_resource_deduction {
     assert(!empty());
     wait();
     auto& promise = handle.promise();
-    if (promise.exception) [[unlikely]]
-      std::rethrow_exception(promise.exception);
+    if (promise.has_exception()) [[unlikely]]
+      std::rethrow_exception(promise.take_exception());
     return promise.result();
   }
 
