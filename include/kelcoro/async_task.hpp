@@ -103,14 +103,21 @@ struct KELCORO_ELIDE_CTX async_task : enable_resource_deduction {
   }
 
   // precondition: !empty()
-  // must be invoked in one thread(one consumer)
-  std::add_rvalue_reference_t<Result> get() KELCORO_LIFETIMEBOUND {
+  // may be invoked in different thread, but only in one
+  std::add_rvalue_reference_t<Result> get() & KELCORO_LIFETIMEBOUND {
     assert(!empty());
     wait();
     auto& promise = handle.promise();
     if (promise.exception) [[unlikely]]
       std::rethrow_exception(promise.exception);
     return promise.result();
+  }
+
+  // precondition: !empty()
+  // may be invoked in different thread, but only in one
+  Result get() && {
+    async_task& t = *this;
+    return t.get();  // reuse lvalue overload
   }
 
   // return true if call to 'get' will produce UB

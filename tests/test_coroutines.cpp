@@ -1023,8 +1023,7 @@ TEST(gen_with_alloc) {
 TEST(rvo_tasks) {
   error_if(rvo_task().get() != "hello world");
   int x = 0;
-  // TODO simplify, here clang bug (incorrect warning)
-  // error_if(&rvo_task_ref(x).get() != &x);
+  error_if(&rvo_task_ref(x).get() != &x);
   return error_count;
 }
 

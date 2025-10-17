@@ -189,15 +189,13 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
   }
 
   // blocking (if not done yet)
-  // Note: .get() on not ready task which is not scheduled to another thread will lead to deadlock
+  // Note: .get() on not ready task which will not schedule itself to another thread will lead to deadlock
   // precondition: !task.empty() && task not started yet or already done (after .wait for example)
   result_type get() {
     assert(!empty());
-    if (handle_.done()) {
-      // fast path without creating a coroutine
-      return handle_.promise().result_or_rethrow();
-    }
-    return [](task t) -> async_task<result_type> { co_return co_await t; }(std::move(*this)).get();
+    if (!handle_.done()) [[unlikely]]
+      [](task& t) -> async_task<void> { co_await t.wait(); }(*this).get();
+    return handle_.promise().result_or_rethrow();
   }
 
  private:
