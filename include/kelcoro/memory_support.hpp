@@ -24,6 +24,7 @@ concept memory_resource = !std::is_reference_v<T> && requires(T value, size_t sz
   // align arg do not required, because standard do not provide interface
   // for passing alignment to promise_type::new
   { value.allocate(sz) } -> std::convertible_to<void*>;
+  // if type is trivially destructible it must handle case when `value` lays in memory under `ptr`
   { value.deallocate(ptr, sz) } -> std::same_as<void>;
   requires std::is_nothrow_move_constructible_v<T>;
   requires alignof(T) <= alignof(std::max_align_t);
@@ -205,7 +206,7 @@ struct overload_new_delete {
     requires(last_is_memory_resource_tag<Args...> && std::is_same_v<R, resource_type_t<Args...>>)
   static void* operator new(std::size_t frame_sz, Args&&... args) {
     static_assert(std::is_same_v<std::remove_cvref_t<noexport::last_type_t<Args...>>, with_resource<R>>);
-    // TODO when possible
+    // old-style
     // return do_allocate(frame_sz, (args...[sizeof...(Args) - 1]).resource);
     auto voidify = [](auto& x) { return const_cast<void*>((const void volatile*)std::addressof(x)); };
     void* p = (voidify(args), ...);
@@ -220,6 +221,7 @@ struct overload_new_delete {
       R* onframe_resource = (R*)((std::byte*)ptr + frame_sz);
       assert((((uintptr_t)onframe_resource % alignof(R)) == 0));
       if constexpr (std::is_trivially_destructible_v<R>) {
+        // `deallocate` must not touch memory after deallocating (semantic requirement on concept ))
         onframe_resource->deallocate(ptr, frame_sz + sizeof(R));
       } else {
         // save to stack from deallocated memory
