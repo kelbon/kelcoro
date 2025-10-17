@@ -2,7 +2,6 @@
 #include "kelcoro/generator.hpp"
 #include "kelcoro/channel.hpp"
 #include "kelcoro/async_task.hpp"
-#include "kelcoro/inplace_generator.hpp"
 
 #include <random>
 #include <vector>
@@ -802,37 +801,6 @@ CHANNEL_TEST(reference_channels) {
 }
 CO_TEST(reference_channels);
 
-dd::inplace_generator<int> inplace_iota(int i, int j) {
-  for (int x = i; x < j; ++x)
-    co_yield x;
-}
-
-TEST(inplace_generator) {
-  int x = 0;
-  for (int&& i : inplace_iota(0, 150)) {
-    error_if(x != i);
-    ++x;
-  }
-  return error_count;
-}
-TEST(empty_inplace_generator) {
-  for (int x : inplace_iota(0, 0))
-    error_if(true);
-  return error_count;
-}
-TEST(inplace_generator_move) {
-  dd::inplace_generator g = inplace_iota(0, 150);
-  auto g_moved = std::move(g);
-  error_if(!g.empty());
-  int x = 0;
-  for (int&& i : g_moved) {
-    error_if(x != i);
-    ++x;
-  }
-  error_if(!g_moved.empty());
-  return error_count;
-}
-
 template <typename T>
 generator<T> exception_generator() {
   throw std::runtime_error("test");
@@ -1001,9 +969,6 @@ int main() {
   RUN(generator_as_output_range);
   RUN(reference_generators);
   RUN(reference_channels);
-  RUN(inplace_generator);
-  RUN(empty_inplace_generator);
-  RUN(inplace_generator_move);
   RUN(nothing_generator);
   RUN(not_nothing_generator);
   RUN(coawait_in_generator);
