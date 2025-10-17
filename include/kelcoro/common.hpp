@@ -2,12 +2,40 @@
 
 #include <utility>
 #include <type_traits>
-#include <optional>
 #include <coroutine>
 #include <cassert>
 
 #include "noexport/macro.hpp"
 #include "executor_interface.hpp"
+
+namespace dd::noexport {
+
+enum struct retkind_e : uint8_t { EMPTY, VAL, EX };
+
+template <typename T>
+struct retblock_storage {
+  alignas(std::max(alignof(T),
+                   alignof(std::exception_ptr))) char data[std::max(sizeof(T), sizeof(std::exception_ptr))];
+
+  retblock_storage() = default;
+  retblock_storage(retblock_storage&&) = delete;
+  void operator=(retblock_storage&&) = delete;
+
+  T* as_value() noexcept {
+    return (T*)+data;
+  }
+  std::exception_ptr* as_ex() noexcept {
+    return (std::exception_ptr*)+data;
+  }
+  const T* as_value() const noexcept {
+    return (const T*)+data;
+  }
+  const std::exception_ptr* as_ex() const noexcept {
+    return (const std::exception_ptr*)+data;
+  }
+};
+
+}  // namespace dd::noexport
 
 namespace dd {
 
@@ -51,63 +79,101 @@ struct rvo_tag_t {
 //
 constexpr inline const rvo_tag_t rvo = rvo_tag_t{rvo_tag_t::do_not_break_construction{}};
 
-// 'teaches' promise to return
+// 'teaches' promise to return. Note - promise must implement exception logic itself
 template <typename T>
 struct return_block {
-  // it is optional and not bytes of memory for correctly invoking destructor
-  // when .destroy() on handle called, even after coroutine is .done() already
-  std::optional<T> storage = std::nullopt;
+ private:
+  noexport::retblock_storage<T> data;
+  noexport::retkind_e kind = noexport::retkind_e::EMPTY;
+
+ public:
+  return_block() = default;
+
+  ~return_block() {
+    switch (kind) {
+      case noexport::retkind_e::VAL:
+        std::destroy_at(data.as_value());
+        break;
+      case noexport::retkind_e::EX:
+        std::destroy_at(data.as_ex());
+        break;
+      case noexport::retkind_e::EMPTY:
+        break;
+    }
+  }
+
+  bool has_exception() const noexcept {
+    return kind == noexport::retkind_e::EX && *data.as_ex() != nullptr;
+  }
+  void set_exception(std::exception_ptr&& e) noexcept {
+    assert(kind != noexport::retkind_e::EX);
+    if (kind == noexport::retkind_e::VAL)
+      std::destroy_at(data.as_value());
+    std::construct_at(data.as_ex(), std::move(e));
+    kind = noexport::retkind_e::EX;
+  }
+  // precondition: has_exception()
+  std::exception_ptr take_exception() noexcept {
+    assert(has_exception());
+    std::exception_ptr p = std::move(*data.as_ex());
+    std::destroy_at(data.as_ex());
+    kind = noexport::retkind_e::EMPTY;
+    return p;
+  }
+  void unhandled_exception() = delete;  // force promise implement it
 
   template <typename U = T>
   constexpr void return_value(U&& value) noexcept(std::is_nothrow_constructible_v<T, U&&>) {
-    storage.emplace(std::forward<U>(value));
+    assert(kind == noexport::retkind_e::EMPTY);
+    std::construct_at(data.as_value(), std::forward<U>(value));
+    kind = noexport::retkind_e::VAL;
   }
 
   constexpr void return_value(rvo_tag_t) noexcept {
-    assert(storage.has_value());
+    assert(kind != noexport::retkind_e::EMPTY);
   }
 
   constexpr T&& result() noexcept KELCORO_LIFETIMEBOUND {
-    assert(storage.has_value());
-    return std::move(*storage);
+    assert(kind == noexport::retkind_e::VAL);
+    return std::move(*data.as_value());
   }
   // args for case when T is not default contructible
   // must be used with co_return dd::rvo
   template <typename... Args>
-  constexpr T& return_place(Args&&... args) noexcept {
-    return storage.emplace(std::forward<Args>(args)...);
-  }
-};
-
-template <typename T>
-  requires(std::is_trivially_destructible_v<T> && std::is_default_constructible_v<T>)
-struct return_block<T> {
-  T storage;  // not inited here
-
-  template <typename U = T>
-  constexpr void return_value(U&& value) noexcept(std::is_nothrow_constructible_v<T, U&&>) {
-    std::construct_at(std::addressof(storage), std::forward<U>(value));
-  }
-
-  constexpr void return_value(rvo_tag_t) noexcept {
-  }
-
-  constexpr T&& result() noexcept KELCORO_LIFETIMEBOUND {
-    return std::move(storage);
-  }
-  // args for case when T is not default contructible
-  // must be used with co_return dd::rvo
-  template <typename... Args>
-  constexpr T& return_place(Args&&... args) noexcept {
-    return *std::construct_at(std::addressof(storage), std::forward<Args>(args)...);
+  constexpr T& return_place(Args&&... args) noexcept(std::is_nothrow_constructible_v<T, Args...>) {
+    assert(kind == noexport::retkind_e::EMPTY);
+    T* p = std::construct_at(data.as_value(), std::forward<Args>(args)...);
+    kind = noexport::retkind_e::VAL;
+    return *p;
   }
 };
 
 template <typename T>
 struct return_block<T&> {
+ private:
   T* storage = nullptr;
+  std::exception_ptr ex;
+
+ public:
+  return_block() = default;
+
+  ~return_block() = default;
+
+  bool has_exception() const noexcept {
+    return ex != nullptr;
+  }
+  void set_exception(std::exception_ptr&& e) noexcept {
+    ex = std::move(e);
+  }
+  // precondition: has_exception()
+  std::exception_ptr take_exception() noexcept {
+    assert(has_exception());  // same preconditon as in other specializations
+    return std::move(ex);
+  }
+  void unhandled_exception() = delete;  // force promise implement it
 
   constexpr void return_value(T& value) noexcept {
+    assert(storage == nullptr);
     storage = std::addressof(value);
   }
 
@@ -126,6 +192,27 @@ struct return_block<T&> {
 
 template <>
 struct return_block<void> {
+ private:
+  std::exception_ptr ex;
+
+ public:
+  return_block() = default;
+
+  ~return_block() = default;
+
+  bool has_exception() const noexcept {
+    return ex != nullptr;
+  }
+  void set_exception(std::exception_ptr&& e) noexcept {
+    ex = std::move(e);
+  }
+  // precondition: has_exception()
+  std::exception_ptr take_exception() noexcept {
+    assert(has_exception());  // same preconditon as in other specializations
+    return std::move(ex);
+  }
+  void unhandled_exception() = delete;  // force promise implement it
+
   constexpr void return_void() const noexcept {
   }
   static void result() noexcept {

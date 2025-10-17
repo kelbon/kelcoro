@@ -13,8 +13,8 @@ job job_for_when_all(task<T, Ctx>& child, std::coroutine_handle<OwnerPromise> ow
                      expected<T, std::exception_ptr>& result, std::atomic<size_t>& count) {
   co_await child.wait_with_proxy_owner(owner);
 
-  if (child.raw_handle().promise().exception) [[unlikely]]
-    result.data.template emplace<1>(child.raw_handle().promise().exception);
+  if (child.raw_handle().promise().has_exception()) [[unlikely]]
+    result.data.template emplace<1>(child.raw_handle().promise().take_exception());
   else if constexpr (!std::is_void_v<T>)
     result.data.template emplace<0>(child.raw_handle().promise().result());
   else
@@ -78,8 +78,8 @@ job job_for_when_any(task<T, Ctx> child, std::weak_ptr<when_any_state<Ts...>> st
     co_return;
   auto& child_promise = child.raw_handle().promise();
   std::coroutine_handle<> owner;
-  if (child_promise.exception) [[unlikely]]
-    owner = state_s->template set_exception<I>(child_promise.exception);
+  if (child_promise.has_exception()) [[unlikely]]
+    owner = state_s->template set_exception<I>(child_promise.take_exception());
   else if constexpr (!std::is_void_v<T>)
     owner = state_s->template set_result<I>(child_promise.result());
   else
@@ -143,8 +143,8 @@ job job_for_when_any_dyn(task<T, Ctx> child, std::weak_ptr<when_any_state_dyn<T>
     co_return;
   auto& child_promise = child.raw_handle().promise();
   std::coroutine_handle<> owner;
-  if (child_promise.exception) [[unlikely]]
-    owner = state_s->set_exception(I, child_promise.exception);
+  if (child_promise.has_exception()) [[unlikely]]
+    owner = state_s->set_exception(I, child_promise.take_exception());
   else if constexpr (!std::is_void_v<T>)
     owner = state_s->set_result(I, child_promise.result());
   else

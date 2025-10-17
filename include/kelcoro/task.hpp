@@ -67,7 +67,6 @@ template <typename Result, typename Ctx>
 struct task_promise : return_block<Result> {
   KELCORO_NO_UNIQUE_ADDRESS Ctx ctx;
   std::coroutine_handle<> who_waits;
-  std::exception_ptr exception = nullptr;
 
   auto await_transform(this_coro::get_context_t) noexcept {
     return this_coro::get_context_t::awaiter<Ctx>{};
@@ -83,10 +82,22 @@ struct task_promise : return_block<Result> {
   auto self_handle() noexcept {
     return std::coroutine_handle<task_promise>::from_promise(*this);
   }
+
+  bool has_exception() const noexcept {
+    return return_block<Result>::has_exception();
+  }
+  // precondition: has_exception()
+  std::exception_ptr take_exception() noexcept {
+    return return_block<Result>::take_exception();
+  }
+  void set_exception(std::exception_ptr&& e) noexcept {
+    return_block<Result>::set_exception(std::move(e));
+  }
+
   // precondition: not running && .done
   std::add_rvalue_reference_t<Result> result_or_rethrow() {
-    if (exception) [[unlikely]]
-      std::rethrow_exception(exception);
+    if (has_exception()) [[unlikely]]
+      std::rethrow_exception(take_exception());
     return this->result();
   }
 
@@ -100,7 +111,7 @@ struct task_promise : return_block<Result> {
     // if no one waits, throw exception to last .resume caller
     if (who_waits == nullptr) [[unlikely]]
       ctx.on_ignored_exception(self_handle());
-    exception = std::current_exception();
+    set_exception(std::current_exception());
   }
   auto final_suspend() noexcept {
     ctx.on_end(self_handle());
