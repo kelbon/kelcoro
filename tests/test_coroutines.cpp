@@ -942,11 +942,11 @@ TEST(chain_alg) {
   static_assert(std::is_same_v<dd::await_result_t<dd::task<int>>, int>);
   static_assert(std::is_same_v<dd::await_result_t<dd::task<int>&&>, int>);
   static_assert(std::is_same_v<dd::await_result_t<dd::task<int>&>, int&&>);
-  int i = dd::chain(chain0(), dd::avalue{chain0i(10)}).get();
+  int i = dd::chain(chain0(), dd::ignore_result, chain0i(10)).get();
   error_if(i != 10);
   i = dd::chain(chain_strsize("0123456789"), [](int i) { return chain0i(i); }).get();
   error_if(i != 10);
-  dd::chain(chain_strsize("0123456789"), [](int i) { return chain0i(i); }, dd::avalue{chain0()}).get();
+  dd::chain(chain_strsize("0123456789"), [](int i) { return chain0i(i); }, dd::ignore_result, chain0()).get();
   dd::chain(chain_strsize("str"), [](int) { return dd::avalue{10}; }).get();
   i = dd::chain(chain0i(10), chain_inc, chain_inc, chain_inc, chain_inc).get();
   error_if(i != 14);
@@ -961,10 +961,23 @@ TEST(chain_alg) {
       [&](int i) {
         REQUIRE(i == 22);
         invoked = true;
-        return dd::avalue{std::suspend_never{}};
+        return std::suspend_never{};
       })
       .get();
   error_if(!invoked);
+  bool done = false;
+  error_if(10 != dd::chain(dd::jump_on(TP), dd::ignore_result, dd::avalue{10}).get());
+  error_if(42 != dd::chain(dd::avalue{41}, chain_inc).get());
+  dd::schedule_status e = dd::chain(
+                              dd::jump_on(TP), dd::ignore_result, dd::ignore_result,
+                              [&] {
+                                done = true;
+                                return std::suspend_never{};
+                              },
+                              dd::jump_on(TP))
+                              .get();
+  error_if(e.what != dd::schedule_errc::ok);
+  error_if(!done);
   return error_count;
 }
 

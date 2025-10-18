@@ -267,7 +267,8 @@ auto when_any(std::vector<task<T, Ctx>> tasks)
 // binds arguments to a task so that they will be destroyed after the task is executed
 // example:
 //   unique_ptr<X> x = ...;
-//   with(mytask(x.get()), std::move(x)).start_and_detach();
+//   X* ptr = x.get();
+//   with(mytask(ptr), std::move(x)).start_and_detach();
 // precondition: !t.empty()
 template <typename T, typename Ctx>
 task<T, Ctx> with(KELCORO_ELIDABLE_ARG task<T, Ctx> t, auto...) {
@@ -276,15 +277,13 @@ task<T, Ctx> with(KELCORO_ELIDABLE_ARG task<T, Ctx> t, auto...) {
 
 // helper struct to return avaitable and just value at same time
 // behaves as std::suspend_never, but returns `T` from co_await
-// example:
-//   dd::task<string> mytask();
-//   ...
-//   string s = co_await chain(mytask(), [] (string s) { return dd::avalue(s + "abc"); })
-// also may be used as shortcut. Instead of
-//   chain(mytask(), [t = mytask2()] (auto&&...) mutable { return std::move(mytask); }
-// just:
-//   chain(mytask(), dd::avalue(mytask2()));
-//
+//  example:
+//   // jumps on executor and just returns 10 after it
+//   dd::chain(dd::jump_on(e), dd::ignore_result, dd::avalue(10));
+//  example:
+//   dd::task<> foo(int arg);
+//   // just passes `42` into `foo`
+//   dd::chain(dd::avalue(42), foo);
 template <typename T>
 struct avalue {
   T value;
@@ -293,37 +292,62 @@ struct avalue {
     return true;
   }
   static constexpr void await_suspend(std::coroutine_handle<>) noexcept {
+    KELCORO_UNREACHABLE;
   }
   constexpr T&& await_resume() noexcept KELCORO_LIFETIMEBOUND {
     return std::move(value);
   }
+};
 
-  // for using with `chain`
-  T&& operator()(auto&&...) noexcept {
-    return std::move(value);
+template <co_awaitable A, typename Ctx = null_context>
+task<await_result_t<A>, Ctx> with(KELCORO_ELIDABLE_ARG A t, auto...) {
+  co_return co_await t;
+}
+
+// helper for `chain`, ignores result of prev awaitable
+//  example:
+//   auto foo_without_args = [] { return make_task(); };
+//   chain(mytask(), dd::ignore_result(), foo_without_args);
+struct ignore_result_t {
+  std::suspend_never operator()(auto&&...) const noexcept {
+    return {};
   }
 };
 
+constexpr inline ignore_result_t ignore_result = {};
+
 // `foo` should be invocable as foo(T{}) -> awaitable
 // precondition: !t.empty() && foo returns smth avaitable
-template <typename T, typename U, typename Ctx>
-auto chain(KELCORO_ELIDABLE_ARG task<T, Ctx> t, KELCORO_ELIDABLE_ARG U foo)
-    -> task<std::remove_cvref_t<await_result_t<std::invoke_result_t<U, T>>>, Ctx> {
-  co_return co_await foo(co_await t);
+template <typename Ctx = null_context, co_awaitable A, std::invocable<await_result_t<A>> B>
+  requires(!std::is_void_v<await_result_t<A>>)
+auto chain(KELCORO_ELIDABLE_ARG A a, KELCORO_ELIDABLE_ARG B b)
+    -> task<std::remove_cvref_t<await_result_t<std::invoke_result_t<B, await_result_t<A>>>>, Ctx> {
+  co_return co_await b(co_await a);
 }
 
-// U should be invocable as foo()
-template <typename U, typename Ctx>
-auto chain(KELCORO_ELIDABLE_ARG task<void, Ctx> t, KELCORO_ELIDABLE_ARG U foo)
-    -> task<std::remove_cvref_t<await_result_t<std::invoke_result_t<U>>>, Ctx> {
-  co_await t;
-  co_return co_await foo();
+// if `foo` is both invocable AND co_awaitable, compilation error (ambigious)
+// B should be invocable without args
+template <typename Ctx = null_context, co_awaitable A, std::invocable B>
+  requires(std::is_void_v<await_result_t<A>>)
+auto chain(KELCORO_ELIDABLE_ARG A a, KELCORO_ELIDABLE_ARG B b)
+    -> task<std::remove_cvref_t<await_result_t<std::invoke_result_t<B>>>, Ctx> {
+  co_await a;
+  co_return co_await b();
 }
 
-template <typename T, typename Head, typename Tail1, typename... Tail, typename Ctx>
-auto chain(KELCORO_ELIDABLE_ARG task<T, Ctx> t, KELCORO_ELIDABLE_ARG Head foo,
-           KELCORO_ELIDABLE_ARG Tail1 tail1, KELCORO_ELIDABLE_ARG Tail... tail) {
-  return chain(chain(std::move(t), std::move(foo)), std::move(tail1), std::move(tail)...);
+// B should be co_awaitable
+template <typename Ctx = null_context, co_awaitable A, co_awaitable B>
+  requires(std::is_void_v<await_result_t<A>>)
+auto chain(KELCORO_ELIDABLE_ARG A a, KELCORO_ELIDABLE_ARG B b)
+    -> task<std::remove_cvref_t<await_result_t<B>>, Ctx> {
+  co_await a;
+  co_return co_await b;
+}
+
+template <typename Ctx = null_context, co_awaitable A, typename Head, typename Tail1, typename... Tail>
+auto chain(KELCORO_ELIDABLE_ARG A t, KELCORO_ELIDABLE_ARG Head foo, KELCORO_ELIDABLE_ARG Tail1 tail1,
+           KELCORO_ELIDABLE_ARG Tail... tail) {
+  return chain<Ctx>(chain<Ctx>(std::move(t), std::move(foo)), std::move(tail1), std::move(tail)...);
 }
 
 }  // namespace dd
