@@ -1,6 +1,7 @@
 #pragma once
 
-#include <atomic>
+#include <array>
+#include <bit>
 #include <memory_resource>
 #include <cassert>
 #include <utility>
@@ -39,14 +40,15 @@ concept memory_resource = !std::is_reference_v<T> && requires(T value, size_t sz
 template <typename R>
 struct chunk_from {
  private:
-  KELCORO_NO_UNIQUE_ADDRESS std::conditional_t<std::is_empty_v<R>, R, R*> _resource;
+  // bytes used to guarantee aligment == 1, its removes calculations of aligment in operator new/delete
+  KELCORO_NO_UNIQUE_ADDRESS std::conditional_t<std::is_empty_v<R>, R, std::array<char, sizeof(R*)>> _resource;
 
  public:
   R& resource() noexcept {
     if constexpr (std::is_empty_v<R>)
       return _resource;
     else
-      return *_resource;
+      return *std::bit_cast<R*>(_resource);
   }
 
   chunk_from()
@@ -56,7 +58,7 @@ struct chunk_from {
   // implicit
   chunk_from(R& r) noexcept {
     if constexpr (!std::is_empty_v<R>)
-      _resource = std::addressof(r);
+      _resource = std::bit_cast<decltype(_resource)>(std::addressof(r));
   }
 
   [[nodiscard]] void* allocate(size_t sz) {
@@ -172,8 +174,12 @@ namespace noexport {
 template <size_t RequiredPadding>
 constexpr size_t padding_len(size_t sz) noexcept {
   enum { P = RequiredPadding };
-  static_assert(P != 0);
-  return (P - sz % P) % P;
+  if constexpr (P == 1)
+    return 0;  // for constant folding earlier
+  else {
+    static_assert(P != 0);
+    return (P - sz % P) % P;
+  }
 }
 
 }  // namespace noexport
