@@ -63,7 +63,14 @@
   #endif
 
   #if __has_cpp_attribute(clang::coro_await_elidable_argument)
-    #define KELCORO_ELIDABLE_ARG [[clang::coro_await_elidable_argument]]
+    #if defined(__clang__) && (__clang_major__ >= 20 && __clang_major__ < 22)
+      // compiler bug with modules (at this point i dont know if modules used and what bug can happen,
+      // its info from clang coroutine implementer)
+      // https://github.com/alibaba/async_simple/blob/82f2b09f1280c1daf389ece82751e5420a4f2455/async_simple/CommonMacros.h#L59
+      #define KELCORO_ELIDABLE_ARG
+    #else
+      #define KELCORO_ELIDABLE_ARG [[clang::coro_await_elidable_argument]]
+    #endif
   #else
     #define KELCORO_ELIDABLE_ARG
   #endif
