@@ -199,8 +199,10 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
     return h;
   }
 
-  // blocking (if not done yet)
-  // Note: .get() on not ready task which will not schedule itself to another thread will lead to deadlock
+  // blocks (if not done yet)
+  // Note: .get() on not ready task will lead to deadlock if task will not schedule itself to another thread
+  // OR just execute task in one .resume without sleep
+  //
   // precondition: !task.empty() && task not started yet or already done (after .wait for example)
   result_type get() {
     assert(!empty());
