@@ -17,10 +17,6 @@ struct awaiters_queue {
   // if first, then 'last' present too
   node_type* last = nullptr;
 
-  [[nodiscard]] node_type* pop_all_nolock() noexcept {
-    return std::exchange(first, nullptr);
-  }
-
  public:
   awaiters_queue() = default;
   awaiters_queue(awaiters_queue&& other) noexcept
@@ -65,7 +61,7 @@ struct awaiters_queue {
   }
 
   [[nodiscard]] node_type* pop_all() {
-    return pop_all_nolock();
+    return std::exchange(first, nullptr);
   }
 
   // precondition: node && node->task
@@ -121,6 +117,12 @@ struct road {
     }
   };
 
+  // co_await returns `bool` == !this->closed()
+  // Note: resuming waiters in `open` may lead to .close again
+  // this means `wait_open` often need to use in loop.
+  // Example:
+  //  while (!co_await r.wait_open())
+  //    [[unlikely]];
   open_awaiter wait_open() noexcept {
     return open_awaiter(*this);
   }
