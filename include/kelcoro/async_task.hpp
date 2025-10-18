@@ -34,6 +34,7 @@ struct async_task_promise : return_block<Result> {
   std::exception_ptr take_exception() noexcept {
     return return_block<Result>::take_exception();
   }
+  // precondition: e != nullptr
   void set_exception(std::exception_ptr&& e) noexcept {
     return_block<Result>::set_exception(std::move(e));
   }

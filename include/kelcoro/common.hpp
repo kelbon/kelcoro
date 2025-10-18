@@ -79,7 +79,8 @@ struct rvo_tag_t {
 //
 constexpr inline const rvo_tag_t rvo = rvo_tag_t{rvo_tag_t::do_not_break_construction{}};
 
-// 'teaches' promise to return. Note - promise must implement exception logic itself
+// 'teaches' promise to return
+// Note - promise must implement exception logic itself
 template <typename T>
 struct return_block {
  private:
@@ -103,10 +104,11 @@ struct return_block {
   }
 
   bool has_exception() const noexcept {
-    return kind == noexport::retkind_e::EX && *data.as_ex() != nullptr;
+    return kind == noexport::retkind_e::EX;
   }
   void set_exception(std::exception_ptr&& e) noexcept {
     assert(kind != noexport::retkind_e::EX);
+    assert(e != nullptr);
     if (kind == noexport::retkind_e::VAL)
       std::destroy_at(data.as_value());
     std::construct_at(data.as_ex(), std::move(e));
