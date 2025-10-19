@@ -72,7 +72,7 @@ struct awaiters_queue {
   }
 };
 
-// `road` may be closed or opened, ot thread safe
+// `road` may be closed or opened, not thread safe
 //  if closed, coroutines may wait until its open
 struct road {
  private:
