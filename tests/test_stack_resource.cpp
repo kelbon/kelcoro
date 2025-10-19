@@ -19,10 +19,9 @@ static void test_allocator(size_t seed, dd::stack_resource resource) {
 
     void invariant_check() {
       byte_t* b = (byte_t*)ptr;
-      for (byte_t byte : std::span(b, size)) {
+      for (byte_t byte : std::span(b, size))
         if (byte != filling)
           throw std::runtime_error("invariant failed");
-      }
     }
   };
 
@@ -49,7 +48,7 @@ static void test_allocator(size_t seed, dd::stack_resource resource) {
 
 static void do_test_resource() {
   {
-    alignas(dd::coroframe_align()) unsigned char bytes[1];
+    unsigned char bytes[1];
     dd::stack_resource r(bytes);
     for (int seed = 0; seed < 1000; ++seed)
       test_allocator(seed, std::move(r));
@@ -58,10 +57,16 @@ static void do_test_resource() {
     for (int seed = 0; seed < 1000; ++seed)
       test_allocator(seed, dd::stack_resource{});
   }
+  unsigned char bytes[123];
   {
-    alignas(dd::coroframe_align()) unsigned char bytes[123];
     dd::stack_resource r(bytes);
-    for (int seed = 0; seed < 1000; ++seed)
+    for (int seed = 0; seed < 500; ++seed)
+      test_allocator(seed, std::move(r));
+  }
+  {
+    // guarantee its not aligned as coroframe_align
+    dd::stack_resource r({bytes + 1, sizeof(bytes) - 1});
+    for (int seed = 0; seed < 500; ++seed)
       test_allocator(seed, std::move(r));
   }
 }

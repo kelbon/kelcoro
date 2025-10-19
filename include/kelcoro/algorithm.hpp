@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "kelcoro/noexport/expected.hpp"
 #include "kelcoro/task.hpp"
 #include "kelcoro/job.hpp"
@@ -27,7 +29,8 @@ job job_for_when_all(task<T, Ctx>& child, std::coroutine_handle<OwnerPromise> ow
 template <typename... Ts>
 struct when_any_state {
   std::mutex mtx;
-  std::variant<std::monostate, expected<Ts, std::exception_ptr>...> result;
+  // optional avoids initializing first excepted
+  std::optional<std::variant<expected<Ts, std::exception_ptr>...>> result;
   size_t count_waiters = 0;
   std::coroutine_handle<> owner = nullptr;
 
@@ -41,7 +44,7 @@ struct when_any_state {
     std::lock_guard l(mtx);
     if (!owner)  // do not overwrite value, if set_result setted
       return nullptr;
-    result.template emplace<I>(unexpected(std::move(p)));
+    result.emplace(std::in_place_index<I>, unexpected(std::move(p)));
     --count_waiters;
     // returns true only if all tasks ended with exception
     return count_waiters == 0 ? owner : nullptr;
@@ -49,12 +52,11 @@ struct when_any_state {
   // returns owner if caller must resume it
   template <size_t I, typename... Args>
   [[nodiscard]] std::coroutine_handle<> set_result(Args&&... args) {
-    static_assert(I != 0);
     std::unique_lock l(mtx);
     if (!owner)
       return nullptr;
     try {
-      result.template emplace<I>(std::forward<Args>(args)...);
+      result.emplace(std::in_place_index<I>, std::forward<Args>(args)...);
     } catch (...) {
       l.unlock();  // prevent deadlock
       return set_exception<I>(std::current_exception());
@@ -198,11 +200,9 @@ struct first_type {
 };
 // precondition: all tasks not .empty()
 // returns first not failed or last exception if all failed
-// result is never monostate (.index() > 0)
 template <typename... Ts, typename... Ctx>
 auto when_any(task<Ts, Ctx>... tasks)
-    -> task<std::variant<std::monostate, expected<Ts, std::exception_ptr>...>,
-            typename first_type<Ctx...>::type> {
+    -> task<std::variant<expected<Ts, std::exception_ptr>...>, typename first_type<Ctx...>::type> {
   assert((tasks && ...));
   static_assert(sizeof...(tasks) != 0);
 
@@ -214,16 +214,15 @@ auto when_any(task<Ts, Ctx>... tasks)
       // guard for case when someone destroys 'when_any' while we are starting
       // (return result and ends coroutine)
       std::weak_ptr guard = state;
-      // to stack for case when one of them throws/returns without await and destroys 'when_any' task
-      // + 1 bcs of monostate in results
-      job jobs[] = {noexport::job_for_when_any<Is + 1>(std::move(tasks), guard)...};
+      // stored here for case when one of them throws/returns without await and destroys 'when_any' task
+      job jobs[] = {noexport::job_for_when_any<Is>(std::move(tasks), guard)...};
       // must not throw
       for (job& j : jobs)
         j.handle.resume();
     }(std::index_sequence_for<Ts...>{});
   });
 
-  co_return std::move(state->result);
+  co_return std::move(*state->result);
 }
 
 template <typename T>
@@ -237,11 +236,8 @@ struct when_any_dyn_result {
 };
 // precondition: all tasks not .empty()
 // returns value and index of first not failed or last exception if all failed
-// returns only index if T is void
-// Note: unlike static `when_any` version, returns actual index, not variant with index + 1
 template <typename T, typename Ctx>
-auto when_any(std::vector<task<T, Ctx>> tasks)
-    -> task<when_any_dyn_result<T>, typename first_type<Ctx>::type> {
+auto when_any(std::vector<task<T, Ctx>> tasks) -> task<when_any_dyn_result<T>, Ctx> {
   assert(!tasks.empty());
   std::shared_ptr state =
       std::make_shared<noexport::when_any_state_dyn<T>>(tasks.size(), co_await this_coro::handle);
@@ -250,8 +246,7 @@ auto when_any(std::vector<task<T, Ctx>> tasks)
     // guard for case when someone destroys 'when_any' while we are starting
     // (return result and ends coroutine)
     std::weak_ptr guard = state;
-    // to stack for case when one of them throws/returns without await and destroys 'when_any' task
-    // + 1 bcs of monostate in results
+    // stored here for case when one of them throws/returns without await and destroys 'when_any' task
     std::vector<job> jobs;
     size_t i = 0;
     for (auto& t : tasks)

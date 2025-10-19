@@ -111,12 +111,19 @@ struct stack_resource {
     return bytes + noexport::padding_len<dd::coroframe_align()>(bytes);
   }
 
+  static std::span<byte_t> align_span(void* ptr, size_t sz) {
+    if (std::align(coroframe_align(), 0, ptr, sz))
+      return std::span<byte_t>((byte_t*)ptr, sz);
+    else
+      return {};
+  }
+
  public:
-  // precondition: 'bytes' aligned correctly to dd::coroframe_align
-  constexpr explicit stack_resource(std::span<byte_t> bytes = {})
-      : initial_buffer(bytes), b(bytes.data()), m(b), e(b + bytes.size()) {
-    if (!std::is_constant_evaluated())
-      assert(((uintptr_t)bytes.data() % dd::coroframe_align()) == 0 && "incorrect align!");
+  explicit stack_resource(std::span<byte_t> bytes = {})
+      : initial_buffer(align_span(bytes.data(), bytes.size())),
+        b(initial_buffer.data()),
+        m(b),
+        e(b + initial_buffer.size()) {
   }
 
   stack_resource(stack_resource&& other) noexcept
@@ -127,8 +134,10 @@ struct stack_resource {
   }
 
   stack_resource& operator=(stack_resource&& other) noexcept {
-    std::destroy_at(this);
-    std::construct_at(this, std::move(other));
+    if (&other != this) {
+      std::destroy_at(this);
+      std::construct_at(this, std::move(other));
+    }
     return *this;
   }
 

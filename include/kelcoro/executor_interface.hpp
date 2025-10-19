@@ -74,7 +74,8 @@ struct any_executor_ref {
 };
 
 // attaches all tasks from linked list starting from 'top'
-void attach_list(executor auto& e, task_node* top) {
+// noexcept for std::terminate if exception happens. Otherwise it would lead to leak after `attach` exception
+void attach_list(executor auto& e, task_node* top) noexcept {
   while (top) {
     task_node* next = top->next;
     e.attach(top);

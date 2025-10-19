@@ -707,84 +707,86 @@ TEST(when_any) {
   // basic cases
   {
     auto x = dd::when_any(task_fast_throw()).get();
-    error_if(x.index() != 1);
+    error_if(x.index() != 0);
   }
   {
     auto x = dd::when_any(task_fast_value()).get();
-    error_if(x.index() != 1);
+    error_if(x.index() != 0);
   }
   // full failure cases
   {
     auto y = dd::when_any(task_fast_throw(), task_fast_throw(), task_fast_throw()).get();
-    error_if(y.index() != 3);  // must return last exception
+    error_if(y.index() != 2);  // must return last exception
   }
   {
     auto y = dd::when_any(task_fast_throw(), task_throw(), task_fast_throw()).get();
-    // may be 2, but its race, dont know
-    error_if(y.index() == 0);
+    // may be 2, but its race, dont know. But definitely not 0
+    error_if(y.index() != 1 && y.index() != 2);
   }
   {
     auto y = dd::when_any(task_throw(), task_throw(), task_fast_throw()).get();
-    error_if(y.index() == 0);
+    // unknown who first
+    error_if(y.index() > 2);
   }
   {
     auto y = dd::when_any(task_fast_throw(), task_throw(), task_throw()).get();
+    // 0 definitely not last exception
     error_if(y.index() == 0);
   }
   {
     auto y = dd::when_any(task_throw(), task_throw(), task_throw()).get();
-    error_if(y.index() == 0);
+    error_if(y.index() > 2);
   }
   // party failed cases, one pretendent
   {
     auto y = dd::when_any(task_throw(), task_throw(), task_value()).get();
-    error_if(y.index() != 3);
+    error_if(y.index() != 2);
   }
   {
     auto y = dd::when_any(task_throw(), task_value(), task_throw()).get();
-    error_if(y.index() != 2);
+    error_if(y.index() != 1);
   }
   {
     auto y = dd::when_any(task_value(), task_throw(), task_throw()).get();
-    error_if(y.index() != 1);
+    error_if(y.index() != 0);
   }
   {
     auto y = dd::when_any(task_throw(), task_throw(), task_fast_value()).get();
-    error_if(y.index() != 3);
-  }
-  {
-    auto y = dd::when_any(task_throw(), task_fast_value(), task_throw()).get();
     error_if(y.index() != 2);
   }
   {
-    auto y = dd::when_any(task_value(), task_fast_throw(), task_throw()).get();
+    auto y = dd::when_any(task_throw(), task_fast_value(), task_throw()).get();
     error_if(y.index() != 1);
+  }
+  {
+    auto y = dd::when_any(task_value(), task_fast_throw(), task_throw()).get();
+    error_if(y.index() != 0);
   }
   // partial fail many pretendenst cases
   {
     auto y = dd::when_any(task_throw(), task_fast_value(), task_value()).get();
-    error_if(y.index() != 2);
+    error_if(y.index() != 1);
   }
   {
     auto y = dd::when_any(task_throw(), task_value(), task_fast_value()).get();
-    error_if(y.index() == 0);  // dont know order
+    error_if(y.index() == 0);  // dont know exact order
   }
   {
     auto y = dd::when_any(task_fast_value(), task_value(), task_throw()).get();
-    error_if(y.index() != 1);
+    error_if(y.index() != 0);
   }
   // full success cases
   {
     auto y = dd::when_any(task_fast_value(), task_fast_value(), task_fast_value()).get();
-    error_if(y.index() != 1);
+    error_if(y.index() != 0);
   }
   {
     auto y = dd::when_any(task_fast_value(), task_fast_value(), task_value()).get();
-    error_if(y.index() != 1);
+    error_if(y.index() != 0);
   }
   {
     auto y = dd::when_any(task_value(), task_value(), task_value()).get();
-    error_if(y.index() == 0);
+    error_if(y.index() > 2);  // unknown order
   }
 
   return error_count;
@@ -991,7 +993,7 @@ TEST(when_any_different_ctxts) {
   ctx* ctx = t.get_context();
   error_if(!ctx);
   std::variant result = t.get();
-  error_if(result.index() != 2);
+  error_if(result.index() != 1);
   return error_count;
 }
 
