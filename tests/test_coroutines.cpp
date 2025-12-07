@@ -50,6 +50,7 @@ inline dd::generator<int> foo() {
 struct r2 : dd::pmr::polymorphic_resource {};
 
 TEST(allocations) {
+  using dd::noexport::aligned;
   using dd::noexport::padding_len;
   static_assert(padding_len<16>(16) == 0);
   static_assert(padding_len<16>(0) == 0);
@@ -59,6 +60,15 @@ TEST(allocations) {
   static_assert(padding_len<4>(2) == 2);
   static_assert(padding_len<4>(1) == 3);
   static_assert(padding_len<4>(4) == 0);
+
+  static_assert(aligned<16>(16) == 16);
+  static_assert(aligned<16>(0) == 0);
+  static_assert(aligned<16>(1) == 16);
+  static_assert(aligned<16>(8) == 16);
+  static_assert(aligned<4>(3) == 4);
+  static_assert(aligned<4>(2) == 4);
+  static_assert(aligned<4>(1) == 4);
+  static_assert(aligned<4>(4) == 4);
 
   #define EXPECT_PROMISE(promise, ... /* coro arg args*/) \
     static_assert(std::is_same_v<std::coroutine_traits<__VA_ARGS__>::promise_type, promise>);
@@ -1093,7 +1103,9 @@ TEST(expected_e) {
       }                                              \
     }
 
-  #define CHECK_ALIGN(sz, pad, expected) static_assert(::dd::noexport::padding_len<pad>(sz) == expected);
+  #define CHECK_ALIGN(sz, align, expected_padding)                             \
+    static_assert(::dd::noexport::padding_len<align>(sz) == expected_padding); \
+    static_assert(::dd::noexport::aligned<align>(sz) == (sz + expected_padding));
 
 CHECK_ALIGN(0, 8, 0);
 CHECK_ALIGN(16, 16, 0);

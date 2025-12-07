@@ -39,8 +39,8 @@ struct retblock_storage {
 
 namespace dd {
 
-constexpr std::size_t hardware_constructive_interference_size = 64;
-constexpr std::size_t hardware_destructive_interference_size = 64;
+constexpr size_t hardware_constructive_interference_size = 64;
+constexpr size_t hardware_destructive_interference_size = 64;
 
 struct not_movable {
   constexpr not_movable() noexcept = default;
