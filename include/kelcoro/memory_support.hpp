@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <bit>
 #include <memory_resource>
 #include <cassert>
 #include <utility>
@@ -63,7 +64,7 @@ struct chunk_from {
     return std::assume_aligned<dd::coroframe_align()>(resource().allocate(sz));
   }
 
-  void deallocate(void* p, std::size_t sz) noexcept {
+  void deallocate(void* p, size_t sz) noexcept {
     resource().deallocate(p, sz);
   }
 };
@@ -74,7 +75,7 @@ struct new_delete_resource {
     // not malloc because of memory alignment requirement
     return new char[sz];
   }
-  static void deallocate(void* p, std::size_t) noexcept {
+  static void deallocate(void* p, size_t) noexcept {
     delete[] static_cast<char*>(p);
   }
 };
@@ -120,7 +121,7 @@ struct polymorphic_resource {
   void* allocate(size_t sz) {
     return passed->allocate(sz, coroframe_align());
   }
-  void deallocate(void* p, std::size_t sz) noexcept {
+  void deallocate(void* p, size_t sz) noexcept {
     passed->deallocate(p, sz, coroframe_align());
   }
 };
@@ -176,6 +177,19 @@ constexpr size_t padding_len(size_t sz) noexcept {
   return (P - sz % P) % P;
 }
 
+template <size_t ALIGN>
+constexpr size_t aligned(size_t size) {
+  if constexpr (ALIGN < 2)
+    return size;
+  // is power of 2
+  if constexpr (std::has_single_bit(ALIGN) == 1) {
+    constexpr size_t mask = ALIGN - 1;
+    return (size + mask) & ~mask;
+  } else {
+    return size + (ALIGN - size % ALIGN) % ALIGN;
+  }
+}
+
 }  // namespace noexport
 
 // inheritor(coroutine promise) may be allocated with 'R'
@@ -187,7 +201,7 @@ struct overload_new_delete {
     if constexpr (std::is_empty_v<R>)
       return (void*)r.allocate(frame_sz);
     else {
-      frame_sz += noexport::padding_len<alignof(R)>(frame_sz);
+      frame_sz = noexport::aligned<alignof(R)>(frame_sz);
       std::byte* p = (std::byte*)r.allocate(frame_sz + sizeof(R));
       new (p + frame_sz) R(std::move(r));
       return p;
@@ -204,7 +218,7 @@ struct overload_new_delete {
 
   template <typename... Args>
     requires(last_is_memory_resource_tag<Args...> && std::is_same_v<R, resource_type_t<Args...>>)
-  static void* operator new(std::size_t frame_sz, Args&&... args) {
+  static void* operator new(size_t frame_sz, Args&&... args) {
     static_assert(std::is_same_v<std::remove_cvref_t<noexport::last_type_t<Args...>>, with_resource<R>>);
     // old-style
     // return do_allocate(frame_sz, (args...[sizeof...(Args) - 1]).resource);
@@ -212,12 +226,12 @@ struct overload_new_delete {
     void* p = (voidify(args), ...);
     return do_allocate(frame_sz, static_cast<with_resource<R>*>(p)->resource);
   }
-  static void operator delete(void* ptr, std::size_t frame_sz) noexcept {
+  static void operator delete(void* ptr, size_t frame_sz) noexcept {
     if constexpr (std::is_empty_v<R>) {
       R r{};
       r.deallocate(ptr, frame_sz);
     } else {
-      frame_sz += noexport::padding_len<alignof(R)>(frame_sz);
+      frame_sz = noexport::aligned<alignof(R)>(frame_sz);
       R* onframe_resource = (R*)((std::byte*)ptr + frame_sz);
       assert((((uintptr_t)onframe_resource % alignof(R)) == 0));
       if constexpr (std::is_trivially_destructible_v<R>) {

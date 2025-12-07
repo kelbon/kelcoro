@@ -45,7 +45,6 @@ struct stack_resource {
     }
 
     chunk_header* take_atleast(size_t bytes) noexcept {
-      size_t sz_before = count();
       chunk_header* prev = nullptr;
       chunk_header* c = top;
       while (c) {
@@ -55,8 +54,7 @@ struct stack_resource {
             prev->freelist_next = c->freelist_next;
           else
             top = c->freelist_next;
-          c->freelist_next = nullptr;
-          assert(count() == sz_before - 1);
+          // not needed rly c->freelist_next = nullptr;
           return c;
         }
         prev = c;
@@ -107,7 +105,7 @@ struct stack_resource {
     freelist.push(chunk);
   }
 
-  std::size_t aligned(std::size_t bytes) {
+  size_t aligned(size_t bytes) {
     return bytes + noexport::padding_len<dd::coroframe_align()>(bytes);
   }
 
@@ -168,14 +166,14 @@ struct stack_resource {
     return b;
   }
 
-  void deallocate(void* ptr, size_t len) noexcept {
+  void deallocate(const void* ptr, size_t len) noexcept {
     assert(((uintptr_t)ptr % 16) == 0 && "dealloc not allocated memory");
     len = aligned(len);
     // not in current chunk, must be in some of prev
     // in most cases its literaly previous chunk, but its possible
     // if all memory from chunk deallocated, then allocated > chunk size
     // so prev chunk will be empty
-    while ((byte_t*)ptr != m - len) {
+    while ((const byte_t*)ptr != m - len) {
       assert(ptr <= b || ptr >= e);
       drop_cur_chunk();
     }
