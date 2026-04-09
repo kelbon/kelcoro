@@ -61,12 +61,25 @@ struct null_context {
   template <typename P>
   static void on_ignored_exception(std::coroutine_handle<P>) noexcept {
   }
+
+  // invoked when .get() on task called and handle not .done
+  // `task` is a dd::task with context
+  // default blocking wait assumes starting task will schedule task on another thread,
+  // this may be useful customization point for creating blocking wait on top of stackful coroutines
+  // pre: !task.empty()
+  static void do_blocking_wait(auto& task) {
+    [](auto& t) -> async_task<void> { co_await t.wait(); }(task).get();
+  }
 };
 
 template <typename Result, typename Ctx>
 struct task_promise : return_block<Result> {
   KELCORO_NO_UNIQUE_ADDRESS Ctx ctx;
   std::coroutine_handle<> who_waits;
+
+  task_promise() = default;
+  task_promise(task_promise&&) = delete;
+  void operator=(task_promise&&) = delete;
 
   auto await_transform(this_coro::get_context_t) noexcept {
     return this_coro::get_context_t::awaiter<Ctx>{};
@@ -166,6 +179,80 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
     return handle_ ? std::addressof(handle_.promise().ctx) : (context_type*)nullptr;
   }
 
+  struct start_result {
+   private:
+    handle_type handle;
+
+   public:
+    explicit start_result(handle_type h) : handle(h) {
+      assert(h);
+    }
+    start_result(start_result&&) = delete;
+    void operator=(start_result&&) = delete;
+    ~start_result() {
+      assert(handle);
+      if (handle.done()) {
+        // wait or operator co_await had been called and waited
+        handle.destroy();
+      } else {
+        // detach
+        handle.promise().who_waits = nullptr;
+      }
+    }
+
+    struct already_started_awaiter {
+      handle_type h;
+
+      bool await_ready() const noexcept {
+        return h.done();
+      }
+      template <typename Owner>
+      void await_suspend(std::coroutine_handle<Owner> o) {
+        prepare_task_to_start(h, o);
+        // task already in progress on this thread
+      }
+      [[nodiscard]] result_type await_resume() {
+        return h.promise().result_or_rethrow();
+      }
+    };
+
+    struct already_started_wait_awaiter : already_started_awaiter {
+      [[nodiscard]] promise_type& await_resume() {
+        return this->h.promise();
+      }
+    };
+
+    // post: != nullptr
+    handle_type raw_handle() const noexcept {
+      return handle;
+    }
+
+    // only one `wait` or `co_await` may be called
+    // both awaiters MUST NOT outlive *this
+    [[nodiscard]] already_started_wait_awaiter wait() const noexcept KELCORO_LIFETIMEBOUND {
+      return already_started_wait_awaiter{handle};
+    }
+    [[nodiscard]] already_started_awaiter operator co_await() const noexcept KELCORO_LIFETIMEBOUND {
+      return already_started_awaiter{handle};
+    }
+  };
+
+  // starts task with possiblity to wait later
+  // ignoring returned object results into detach
+  // Its caller responsibility that coroutine should not go on another thread after first .resume
+  // pre: !empty()
+  // post: empty()
+  [[nodiscard]] start_result start() {
+    handle_type h = release();
+    assert(h);
+    // task resumes itself at end and destroys itself or just stops with noop_coroutine
+    h.promise().who_waits = std::noop_coroutine();
+    h.promise().ctx.on_start(h);
+    h.resume();
+    // at this point h.done() possible, but h cannot be destroyed - task holds value
+    return start_result(h);
+  }
+
   // precondition: empty() || not started yet
   // postcondition: empty(), task result ignored (exception too)
   // returns released task handle
@@ -208,7 +295,7 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
   result_type get() {
     assert(!empty());
     if (!handle_.done()) [[unlikely]]
-      [](task& t) -> async_task<void> { co_await t.wait(); }(*this).get();
+      handle_.promise().ctx.do_blocking_wait(*this);
     return handle_.promise().result_or_rethrow();
   }
 

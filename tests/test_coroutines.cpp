@@ -1218,6 +1218,42 @@ TEST(elide) {
   return error_count;
 }
 
+dd::task<int> fasttask0() {
+  co_return 5;
+}
+
+dd::task<int> ft1() {
+  dd::task t = fasttask0();
+  auto x = t.start();
+  co_return co_await x;
+}
+
+dd::task<int> slowtask0() {
+  co_await std::suspend_always{};
+  co_return 5;
+}
+
+dd::task<int> ft2() {
+  dd::task t = slowtask0();
+  auto x = t.start();
+  x.raw_handle().resume();
+  co_return co_await x;
+}
+
+TEST(start) {
+  dd::task t = ft1();
+  auto h = t.start_and_detach(/*stop_at_end=*/true);
+  REQUIRE(h.done());
+  REQUIRE(h.promise().result_or_rethrow() == 5);
+  h.destroy();
+  dd::task t2 = ft2();
+  auto h2 = t2.start_and_detach(/*stop_at_end=*/true);
+  REQUIRE(h2.done());
+  REQUIRE(h2.promise().result_or_rethrow() == 5);
+  h2.destroy();
+  return error_count;
+}
+
 int main() {
   // default constructible for empty typpes
   (void)dd::chunk_from<dd::new_delete_resource>{};
@@ -1258,6 +1294,7 @@ int main() {
   RUN(rvo_tasks);
   RUN(gen_with_alloc);
   RUN(detached_task);
+  RUN(start);
   return ec;
 }
 #else
