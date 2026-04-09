@@ -13,7 +13,6 @@ template <yieldable Yield>
 struct channel_promise : not_movable {
   using handle_type = std::coroutine_handle<channel_promise>;
 
- private:
   friend channel<Yield>;
   friend channel_iterator<Yield>;
   friend noexport::attach_leaf<channel<Yield>>;
@@ -57,7 +56,6 @@ struct channel_promise : not_movable {
     root->current_worker = _owner;
   }
 
- public:
   constexpr channel_promise() noexcept {
   }
   channel<Yield> get_return_object() noexcept {

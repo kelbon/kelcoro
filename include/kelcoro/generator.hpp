@@ -92,7 +92,6 @@ struct generator_promise : not_movable, yield_block<generator_promise<Yield>, Yi
     root->current_worker = _owner;
   }
 
- public:
   constexpr generator_promise() noexcept {
   }
 
