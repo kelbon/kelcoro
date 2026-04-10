@@ -79,6 +79,17 @@ struct rvo_tag_t {
 //
 constexpr inline const rvo_tag_t rvo = rvo_tag_t{rvo_tag_t::do_not_break_construction{}};
 
+// tag for returning exception.
+// co_return dd::return_exception(my_ex); is EQUAL to throw, but more effective
+// should be used when task have exception ptr already to "rethrow" it more effectively
+// Note: due to return_void / return_value C++ standard things its not possible to do same for task/async_task
+// returning void (there are no available way to overload return_void with tag)
+// Note: DO NOT create awaiters for such things, because co_await my_return_exception(ex) will create
+// additional state for task - done, but .done() on handle is not true this may lead to memory leak
+struct return_exception {
+  std::exception_ptr exception;
+};
+
 // 'teaches' promise to return
 // Note - promise must implement exception logic itself
 template <typename T>
@@ -135,6 +146,11 @@ struct return_block {
     assert(kind != noexport::retkind_e::EMPTY);
   }
 
+  void return_value(return_exception ex) noexcept {
+    // do not check for EMPTY state, may be after setting value manually (rvo_tag)
+    set_exception(std::move(ex.exception));
+  }
+
   constexpr T&& result() noexcept KELCORO_LIFETIMEBOUND {
     assert(kind == noexport::retkind_e::VAL);
     return std::move(*data.as_value());
@@ -183,6 +199,11 @@ struct return_block<T&> {
     assert(storage != nullptr);
   }
 
+  void return_value(return_exception ex) noexcept {
+    // do not check for EMPTY state, may be after setting value manually (rvo_tag)
+    set_exception(std::move(ex.exception));
+  }
+
   constexpr T& result() noexcept {
     assert(storage != nullptr);
     return *storage;
@@ -217,6 +238,9 @@ struct return_block<void> {
 
   constexpr void return_void() const noexcept {
   }
+  // return_exception no possible due C++ requirements without breaking .done() on handle (see
+  // return_exception description)
+
   static void result() noexcept {
   }
   static void return_place() noexcept {

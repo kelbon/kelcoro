@@ -1254,6 +1254,64 @@ TEST(start) {
   return error_count;
 }
 
+dd::task<int> throwtask1() {
+  throw 5;
+}
+
+dd::task<int> throwtask2() {
+  try {
+    throw 5;
+  } catch (...) {
+    co_return dd::return_exception{std::current_exception()};
+  }
+}
+
+dd::task<std::string> throwtask3() {
+  std::string& ret = co_await dd::this_coro::return_place;
+  ret = std::string(100, 'a');
+  try {
+    throw 5;
+  } catch (...) {
+    // returning exception AFTER setting value manually
+    co_return dd::return_exception{std::current_exception()};
+  }
+}
+
+dd::task<std::string> throwtask4() {
+  std::string& ret = co_await dd::this_coro::return_place;
+  ret = std::string(100, 'a');
+  // returning exception AFTER setting value manually
+  throw 5;
+}
+
+dd::job return_exception_tester() {
+  try {
+    (void)co_await throwtask1();
+    REQUIRE(false);
+  } catch (...) {
+  }
+  try {
+    (void)co_await throwtask2();
+    REQUIRE(false);
+  } catch (...) {
+  }
+  try {
+    (void)co_await throwtask3();
+    REQUIRE(false);
+  } catch (...) {
+  }
+  try {
+    (void)co_await throwtask4();
+    REQUIRE(false);
+  } catch (...) {
+  }
+}
+
+TEST(return_exception) {
+  (void)return_exception_tester();
+  return 0;
+}
+
 int main() {
   // default constructible for empty typpes
   (void)dd::chunk_from<dd::new_delete_resource>{};
@@ -1295,6 +1353,7 @@ int main() {
   RUN(gen_with_alloc);
   RUN(detached_task);
   RUN(start);
+  RUN(return_exception);
   return ec;
 }
 #else
