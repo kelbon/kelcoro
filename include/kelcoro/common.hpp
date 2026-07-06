@@ -4,6 +4,7 @@
 #include <type_traits>
 #include <coroutine>
 #include <cassert>
+#include <exception>
 
 #include "noexport/macro.hpp"
 #include "executor_interface.hpp"
