@@ -156,7 +156,7 @@ struct channel_iterator {
     return std::addressof(chan) == std::addressof(other.chan);
   }
   channel<Yield>& owner() const noexcept {
-    return chan;
+    return *chan;
   }
 
   constexpr bool operator==(std::default_sentinel_t) const noexcept {

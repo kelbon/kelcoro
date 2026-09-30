@@ -64,12 +64,12 @@ struct expected {
   // precondition: !has_value()
   E& error() noexcept {
     assert(!has_value());
-    return std::get_if<1>(&data);
+    return *std::get_if<1>(&data);
   }
   // precondition: !has_value()
   const E& error() const noexcept {
     assert(!has_value());
-    return std::get_if<1>(&data);
+    return *std::get_if<1>(&data);
   }
 };
 
