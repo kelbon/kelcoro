@@ -280,10 +280,13 @@ struct thread_pool {
     // going on, someone could push into the dead queue.
     task_node pill = task_node::deadpill();
     for (size_t i = 0; i < threads.size(); i++) {
-      if (threads[i].joinable()) {
-        queues[i].push(&pill);
-        threads[i].join();
-      }
+      if (!threads[i].joinable())
+        continue;
+      queues[i].push(&pill);
+      threads[i].join();
+      // worker may have exited before (request_stop), then pill is still in the queue.
+      // Remove it before the same node is pushed into the next queue
+      noexport::cancel_tasks(queues[i].pop_all());
     }
     for (auto& q : queues)
       noexport::cancel_tasks(q.pop_all());

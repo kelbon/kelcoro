@@ -1,6 +1,13 @@
 #pragma once
 
+#include <algorithm>
+#include <atomic>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <tuple>
+#include <variant>
+#include <vector>
 
 #include "kelcoro/noexport/expected.hpp"
 #include "kelcoro/task.hpp"
@@ -164,7 +171,7 @@ auto when_all(KELCORO_ELIDABLE_ARG task<Ts, Ctx>... tasks)
     -> task<std::tuple<expected<Ts, std::exception_ptr>...>, Ctx> {
   assert((tasks && ...));
   if constexpr (sizeof...(tasks) == 0)
-    co_return {};
+    co_return std::tuple<>{};
   std::atomic<size_t> count = sizeof...(tasks);
   std::tuple<expected<Ts, std::exception_ptr>...> results;
 
@@ -182,7 +189,7 @@ template <typename T, typename Ctx>
 auto when_all(std::vector<task<T, Ctx>> tasks) -> task<std::vector<expected<T, std::exception_ptr>>, Ctx> {
   assert(std::ranges::find_if(tasks, [](auto& t) { return t.empty(); }) == tasks.end());
   if (tasks.empty())
-    co_return {};
+    co_return std::vector<expected<T, std::exception_ptr>>{};
   std::atomic<size_t> count = tasks.size();
   std::vector<expected<T, std::exception_ptr>> results(tasks.size());
 

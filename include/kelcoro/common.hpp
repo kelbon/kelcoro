@@ -89,6 +89,9 @@ constexpr inline const rvo_tag_t rvo = rvo_tag_t{rvo_tag_t::do_not_break_constru
 // additional state for task - done, but .done() on handle is not true this may lead to memory leak
 struct return_exception {
   std::exception_ptr exception;
+
+  explicit return_exception(std::exception_ptr e) noexcept : exception(std::move(e)) {
+  }
 };
 
 // 'teaches' promise to return

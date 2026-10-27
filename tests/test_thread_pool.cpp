@@ -157,12 +157,40 @@ TEST(request_stop) {
   return error_count;
 }
 
+// counts allocations to check that memory is returned to the same resource
+struct counting_resource : std::pmr::memory_resource {
+  std::atomic_int allocated = 0;
+
+  void* do_allocate(size_t bytes, size_t align) override {
+    ++allocated;
+    return std::pmr::new_delete_resource()->allocate(bytes, align);
+  }
+  void do_deallocate(void* p, size_t bytes, size_t align) override {
+    --allocated;
+    std::pmr::new_delete_resource()->deallocate(p, bytes, align);
+  }
+  bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
+    return this == &other;
+  }
+};
+
+TEST(thread_pool_resource) {
+  counting_resource r;
+  {
+    dd::thread_pool pool(2, dd::default_worker_job, r);
+    error_if(&pool.get_resource() != &r);
+  }
+  error_if(r.allocated != 0);
+  return error_count;
+}
+
 int main() {
   size_t ec = 0;
   ec += test_latch();
   ec += test_thread_pool();
   ec += test_latch_waiters();
   ec += test_request_stop();
+  ec += test_thread_pool_resource();
   return ec;
 }
 #ifdef _WIN32
