@@ -153,7 +153,7 @@ struct channel_iterator {
 
   // return true if they are attached to same 'channel' object
   constexpr bool equivalent(const channel_iterator& other) const noexcept {
-    return std::addressof(chan) == std::addressof(other.chan);
+    return chan == other.chan;
   }
   channel<Yield>& owner() const noexcept {
     return *chan;
