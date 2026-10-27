@@ -658,6 +658,9 @@ dd::task<std::tuple<int, std::string, std::vector<int>, std::unique_ptr<int>>> c
 TEST(complex_ret) {
   complex_ret(0).start_and_detach();
   complex_ret(1).start_and_detach();
+  // co_return {} returns default constructed value
+  auto r = complex_ret(2).get();
+  error_if(std::get<0>(r) != 0 || std::get<3>(r) != nullptr);
   return error_count;
 }
 
@@ -710,6 +713,13 @@ TEST(when_all_dynamic) {
     error_if(!x);
     error_count += *x;
   }
+  return error_count;
+}
+
+TEST(when_all_empty) {
+  std::vector<dd::task<int>> tasks;
+  auto res = dd::when_all(std::move(tasks)).get();
+  error_if(!res.empty());
   return error_count;
 }
 
@@ -1345,6 +1355,7 @@ int main() {
   RUN(when_all_same_ctx);
   RUN(when_any);
   RUN(when_all_dynamic);
+  RUN(when_all_empty);
   RUN(when_any_different_ctxts);
   RUN(when_any_dyn);
   RUN(chain_alg);

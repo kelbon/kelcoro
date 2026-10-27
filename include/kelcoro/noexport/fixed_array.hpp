@@ -27,10 +27,11 @@ struct fixed_array {
     std::swap(resource, rhs.resource);
     return *this;
   }
-  fixed_array(size_t n, std::pmr::memory_resource& resource = *std::pmr::new_delete_resource()) : n(n) {
+  fixed_array(size_t n, std::pmr::memory_resource& r = *std::pmr::new_delete_resource())
+      : n(n), resource(&r) {
     if (n == 0)
       return;
-    arr = (T*)resource.allocate(sizeof(T) * n, alignof(T));
+    arr = (T*)resource->allocate(sizeof(T) * n, alignof(T));
     std::uninitialized_default_construct_n(arr, n);
   }
 
