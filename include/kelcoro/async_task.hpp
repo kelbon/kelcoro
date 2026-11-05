@@ -133,7 +133,7 @@ struct KELCORO_ELIDE_CTX async_task : enable_resource_deduction {
 
   // return true if call to 'get' will produce UB
   constexpr bool empty() const noexcept {
-    return handle == nullptr;
+    return !handle;
   }
   constexpr explicit operator bool() const noexcept {
     return !empty();
