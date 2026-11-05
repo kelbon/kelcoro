@@ -158,7 +158,7 @@ struct KELCORO_ELIDE_CTX logical_thread : enable_resource_deduction {
   // thread-like interface
 
   [[nodiscard]] bool joinable() const noexcept {
-    return handle_ != nullptr;
+    return static_cast<bool>(handle_);
   }
 
   // postcondition : !joinable()
@@ -181,7 +181,7 @@ struct KELCORO_ELIDE_CTX logical_thread : enable_resource_deduction {
   // stopping
 
   bool stop_possible() const noexcept {
-    return handle_ != nullptr;
+    return static_cast<bool>(handle_);
   }
   bool request_stop() noexcept {
     if (!stop_possible())

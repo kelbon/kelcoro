@@ -163,7 +163,7 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
   }
   // returns true if task cant be co_awaited
   constexpr bool empty() const noexcept {
-    return handle_ == nullptr;
+    return !handle_;
   }
   constexpr explicit operator bool() const noexcept {
     return !empty();
