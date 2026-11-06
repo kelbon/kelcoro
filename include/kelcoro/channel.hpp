@@ -265,11 +265,11 @@ struct KELCORO_ELIDE_CTX channel : enable_resource_deduction {
 
   // postcondition: .empty()
   constexpr void clear() noexcept {
-    if (top) {
-      top.destroy();
-      top = nullptr;
-    }
+    // уничтожение фрейма может положить в канал новый (operator= swap)
+    while (top)
+      std::exchange(top, nullptr).destroy();
   }
+
   ~channel() {
     clear();
   }
