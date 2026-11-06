@@ -141,7 +141,16 @@ struct generator_promise : not_movable, yield_block<generator_promise<Yield>, Yi
     if (root != this)
       skip_this_leaf();
     set_result(nullptr);
+#if defined(_MSC_VER)
+    // MSVC ABI (clang под Windows тоже определяет _MSC_VER): объект исключения лежит на стеке бросившей
+    // функции, а у корутины это может быть её кадр (clang переносит туда временные объекты). Если кадр
+    // уничтожат, пока исключение летит (генератор - локальная переменная другой корутины, объект в try),
+    // обработчик получит висячую ссылку. current_exception копирует объект в кучу, rethrow_exception - на
+    // нативный стек, дальше от кадров корутин он не зависит
+    std::rethrow_exception(std::current_exception());
+#else
     throw;
+#endif
   }
 };
 
