@@ -1,6 +1,7 @@
 #pragma once
 
 #include <concepts>
+#include <iterator>  // default sentinel etc
 
 #include "kelcoro/noexport/macro.hpp"
 #include "kelcoro/memory_support.hpp"
