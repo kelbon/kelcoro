@@ -125,6 +125,26 @@ TEST(latch_waiters) {
   return error_count;
 }
 
+// latch may be destroyed right after `wait` returned: count_down on another thread does not use latch after
+// waking waiters
+TEST(latch_destroyed_after_wait) {
+  dd::thread_pool pool(4);
+  std::vector<dd::async_task<void>> tasks;
+  for (int i = 0; i < 2000; ++i) {
+    dd::latch* l = new dd::latch(1, pool);
+    auto waiter = [](dd::thread_pool& pool, dd::latch* l) -> dd::async_task<void> {
+      (void)co_await dd::jump_on(pool);
+      co_await l->wait();
+      delete l;
+    };
+    tasks.push_back(waiter(pool, l));
+    dd::schedule_to(pool, [l] { l->count_down(); });
+  }
+  for (auto& t : tasks)
+    t.wait();
+  return error_count;
+}
+
 TEST(request_stop) {
   auto tsize = dd::thread_pool::default_thread_count();
   thread_local std::minstd_rand rand(42);
@@ -189,6 +209,7 @@ int main() {
   ec += test_latch();
   ec += test_thread_pool();
   ec += test_latch_waiters();
+  ec += test_latch_destroyed_after_wait();
   ec += test_request_stop();
   ec += test_thread_pool_resource();
   return ec;

@@ -8,6 +8,7 @@ namespace dd {
 
 // same as std::latch, but for coroutines
 // when completed, starts all waiters on passed executor
+// may be destroyed right after `wait` / `arrive_and_wait` returned
 struct latch {
  private:
   nonowner_lockfree_stack<task_node> stack;
@@ -21,35 +22,32 @@ struct latch {
     bool await_ready() const noexcept {
       return l.ready();
     }
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
+    bool await_suspend(std::coroutine_handle<> handle) noexcept {
       node.task = handle;
-      l.stack.push(&node);
-      // in case if 'ready' changed from 'false' to 'true' wakeup all who call 'wait'
-      if (l.ready())
-        l.wakeup_all();
+      // prevent using latch after push
+      return l.stack.try_push(&node);
     }
     static void await_resume() noexcept {
     }
   };
-  // this prevents such situation:
-  // - .count_down
-  // - .wait
-  // - checked if ready: no, then go to .push into stack
-  // - someone else decrement counter and wakeup all
-  // - one task leaks
+
+  // same as wait if n == 0
   struct arrive_and_wait_awaiter {
     latch& l;
     ptrdiff_t n;
     task_node node;
 
-    static bool await_ready() noexcept {
-      // do not check here for preventing data race (counter == 0, but no task in queue)
-      return false;
+    bool await_ready() const noexcept {
+      // n > 0 => 100% not completed, count_down not yet done
+      return n == 0 && l.ready();
     }
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
+    bool await_suspend(std::coroutine_handle<> handle) noexcept {
       node.task = handle;
+      if (n == 0)  // same as `wait`
+        return l.stack.try_push(&node);
       l.stack.push(&node);
       l.count_down(n);
+      return true;
     }
     static void await_resume() noexcept {
     }
@@ -57,7 +55,8 @@ struct latch {
 
  public:
   // precondition: count >= 0 and <= max, task will be executed on 'e'
-  constexpr explicit latch(ptrdiff_t count, any_executor_ref e) noexcept : counter(count), exe(e) {
+  constexpr explicit latch(ptrdiff_t count, any_executor_ref e) noexcept
+      : stack(count == 0), exe(e), counter(count) {
     assert(count >= 0 && count <= max());
   }
   latch(latch&&) = delete;
@@ -77,10 +76,10 @@ struct latch {
       wakeup_all();
   }
 
-  // returns true if the internal counter has reached zero
+  // returns true if the internal counter has reached zero and waiters are woken
   // never blocks, 'try_wait' in std::latch
   [[nodiscard]] bool ready() const noexcept {
-    return counter.load(std::memory_order::acquire) == 0;
+    return stack.closed();
   }
 
   // suspends the calling coroutine until the internal counter reaches ​0​.
@@ -102,8 +101,9 @@ struct latch {
 
  private:
   void wakeup_all() noexcept {
-    task_node* top = stack.try_pop_all();
-    attach_list(exe, top);
+    // do not use *this after possible destroy
+    any_executor_ref e = exe;
+    attach_list(e, stack.close());
   }
 };
 
