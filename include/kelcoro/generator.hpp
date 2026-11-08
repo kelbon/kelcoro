@@ -203,10 +203,16 @@ struct generator_iterator {
   // * after invoking references to value from operator* are invalidated
   generator_iterator& operator++() KELCORO_LIFETIMEBOUND {
     KELCORO_ASSUME(!self->empty());
-    const auto* const self_before = self;
+    self->top.promise().current_worker.resume();
+    return *this;
+  }
+  // same as ++, but generator must not be replaced (moved / swapped) while resumed
+  generator_iterator& inc_fast() KELCORO_LIFETIMEBOUND {
+    KELCORO_ASSUME(!self->empty());
+    // TODO: propose to clang
+    // __builtin_invariant_load (load with !invariant.group) + always emitting launder.invariant.group
     const auto* const top_address_before = self->top.address();
     self->top.promise().current_worker.resume();
-    KELCORO_ASSUME(self_before == self);
     const auto* const top_address_after = self->top.address();
     KELCORO_ASSUME(top_address_before == top_address_after);
     return *this;
