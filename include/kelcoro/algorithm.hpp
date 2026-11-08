@@ -172,7 +172,7 @@ auto when_all(KELCORO_ELIDABLE_ARG task<Ts, Ctx>... tasks)
   assert((tasks && ...));
   if constexpr (sizeof...(tasks) == 0)
     co_return std::tuple<>{};
-  std::atomic<size_t> count = sizeof...(tasks);
+  std::atomic<size_t> count = sizeof...(tasks) + 1;
   std::tuple<expected<Ts, std::exception_ptr>...> results;
 
   co_await this_coro::suspend_and([&](auto when_all_handle) {
@@ -180,6 +180,7 @@ auto when_all(KELCORO_ELIDABLE_ARG task<Ts, Ctx>... tasks)
       (noexport::job_for_when_all(tasks, when_all_handle, vals, count), ...);
     };
     std::apply(starter, results);
+    return count.fetch_sub(1, std::memory_order_acq_rel) != 1;
   });
   co_return results;
 }
@@ -190,13 +191,14 @@ auto when_all(std::vector<task<T, Ctx>> tasks) -> task<std::vector<expected<T, s
   assert(std::ranges::find_if(tasks, [](auto& t) { return t.empty(); }) == tasks.end());
   if (tasks.empty())
     co_return std::vector<expected<T, std::exception_ptr>>{};
-  std::atomic<size_t> count = tasks.size();
+  std::atomic<size_t> count = tasks.size() + 1;
   std::vector<expected<T, std::exception_ptr>> results(tasks.size());
 
   co_await this_coro::suspend_and([&](auto when_all_handle) {
     size_t i = 0;
     for (auto& task : tasks)
       noexport::job_for_when_all(task, when_all_handle, results[i++], count);
+    return count.fetch_sub(1, std::memory_order_acq_rel) != 1;
   });
   co_return results;
 }

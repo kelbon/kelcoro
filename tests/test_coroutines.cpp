@@ -716,6 +716,23 @@ TEST(when_all_dynamic) {
   return error_count;
 }
 
+// all tasks end while when_all starts them, and when_all task is destroyed right after co_await
+dd::task<size_t> when_all_of_fast_tasks() {
+  std::vector<dd::task<std::string>> tasks;
+  for (int i = 0; i < 3; ++i)
+    tasks.push_back(task_fast_value_str());
+  size_t n = 0;
+  for (auto& x : co_await dd::when_all(std::move(tasks)))
+    n += x && *x == "str";
+  auto [a, b] = co_await dd::when_all(task_fast_value_str(), task_fast_value_str());
+  n += a && b;
+  co_return n;
+}
+TEST(when_all_ends_while_starting) {
+  error_if(when_all_of_fast_tasks().get() != 4);
+  return error_count;
+}
+
 TEST(when_all_empty) {
   std::vector<dd::task<int>> tasks;
   auto res = dd::when_all(std::move(tasks)).get();
@@ -1355,6 +1372,7 @@ int main() {
   RUN(when_all_same_ctx);
   RUN(when_any);
   RUN(when_all_dynamic);
+  RUN(when_all_ends_while_starting);
   RUN(when_all_empty);
   RUN(when_any_different_ctxts);
   RUN(when_any_dyn);
