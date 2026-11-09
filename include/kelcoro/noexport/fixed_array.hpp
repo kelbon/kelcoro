@@ -18,21 +18,30 @@ struct fixed_array {
  public:
   static_assert(std::is_same_v<T, std::decay_t<T>>);
   fixed_array() = default;
-  fixed_array(fixed_array&& rhs) noexcept {
-    *this = std::move(rhs);
+  fixed_array(fixed_array&& other) noexcept : arr(other.arr), n(other.n), resource(other.resource) {
+    other.arr = nullptr;
+    other.n = 0;
+    other.resource = nullptr;
   }
-  fixed_array& operator=(fixed_array&& rhs) noexcept {
-    std::swap(arr, rhs.arr);
-    std::swap(n, rhs.n);
-    std::swap(resource, rhs.resource);
+
+  fixed_array& operator=(fixed_array&& other) noexcept {
+    if (this != &other) {
+      std::destroy_at(this);
+      std::construct_at(this, std::move(other));
+    }
     return *this;
   }
-  fixed_array(size_t n, std::pmr::memory_resource& r = *std::pmr::new_delete_resource())
+  explicit fixed_array(size_t n, std::pmr::memory_resource& r = *std::pmr::new_delete_resource())
       : n(n), resource(&r) {
     if (n == 0)
       return;
     arr = (T*)resource->allocate(sizeof(T) * n, alignof(T));
-    std::uninitialized_default_construct_n(arr, n);
+    try {
+      std::uninitialized_default_construct_n(arr, n);
+    } catch (...) {
+      resource->deallocate(arr, sizeof(T) * n, alignof(T));
+      throw;
+    }
   }
 
   std::pmr::memory_resource* get_resource() const {
@@ -44,12 +53,16 @@ struct fixed_array {
     return arr;
   }
 
-  T* data() const {
+  const T* data() const {
     return arr;
   }
 
   size_t size() const noexcept {
     return n;
+  }
+
+  bool empty() const noexcept {
+    return size() == 0;
   }
 
   T* begin() noexcept {
