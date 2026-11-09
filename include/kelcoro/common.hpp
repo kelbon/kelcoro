@@ -427,36 +427,21 @@ concept co_awaitable = has_member_co_await<T> || has_global_co_await<T> || co_aw
 // imitating compiler behaviour for co_await expression mutation into awaiter(without await_transform)
 template <co_awaitable T>
 [[nodiscard]] constexpr decltype(auto) build_awaiter(T&& value) {
-  static_assert(!ambigious_co_await_lookup<T>);
-  if constexpr (co_awaiter<T&&>)  // first bcs can have operator co_await too
-    return std::forward<T>(value);
-  else if constexpr (has_global_co_await<T&&>)
+  static_assert(!ambigious_co_await_lookup<T&&>);
+  // https://eel.is/c++draft/expr.await#3.3
+  if constexpr (has_global_co_await<T&&>)
     return operator co_await(std::forward<T>(value));
   else if constexpr (has_member_co_await<T&&>)
     return std::forward<T>(value).operator co_await();
+  else
+    return std::forward<T>(value);
 }
-
-namespace noexport {
-
-template <typename T>
-consteval auto do_await_result() {
-  static_assert(!ambigious_co_await_lookup<T>);
-  if constexpr (has_global_co_await<T>) {
-    return std::type_identity<
-        decltype(std::declval<decltype(operator co_await(std::declval<T>()))>().await_resume())>{};
-  } else if constexpr (has_member_co_await<T>) {
-    return std::type_identity<
-        decltype(std::declval<decltype(std::declval<T>().operator co_await())>().await_resume())>{};
-  } else {
-    // co_awaiter
-    return std::type_identity<decltype(std::declval<decltype(std::declval<T>())>().await_resume())>{};
-  }
-}
-
-}  // namespace noexport
 
 // Note: ignores await_transform!
+// await_resume is called on lvalue awaiter [expr.await]
 template <co_awaitable T>
-using await_result_t = typename decltype(noexport::do_await_result<T>())::type;
+using await_result_t =
+    decltype(std::declval<std::remove_reference_t<decltype(build_awaiter(std::declval<T>()))>&>()
+                 .await_resume());
 
 }  // namespace dd
