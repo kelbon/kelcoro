@@ -40,6 +40,7 @@ executors:
 * [`noop_executor`](#noop_executor)
 * [`this_thread_executor`](#this_thread_executor)
 * [`new_thread_executor`](#new_thread_executor)
+* [`stealing_thread_pool`](#stealing_thread_pool)
 
 customizing memory allocation:
 
@@ -847,6 +848,49 @@ executor. .attach(task_node*) invokes task in this thread
 ## `new_thread_executor`
 executor. each .attach(task_node*) creates new std::thread which will execute task. Mostly used for tests etc
 
+
+## `stealing_thread_pool`
+
+executor, distributes tasks among workers as `thread_pool`, but a worker with empty queue, before going to sleep,
+takes all tasks from the queue of another worker (looks into up to `steal_attempts` queues until finds tasks).
+There are no strands: task may be executed on any worker
+
+interface:
+
+```cpp
+// note: when pool dies, all pending tasks invoked with schedule_errc::cancelled
+struct stealing_thread_pool {
+  // steal_attempts = 0 - no stealing
+  explicit stealing_thread_pool(size_t thread_count = thread_pool::default_thread_count(), size_t steal_attempts = 1,
+                              std::pmr::memory_resource& r = *std::pmr::get_default_resource());
+
+  stealing_thread_pool(stealing_thread_pool&&) = delete;
+  void operator=(stealing_thread_pool&&) = delete;
+
+  // executor interface. used by dd::jump_on(pool) internally
+  void attach(task_node* node) noexcept;
+
+  bool is_worker(std::thread::id id = std::this_thread::get_id());
+
+  // same as dd::schedule_to(pool), but uses pool memory resource to allocate tasks
+  // `hash` selects queue, but task may be stolen by another worker
+  void schedule(std::invocable auto&& foo, operation_hash_t hash);
+  void schedule(std::invocable auto&& foo);
+
+  std::span<std::thread> workers_range() noexcept;
+  std::span<const std::thread> workers_range() const noexcept;
+
+  std::pmr::memory_resource& get_resource() const noexcept;
+
+  // can be called as many times as you want from any threads
+  void request_stop();
+
+  // NOTE: can't be called from workers
+  // NOTE: can't be called more than once
+  // Wait for the job to complete (after calling `request_stop`)
+  void wait_stop() &&;
+};
+```
 
 # customizing memory allocation
 

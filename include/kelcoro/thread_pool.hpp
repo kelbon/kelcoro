@@ -509,6 +509,155 @@ work_end:
   noexport::cancel_tasks(top);
 }
 
+// distributes tasks among workers as thread_pool, but a worker with empty queue,
+// before going to sleep, takes all tasks from queue of another worker (up to `steal_attempts` queues until
+// finds tasks). There are no strands: task may be executed on any worker
+// co_await jump_on(pool) schedules coroutine to the pool
+// note: when pool dies, all pending tasks invoked with schedule_errc::cancelled
+struct stealing_thread_pool {
+ private:
+  noexport::fixed_array<task_queue> queues;    // invariant: queues.size() == threads.size()
+  noexport::fixed_array<std::thread> threads;  // invariant: size > 0
+  // deadpill for each queue: thief may return deadpill to its queue until all workers are joined
+  noexport::fixed_array<task_node> pills;
+  size_t steal_attempts;
+
+  task_queue& select_queue(operation_hash_t op_hash) noexcept {
+    return queues[op_hash % queues.size()];
+  }
+
+  // returns false if own deadpill reached.
+  // Deadpill of another worker (in stolen tasks) is returned to its queue together with tasks after it
+  static bool run(task_node* top, task_queue* stolen_from) noexcept {
+    while (top) {
+      task_node* node = top;
+      // node invalidated after resume
+      top = top->next;
+      if (node->is_deadpill()) [[unlikely]] {
+        if (stolen_from) {
+          stolen_from->push_list(node);
+          return true;
+        }
+        noexport::cancel_tasks(top);
+        return false;
+      }
+      // if exception thrown, std::terminate called
+      node->task.resume();
+    }
+    return true;
+  }
+
+  void work(size_t i) noexcept {
+    task_queue& own = queues[i];
+    size_t victim = i;
+    for (;;) {
+      task_queue* stolen_from = nullptr;
+      task_node* top = own.pop_all();
+      for (size_t k = 0; !top && k < steal_attempts && queues.size() > 1; ++k) {
+        victim = (victim + 1) % queues.size();
+        if (victim == i)
+          victim = (victim + 1) % queues.size();
+        stolen_from = &queues[victim];
+        top = stolen_from->pop_all();
+      }
+      if (!top) {
+        stolen_from = nullptr;
+        top = own.pop_all_not_empty();
+      }
+      if (!run(top, stolen_from))
+        return;
+    }
+  }
+
+  void stop() noexcept {
+    for (size_t i = 0; i < threads.size(); ++i)
+      if (threads[i].joinable())
+        queues[i].push(&pills[i]);
+    for (auto& t : threads)
+      if (t.joinable())
+        t.join();
+    for (auto& q : queues)
+      noexport::cancel_tasks(q.pop_all());
+  }
+
+ public:
+  // steal_attempts = 0 - no stealing
+  explicit stealing_thread_pool(size_t thread_count = thread_pool::default_thread_count(),
+                                size_t steal_attempts = 1,
+                                std::pmr::memory_resource& r = *std::pmr::get_default_resource())
+      : queues(std::max<size_t>(1, thread_count), r),
+        threads(queues.size(), r),
+        pills(queues.size(), r),
+        steal_attempts(steal_attempts) {
+    bool failed = true;
+    scope_exit _{[&]() noexcept {
+      if (failed)
+        stop();
+    }};
+    for (size_t i = 0; i < threads.size(); i++)
+      threads[i] = std::thread([this, i] { work(i); });
+    failed = false;
+  }
+
+  ~stealing_thread_pool() {
+    stop();
+  }
+
+  stealing_thread_pool(stealing_thread_pool&&) = delete;
+  void operator=(stealing_thread_pool&&) = delete;
+
+  // use co_await jump_on(pool) to schedule coroutine
+  // executor interface
+  void attach(task_node* node) noexcept {
+    select_queue(calculate_operation_hash(node->task)).attach(node);
+  }
+
+  [[nodiscard]] bool is_worker(std::thread::id id = std::this_thread::get_id()) {
+    for (auto& t : threads)
+      if (t.get_id() == id)
+        return true;
+    return false;
+  }
+
+  // same as schedule_to(pool), but uses pool memory resource to allocate tasks
+  // `hash` selects queue, but task may be stolen by another worker
+  void schedule(std::invocable auto&& foo, operation_hash_t hash) {
+    schedule_to(select_queue(hash), std::forward<decltype(foo)>(foo), with_resource{*queues.get_resource()});
+  }
+  void schedule(std::invocable auto&& foo) {
+    schedule(std::forward<decltype(foo)>(foo), calculate_operation_hash(foo));
+  }
+
+  [[nodiscard]] std::span<std::thread> workers_range() noexcept KELCORO_LIFETIMEBOUND {
+    return std::span(threads.data(), threads.size());
+  }
+  [[nodiscard]] std::span<const std::thread> workers_range() const noexcept KELCORO_LIFETIMEBOUND {
+    return std::span(threads.data(), threads.size());
+  }
+
+  std::pmr::memory_resource& get_resource() const noexcept {
+    return *queues.get_resource();
+  }
+
+  // can be called as many times as you want from any threads
+  void request_stop() {
+    for (auto& q : queues)
+      noexport::push_deadpill(q);
+  }
+
+  // NOTE: can't be called from workers
+  // NOTE: can't be called more than once
+  // Wait for the job to complete (after calling `request_stop`)
+  void wait_stop() && {
+    assert(!is_worker());
+    for (auto& t : threads)
+      if (t.joinable())
+        t.join();
+    for (auto& q : queues)
+      noexport::cancel_tasks(q.pop_all());
+  }
+};
+
 }  // namespace dd
 
 #undef KELCORO_MONITORING
