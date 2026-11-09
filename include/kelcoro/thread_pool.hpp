@@ -396,7 +396,7 @@ KELCORO_CO_AWAIT_REQUIRED inline jump_on_thread_pool jump_on(thread_pool& tp KEL
 // one queue for all threads
 // co_await jump_on(pool) schedules coroutine to the pool
 // note: when pool dies, running tasks are completed, pending tasks invoked with schedule_errc::cancelled
-struct blocking_pool {
+struct blocking_thread_pool {
  private:
   task_node* first = nullptr;
   // if !first, 'last' value unspecified
@@ -440,8 +440,8 @@ struct blocking_pool {
   }
 
  public:
-  explicit blocking_pool(size_t thread_count,
-                         std::pmr::memory_resource& r = *std::pmr::get_default_resource())
+  explicit blocking_thread_pool(size_t thread_count,
+                                std::pmr::memory_resource& r = *std::pmr::get_default_resource())
       : threads(std::max<size_t>(1, thread_count), r) {
     bool failed = true;
     scope_exit _{[&]() noexcept {
@@ -453,10 +453,10 @@ struct blocking_pool {
     failed = false;
   }
 
-  blocking_pool(blocking_pool&&) = delete;
-  void operator=(blocking_pool&&) = delete;
+  blocking_thread_pool(blocking_thread_pool&&) = delete;
+  void operator=(blocking_thread_pool&&) = delete;
 
-  ~blocking_pool() {
+  ~blocking_thread_pool() {
     stop();
   }
 

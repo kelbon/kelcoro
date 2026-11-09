@@ -206,7 +206,7 @@ TEST(thread_pool_resource) {
   return error_count;
 }
 
-static_assert(dd::executor<dd::blocking_pool>);
+static_assert(dd::executor<dd::blocking_thread_pool>);
 
 // false if timed out
 static bool wait_until(auto pred) {
@@ -225,7 +225,7 @@ TEST(blocking_pool_long_task) {
   std::atomic<std::thread::id> blocked_thread;
   std::atomic_int done = 0;
   std::atomic_int on_blocked_thread = 0;
-  dd::blocking_pool pool(2);
+  dd::blocking_thread_pool pool(2);
   dd::schedule_to(pool, [&] {
     blocked_thread = std::this_thread::get_id();
     while (!release)
@@ -251,7 +251,7 @@ TEST(blocking_pool_parallel) {
   enum { N = 8 };
   std::atomic_int running = 0;
   std::atomic_int all_met = 0;
-  dd::blocking_pool pool(N);
+  dd::blocking_thread_pool pool(N);
   for (int i = 0; i < N; ++i) {
     dd::schedule_to(pool, [&] {
       ++running;
@@ -268,8 +268,8 @@ TEST(blocking_pool_many_producers) {
   enum { PRODUCERS = 4, TASKS = 10'000, JUMPS = 10 };
   std::atomic_int executed = 0;
   {
-    dd::blocking_pool pool(3);
-    auto task = [](dd::blocking_pool& pool, std::atomic_int& executed) -> dd::job {
+    dd::blocking_thread_pool pool(3);
+    auto task = [](dd::blocking_thread_pool& pool, std::atomic_int& executed) -> dd::job {
       for (int i = 0; i < JUMPS; ++i)
         if (!co_await dd::jump_on(pool))
           co_return;
@@ -300,7 +300,7 @@ TEST(blocking_pool_destroy) {
   std::atomic_int cancelled = 0;
   std::thread releaser;
   {
-    dd::blocking_pool pool(1);
+    dd::blocking_thread_pool pool(1);
     dd::schedule_to(pool, [&] {
       started = true;
       while (!release)
@@ -308,7 +308,7 @@ TEST(blocking_pool_destroy) {
       running_done = true;
     });
     error_if(!wait_until([&] { return started.load(); }));
-    auto pending = [](dd::blocking_pool& pool, std::atomic_int& executed,
+    auto pending = [](dd::blocking_thread_pool& pool, std::atomic_int& executed,
                       std::atomic_int& cancelled) -> dd::job {
       if (co_await dd::jump_on(pool))
         ++executed;

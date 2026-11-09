@@ -36,7 +36,7 @@ executors:
 * [`worker`](#worker)
 * [`strand`](#strand)
 * [`thread_pool`](#thread_pool)
-* [`blocking_pool`](#blocking_pool)
+* [`blocking_thread_pool`](#blocking_thread_pool)
 * [`noop_executor`](#noop_executor)
 * [`this_thread_executor`](#this_thread_executor)
 * [`new_thread_executor`](#new_thread_executor)
@@ -805,7 +805,7 @@ struct thread_pool {
 
 ```
 
-## `blocking_pool`
+## `blocking_thread_pool`
 
 executor for blocking tasks (blocking io, blocking libraries, long computations).
 One queue for all threads, each thread takes one task at a time, so a long task does not delay other tasks while there are free threads
@@ -814,11 +814,11 @@ interface:
 
 ```cpp
 // note: when pool dies, running tasks are completed, pending tasks invoked with schedule_errc::cancelled
-struct blocking_pool {
-  explicit blocking_pool(size_t thread_count, std::pmr::memory_resource& r = *std::pmr::get_default_resource());
+struct blocking_thread_pool {
+  explicit blocking_thread_pool(size_t thread_count, std::pmr::memory_resource& r = *std::pmr::get_default_resource());
 
-  blocking_pool(blocking_pool&&) = delete;
-  void operator=(blocking_pool&&) = delete;
+  blocking_thread_pool(blocking_thread_pool&&) = delete;
+  void operator=(blocking_thread_pool&&) = delete;
 
   // executor interface. used by dd::jump_on(pool) internally
   void attach(task_node* node) noexcept;
@@ -831,7 +831,7 @@ struct blocking_pool {
 example:
 
 ```cpp
-dd::task<std::string> read_file(dd::blocking_pool& pool, std::filesystem::path p) {
+dd::task<std::string> read_file(dd::blocking_thread_pool& pool, std::filesystem::path p) {
   if (!co_await dd::jump_on(pool))
     throw std::runtime_error("cancelled");
   std::ifstream f(p);
