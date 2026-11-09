@@ -1,14 +1,16 @@
-#include "kelcoro/async_task.hpp"
-#include "kelcoro/common.hpp"
-#include "kelcoro/task.hpp"
-#include "kelcoro/thread_pool.hpp"
-#include "kelcoro/latch.hpp"
 
 #include <atomic>
 #include <cstdlib>
 #include <latch>
 #include <random>
 #include <string>
+#include <thread>
+#include <vector>
+
+#include "kelcoro/async_task.hpp"
+#include "kelcoro/task.hpp"
+#include "kelcoro/thread_pool.hpp"
+#include "kelcoro/latch.hpp"
 
 static_assert(dd::executor<dd::any_executor_ref> && dd::executor<dd::strand> &&
               dd::executor<dd::thread_pool> && dd::executor<dd::worker>);
@@ -204,8 +206,136 @@ TEST(thread_pool_resource) {
   return error_count;
 }
 
+static_assert(dd::executor<dd::blocking_thread_pool>);
+
+// false if timed out
+static bool wait_until(auto pred) {
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!pred()) {
+    if (std::chrono::steady_clock::now() > deadline)
+      return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return true;
+}
+
+// long task does not delay tasks pushed after it
+TEST(blocking_pool_long_task) {
+  std::atomic_bool release = false;
+  std::atomic<std::thread::id> blocked_thread;
+  std::atomic_int done = 0;
+  std::atomic_int on_blocked_thread = 0;
+  dd::blocking_thread_pool pool(2);
+  dd::schedule_to(pool, [&] {
+    blocked_thread = std::this_thread::get_id();
+    while (!release)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  });
+  error_if(!wait_until([&] { return blocked_thread.load() != std::thread::id(); }));
+  enum { N = 100 };
+  for (int i = 0; i < N; ++i) {
+    dd::schedule_to(pool, [&] {
+      if (std::this_thread::get_id() == blocked_thread.load())
+        ++on_blocked_thread;
+      ++done;
+    });
+  }
+  error_if(!wait_until([&] { return done == N; }));
+  error_if(on_blocked_thread != 0);
+  release = true;
+  return error_count;
+}
+
+// all threads execute tasks at the same time
+TEST(blocking_pool_parallel) {
+  enum { N = 8 };
+  std::atomic_int running = 0;
+  std::atomic_int all_met = 0;
+  dd::blocking_thread_pool pool(N);
+  for (int i = 0; i < N; ++i) {
+    dd::schedule_to(pool, [&] {
+      ++running;
+      if (wait_until([&] { return running == N; }))
+        ++all_met;
+    });
+  }
+  error_if(!wait_until([&] { return all_met == N; }));
+  return error_count;
+}
+
+// tasks from many threads, coroutines return to the pool many times
+TEST(blocking_pool_many_producers) {
+  enum { PRODUCERS = 4, TASKS = 10'000, JUMPS = 10 };
+  std::atomic_int executed = 0;
+  {
+    dd::blocking_thread_pool pool(3);
+    auto task = [](dd::blocking_thread_pool& pool, std::atomic_int& executed) -> dd::job {
+      for (int i = 0; i < JUMPS; ++i)
+        if (!co_await dd::jump_on(pool))
+          co_return;
+      ++executed;
+    };
+    std::vector<std::thread> producers;
+    for (int p = 0; p < PRODUCERS; ++p) {
+      producers.emplace_back([&] {
+        for (int i = 0; i < TASKS; ++i)
+          task(pool, executed);
+      });
+    }
+    for (auto& t : producers)
+      t.join();
+    error_if(!wait_until([&] { return executed == PRODUCERS * TASKS; }));
+  }
+  error_if(executed != PRODUCERS * TASKS);
+  return error_count;
+}
+
+// destructor waits for the running task and cancels pending
+TEST(blocking_pool_destroy) {
+  enum { PENDING = 100 };
+  std::atomic_bool started = false;
+  std::atomic_bool release = false;
+  std::atomic_bool running_done = false;
+  std::atomic_int executed = 0;
+  std::atomic_int cancelled = 0;
+  std::thread releaser;
+  {
+    dd::blocking_thread_pool pool(1);
+    dd::schedule_to(pool, [&] {
+      started = true;
+      while (!release)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      running_done = true;
+    });
+    error_if(!wait_until([&] { return started.load(); }));
+    auto pending = [](dd::blocking_thread_pool& pool, std::atomic_int& executed,
+                      std::atomic_int& cancelled) -> dd::job {
+      if (co_await dd::jump_on(pool))
+        ++executed;
+      else
+        ++cancelled;
+    };
+    for (int i = 0; i < PENDING; ++i)
+      pending(pool, executed, cancelled);
+    // releases the running task after destructor stopped the pool
+    releaser = std::thread([&] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+      release = true;
+    });
+  }
+  releaser.join();
+  error_if(!running_done);
+  error_if(executed != 0);
+  error_if(cancelled != PENDING);
+  return error_count;
+}
+
 int main() {
   size_t ec = 0;
+  ec += test_blocking_pool_long_task();
+  ec += test_blocking_pool_parallel();
+  ec += test_blocking_pool_many_producers();
+  ec += test_blocking_pool_destroy();
   ec += test_latch();
   ec += test_thread_pool();
   ec += test_latch_waiters();

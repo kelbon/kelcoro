@@ -1339,6 +1339,80 @@ TEST(return_exception) {
   return 0;
 }
 
+namespace await_lookup {
+
+struct int_awaiter {
+  static bool await_ready() noexcept {
+    return true;
+  }
+  static void await_suspend(std::coroutine_handle<>) noexcept {
+  }
+  static int await_resume() noexcept {
+    return 1;
+  }
+};
+struct double_awaiter {
+  static bool await_ready() noexcept {
+    return true;
+  }
+  static void await_suspend(std::coroutine_handle<>) noexcept {
+  }
+  static double await_resume() noexcept {
+    return 2.0;
+  }
+};
+
+// awaiter with operator co_await: operator co_await is used
+struct member_op : int_awaiter {
+  double_awaiter operator co_await() const noexcept {
+    return {};
+  }
+};
+struct global_op : int_awaiter {};
+inline double_awaiter operator co_await(global_op) noexcept {
+  return {};
+}
+
+// await_resume is called on lvalue
+struct ref_qualified {
+  static bool await_ready() noexcept {
+    return true;
+  }
+  static void await_suspend(std::coroutine_handle<>) noexcept {
+  }
+  int await_resume() & noexcept {
+    return 1;
+  }
+  double await_resume() && noexcept {
+    return 2.0;
+  }
+};
+
+static_assert(std::is_same_v<dd::await_result_t<member_op>, double>);
+static_assert(std::is_same_v<dd::await_result_t<global_op>, double>);
+static_assert(std::is_same_v<dd::await_result_t<ref_qualified>, int>);
+static_assert(std::is_same_v<dd::await_result_t<int_awaiter>, int>);
+
+// same as compiler does
+inline dd::task<size_t> compare_with_compiler() {
+  auto a = co_await member_op{};
+  auto b = co_await global_op{};
+  auto c = co_await ref_qualified{};
+  static_assert(std::is_same_v<decltype(a), dd::await_result_t<member_op>>);
+  static_assert(std::is_same_v<decltype(b), dd::await_result_t<global_op>>);
+  static_assert(std::is_same_v<decltype(c), dd::await_result_t<ref_qualified>>);
+  co_return size_t(a != 2.0) + size_t(b != 2.0) + size_t(c != 1);
+}
+
+}  // namespace await_lookup
+
+TEST(await_lookup) {
+  await_lookup::member_op m;
+  error_if(dd::build_awaiter(m).await_resume() != 2.0);
+  error_if(dd::build_awaiter(await_lookup::global_op{}).await_resume() != 2.0);
+  return error_count + await_lookup::compare_with_compiler().get();
+}
+
 int main() {
   // default constructible for empty typpes
   (void)dd::chunk_from<dd::new_delete_resource>{};
@@ -1383,6 +1457,7 @@ int main() {
   RUN(detached_task);
   RUN(start);
   RUN(return_exception);
+  RUN(await_lookup);
   return ec;
 }
 #else
