@@ -2,7 +2,6 @@
 #include "kelcoro/thread_pool.hpp"
 
 #include <atomic>
-#include <chrono>
 #include <iostream>
 #include <thread>
 #include <vector>
