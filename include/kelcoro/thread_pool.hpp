@@ -393,6 +393,100 @@ KELCORO_CO_AWAIT_REQUIRED inline jump_on_thread_pool jump_on(thread_pool& tp KEL
   return jump_on_thread_pool(tp);
 }
 
+// one queue for all threads
+// co_await jump_on(pool) schedules coroutine to the pool
+// note: when pool dies, running tasks are completed, pending tasks invoked with schedule_errc::cancelled
+struct blocking_pool {
+ private:
+  task_node* first = nullptr;
+  // if !first, 'last' value unspecified
+  task_node* last = nullptr;
+  bool stopped = false;
+  std::mutex mtx;
+  std::condition_variable not_empty;
+  noexport::fixed_array<std::thread> threads;  // invariant: size > 0
+
+  void work() noexcept {
+    for (;;) {
+      task_node* node;
+      {
+        std::unique_lock l(mtx);
+        while (!first && !stopped)
+          not_empty.wait(l);
+        if (stopped)
+          return;
+        node = std::exchange(first, first->next);
+      }
+      // node invalidated after resume
+      node->task.resume();
+    }
+  }
+
+  void stop() noexcept {
+    {
+      std::lock_guard l(mtx);
+      stopped = true;
+    }
+    not_empty.notify_all();
+    for (auto& t : threads)
+      if (t.joinable())
+        t.join();
+    task_node* pending;
+    {
+      std::lock_guard l(mtx);
+      pending = std::exchange(first, nullptr);
+    }
+    noexport::cancel_tasks(pending);
+  }
+
+ public:
+  explicit blocking_pool(size_t thread_count,
+                         std::pmr::memory_resource& r = *std::pmr::get_default_resource())
+      : threads(std::max<size_t>(1, thread_count), r) {
+    bool failed = true;
+    scope_exit _{[&]() noexcept {
+      if (failed)
+        stop();
+    }};
+    for (auto& t : threads)
+      t = std::thread([this] { work(); });
+    failed = false;
+  }
+
+  blocking_pool(blocking_pool&&) = delete;
+  void operator=(blocking_pool&&) = delete;
+
+  ~blocking_pool() {
+    stop();
+  }
+
+  // use co_await jump_on(pool) to schedule coroutine
+  // precondition: node && node->task
+  // executor interface
+  void attach(task_node* node) noexcept {
+    assert(node && node->task);
+    node->next = nullptr;
+    std::lock_guard l{mtx};
+    if (first)
+      last->next = node;
+    else
+      first = node;
+    last = node;
+    // each thread takes one task, so each task wakes one thread
+    // notify under lock: after unlock the task may be done and the pool destroyed
+    not_empty.notify_one();
+  }
+
+  // precondition: caller should not break threads, e.g. do not use .join, .detach, .swap
+  // but may use it to set thread name or pinning thread to core
+  [[nodiscard]] std::span<std::thread> workers_range() noexcept KELCORO_LIFETIMEBOUND {
+    return std::span(threads.data(), threads.size());
+  }
+  [[nodiscard]] std::span<const std::thread> workers_range() const noexcept KELCORO_LIFETIMEBOUND {
+    return std::span(threads.data(), threads.size());
+  }
+};
+
 inline void default_worker_job(task_queue& queue) noexcept {
   task_node* top;
   std::coroutine_handle task;
