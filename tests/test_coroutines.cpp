@@ -1412,8 +1412,20 @@ TEST(await_lookup) {
   error_if(dd::build_awaiter(await_lookup::global_op{}).await_resume() != 2.0);
   return error_count + await_lookup::compare_with_compiler().get();
 }
+using track_t = dd::task<int, dd::trace_context>;
+
+track_t trask() {
+  int i = 0;
+  co_return i;
+}
+
+dd::task<void, dd::trace_context> waiter_trask() {
+  (void)co_await trask().wait();
+}
+// TODO .wait
 
 int main() {
+  waiter_trask().start_and_detach();
   // default constructible for empty typpes
   (void)dd::chunk_from<dd::new_delete_resource>{};
   dd::with_resource<statefull_resource> r;

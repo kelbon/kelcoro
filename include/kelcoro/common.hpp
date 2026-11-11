@@ -6,11 +6,25 @@
 #include <coroutine>
 #include <cassert>
 #include <exception>
-
+#if __cpp_lib_source_location >= 201907L
+  #include <source_location>
+#endif
 #include "noexport/macro.hpp"
 #include "executor_interface.hpp"
 
 namespace dd::noexport {
+
+struct nolocation {
+  nolocation() {
+  }
+#if __cpp_lib_source_location >= 201907L
+  nolocation(std::source_location) {
+  }
+#endif
+  static nolocation current() noexcept {
+    return {};
+  }
+};
 
 enum struct retkind_e : uint8_t { EMPTY, VAL, EX };
 
@@ -40,6 +54,13 @@ struct retblock_storage {
 }  // namespace dd::noexport
 
 namespace dd {
+
+using source_location =
+#if __cpp_lib_source_location >= 201907L
+    std::source_location;
+#else
+    noexport::nolocation;
+#endif
 
 constexpr size_t hardware_constructive_interference_size = 64;
 constexpr size_t hardware_destructive_interference_size = 64;

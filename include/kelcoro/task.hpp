@@ -1,8 +1,8 @@
 #pragma once
 
-#include "common.hpp"
+#include "kelcoro/common.hpp"
 #include "kelcoro/async_task.hpp"
-#include "memory_support.hpp"
+#include "kelcoro/memory_support.hpp"
 
 namespace dd {
 
@@ -36,8 +36,28 @@ constexpr inline get_return_place_t return_place = get_return_place_t{};
 
 }  // namespace this_coro
 
+namespace noexport {
+
+template <typename Ctx>
+constexpr inline bool has_on_create_location =
+    requires(Ctx& c, source_location l) { c.on_create_location(l); };
+template <typename Ctx>
+constexpr inline bool has_on_start_location = requires(Ctx& c, source_location l) { c.on_start_location(l); };
+
+}  // namespace noexport
+
 // default task Ctx, also example of what context may do
 struct null_context {
+  // optional
+  // invoked when task promise created (`l` passed by implementation)
+  // void on_create_location(source_location l) noexcept {
+  // }
+
+  // optional
+  // invoked only when task is co_awaited
+  // void on_start_location(source_location l) noexcept {
+  // }
+
   // invoked when task is scheduled to execute, 'owner' is handle of coroutine, which awaits task
   // never invoked with nullptrs
   // note: one task may have only one owner, but one owner can have many child tasks (when_all/when_any)
@@ -77,6 +97,10 @@ struct task_promise : return_block<Result> {
   KELCORO_NO_UNIQUE_ADDRESS Ctx ctx;
   std::coroutine_handle<> who_waits;
 
+  using loc_t =
+      std::conditional_t<noexport::has_on_start_location<Ctx> || noexport::has_on_create_location<Ctx>,
+                         source_location, noexport::nolocation>;
+
   task_promise() = default;
   task_promise(task_promise&&) = delete;
   void operator=(task_promise&&) = delete;
@@ -90,7 +114,16 @@ struct task_promise : return_block<Result> {
   auto await_transform(this_coro::get_return_place_t) noexcept {
     return this_coro::get_return_place_t::awaiter<decltype(std::addressof(this->return_place()))>{};
   }
-  KELCORO_DEFAULT_AWAIT_TRANSFORM;
+
+  template <typename T>
+  static T&& await_transform(T&& v, loc_t l = source_location::current()) noexcept {
+    if constexpr (requires { typename std::remove_reference_t<T>::kelcoro_task_related_awaiter; }) {
+      if constexpr (noexport::has_on_start_location<Ctx>)
+        if constexpr (std::is_same_v<typename std::remove_reference_t<T>::kelcoro_task_related_awaiter, Ctx>)
+          v.raw_handle().promise().ctx.on_start_location(l);
+    }
+    return std::forward<T>(v);
+  }
 
   auto self_handle() noexcept {
     return std::coroutine_handle<task_promise>::from_promise(*this);
@@ -118,7 +151,9 @@ struct task_promise : return_block<Result> {
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
-  auto get_return_object() noexcept {
+  auto get_return_object(loc_t l = source_location::current()) noexcept {
+    if constexpr (noexport::has_on_create_location<Ctx>)
+      ctx.on_create_location(l);
     return self_handle();
   }
   void unhandled_exception() noexcept(noexcept(ctx.on_ignored_exception(self_handle()))) {
@@ -143,6 +178,8 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
 
  private:
   handle_type handle_;
+
+  using loc_t = typename promise_type::loc_t;
 
  public:
   constexpr task() noexcept = default;
@@ -242,11 +279,13 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
   // Its caller responsibility that coroutine should not go on another thread after first .resume
   // pre: !empty()
   // post: empty()
-  [[nodiscard]] start_result start() {
+  [[nodiscard]] start_result start(loc_t l = source_location::current()) {
     handle_type h = release();
     assert(h);
     // task resumes itself at end and destroys itself or just stops with noop_coroutine
     h.promise().who_waits = std::noop_coroutine();
+    if constexpr (noexport::has_on_start_location<Ctx>)
+      h.promise().ctx.on_start_location(l);
     h.promise().ctx.on_start(h);
     h.resume();
     // at this point h.done() possible, but h cannot be destroyed - task holds value
@@ -258,7 +297,7 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
   // returns released task handle
   // if 'stop_at_end' is false, then task will delete itself at end,
   // otherwise handle.destroy() should be called
-  handle_type start_and_detach(bool stop_at_end = false) {
+  handle_type start_and_detach(bool stop_at_end = false, loc_t l = source_location::current()) {
     if (!handle_)
       return nullptr;
     handle_type h = detach();
@@ -271,6 +310,8 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
     }
     // task resumes itself at end and destroys itself or just stops with noop_coroutine
     h.promise().who_waits = stop_at_end ? std::noop_coroutine() : std::coroutine_handle<>(nullptr);
+    if constexpr (noexport::has_on_start_location<Ctx>)
+      h.promise().ctx.on_start_location(l);
     h.promise().ctx.on_start(h);
     h.resume();
     return h;
@@ -311,6 +352,12 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
   // remembers handle of coroutine where co_await happen and starts task
   struct starter {
     handle_type task_handle;
+
+    using kelcoro_task_related_awaiter = Ctx;
+    // interface for await_transform in promise
+    handle_type raw_handle() const noexcept {
+      return task_handle;
+    }
 
     explicit starter(handle_type t) noexcept : task_handle(t) {
     }
@@ -374,6 +421,9 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
   };
 
  public:
+  // impl-related
+  using kelcoro_task_related_awaiter = Ctx;
+
   // precondition: !empty()
   // await_resume returns reference (result_type&& or void for void)
   constexpr auto operator co_await() & noexcept {
@@ -418,6 +468,30 @@ template <typename R, typename Ctx>
 struct operation_hash<std::coroutine_handle<task_promise<R, Ctx>>> {
   operation_hash_t operator()(std::coroutine_handle<task_promise<R, Ctx>> handle) noexcept {
     return operation_hash<std::coroutine_handle<>>()(handle.promise().who_waits);
+  }
+};
+
+// tasks with `trace_context` must be used in single thread
+struct trace_context : null_context {
+  trace_context* owner = nullptr;
+  // where task promise was created
+  source_location created;
+  // where task was awaited/detached
+  source_location started;
+
+  void on_create_location(source_location l) noexcept {
+    created = l;
+  }
+  void on_start_location(source_location l) noexcept {
+    started = l;
+  }
+  template <typename T, typename U>
+  static void on_owner_setted(std::coroutine_handle<task_promise<T, trace_context>> owner,
+                              std::coroutine_handle<task_promise<U, trace_context>> me) noexcept {
+    me.promise().ctx.owner = &owner.promise().ctx;
+  }
+  template <typename P1, typename P2>
+  static void on_owner_setted(std::coroutine_handle<P1>, std::coroutine_handle<P2>) noexcept {
   }
 };
 
