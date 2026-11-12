@@ -265,7 +265,7 @@ auto when_any(std::vector<task<T, Ctx>> tasks) -> task<when_any_dyn_result<T>, C
       j.handle.resume();
   });
 
-  co_return when_any_dyn_result{std::move(std::get<1>(state->result)), state->index};
+  co_return when_any_dyn_result<T>{std::move(std::get<1>(state->result)), state->index};
 }
 
 // binds arguments to a task so that they will be destroyed after the task is executed

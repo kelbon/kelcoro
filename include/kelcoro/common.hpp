@@ -409,7 +409,7 @@ constexpr inline destroy_coro_t destroy = destroy_coro_t{};
 // co_awaiting on this function suspends coroutine and invokes 'fn' with coroutine handle.
 // await suspend returns what 'fn' returns!
 constexpr auto suspend_and(auto&& fn) {
-  return suspend_and_t(std::forward<decltype(fn)>(fn));
+  return suspend_and_t{std::forward<decltype(fn)>(fn)};
 }
 
 struct [[nodiscard("co_await it!")]] destroy_and_transfer_control_to {

@@ -350,7 +350,7 @@ TEST(nontrivial_references) {
 }
 
 // clang had bug which breaks all std::views
-#if !defined(__clang_major__) || __clang_major__ >= 15
+#if !defined(__clang_major__) || __clang_major__ > 15
 
 TEST(ranges_recursive) {
   int i = 0;
@@ -566,7 +566,7 @@ CHANNEL_TEST(toplevel_throw_channel) {
 CO_TEST(toplevel_throw_channel);
 
 // clang had bug which breaks all std::views
-#if !defined(__clang_major__) || __clang_major__ >= 15
+#if !defined(__clang_major__) || __clang_major__ > 15
 
 CHAN_OR_GEN
 G<int> inp() {
@@ -936,7 +936,7 @@ int main() {
   RUN(nontrivial_references);
   RUN(empty_recursive2);
   // clang had bug which breaks all std::views
-#if !defined(__clang_major__) || __clang_major__ >= 15
+#if !defined(__clang_major__) || __clang_major__ > 15
   RUN(ranges_recursive);
   RUN(ranges_base2);
 #endif  // clang bug
@@ -957,7 +957,7 @@ int main() {
 #endif
   RUN(toplevel_throw_channel);
   // clang had bug which breaks all std::views
-#if !defined(__clang_major__) || __clang_major__ >= 15
+#if !defined(__clang_major__) || __clang_major__ > 15
   RUN(input_rng);
   RUN(input_rng_channel);
 #endif  // clang bug
