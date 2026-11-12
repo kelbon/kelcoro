@@ -69,6 +69,8 @@ struct null_context {
   static void on_start(std::coroutine_handle<P>) noexcept {
   }
   // invoked when task ended with/without exception
+  // may change `who_waits` in task promise
+  // e.g. who_waits = std::noop_coroutine; executor.push(handle)
   template <typename P>
   static void on_end(std::coroutine_handle<P>) noexcept {
   }
@@ -469,6 +471,15 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
     assert(!empty());
     return wait_with_proxy_owner_awaiter<OwnerPromise>(handle_, proxy_owner);
   }
+
+  // precondition: task is done, e.g. after co_await .wait()
+  [[nodiscard]] bool has_exception() const noexcept {
+    return raw_handle().promise().has_exception();
+  }
+  // precondition: has_exception()
+  [[nodiscard]] std::exception_ptr take_exception() const noexcept {
+    return raw_handle().promise().take_exception();
+  }
 };
 
 template <typename Ret, memory_resource R, typename Ctx = null_context>
@@ -508,5 +519,35 @@ struct trace_context : null_context {
       me.promise().ctx.owner = &owner.promise().ctx;
   }
 };
+
+namespace this_coro {
+
+// sets exception for `void` tasks. MUST BE followed by co_return for not breaking .done guarantee on
+// coroutine handle
+struct set_exception {
+  std::exception_ptr&& e;
+
+  bool await_ready() const noexcept {
+    assert(e);
+    return false;
+  }
+  template <typename Ctx>
+  bool await_suspend(dd::task<void, Ctx>::handle_type h) noexcept {
+    h.promise().set_exception(std::move(e));
+    return false;
+  }
+  template <typename Ctx, typename R>
+  bool await_suspend(dd::resourced<task<void, Ctx>, R>::handle_type h) noexcept {
+    h.promise().set_exception(std::move(e));
+    return false;
+  }
+  static void await_resume() noexcept {
+  }
+};
+// only inside dd::task<void>. `e` must be expression std::exception_ptr&&
+// for non-void tasks see dd::return_exception
+#define KELCORO_RETURN_EXCEPTION(e) co_return co_await ::dd::this_coro::set_exception_awaiter(e)
+
+}  // namespace this_coro
 
 }  // namespace dd
