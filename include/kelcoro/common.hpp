@@ -6,11 +6,50 @@
 #include <coroutine>
 #include <cassert>
 #include <exception>
-
+#if __has_include(<version>)
+  #include <version>
+#endif
+// 1 if std::source_location is available and works for this library. Disabled where it is broken:
+//  * gcc 13: `current()` as default argument of implicitly invoked get_return_object
+//    does not compile without inlining (-O0, -fno-inline): "taking address of an immediate function"
+//  * clang < 16: `current()` as default argument returns location of declaration, not of the call
+#if __cpp_lib_source_location >= 201907L && !(defined(__clang__) && __clang_major__ < 16) && \
+    !(defined(__GNUC__) && !defined(__clang__) && __GNUC__ == 13)
+  #define KELCORO_SOURCE_LOCATION_SUPPORTED 1
+#else
+  #define KELCORO_SOURCE_LOCATION_SUPPORTED 0
+#endif
+#if KELCORO_SOURCE_LOCATION_SUPPORTED
+  #include <source_location>
+#endif
 #include "noexport/macro.hpp"
 #include "executor_interface.hpp"
 
 namespace dd::noexport {
+
+// same interface as std::source_location
+struct nolocation {
+  constexpr nolocation() = default;
+#if KELCORO_SOURCE_LOCATION_SUPPORTED
+  constexpr nolocation(std::source_location) noexcept {
+  }
+#endif
+  static constexpr nolocation current() noexcept {
+    return {};
+  }
+  constexpr uint_least32_t line() const noexcept {
+    return 0;
+  }
+  constexpr uint_least32_t column() const noexcept {
+    return 0;
+  }
+  constexpr const char* file_name() const noexcept {
+    return "";
+  }
+  constexpr const char* function_name() const noexcept {
+    return "";
+  }
+};
 
 enum struct retkind_e : uint8_t { EMPTY, VAL, EX };
 
@@ -40,6 +79,13 @@ struct retblock_storage {
 }  // namespace dd::noexport
 
 namespace dd {
+
+using source_location =
+#if KELCORO_SOURCE_LOCATION_SUPPORTED
+    std::source_location;
+#else
+    noexport::nolocation;
+#endif
 
 constexpr size_t hardware_constructive_interference_size = 64;
 constexpr size_t hardware_destructive_interference_size = 64;
@@ -81,6 +127,13 @@ struct rvo_tag_t {
 //
 constexpr inline const rvo_tag_t rvo = rvo_tag_t{rvo_tag_t::do_not_break_construction{}};
 
+// marks awaiter to not be transformed by any dd::task context .transform
+#define KELCORO_SPECIAL_AWAITER using kelcoro_special_awaiter = int
+
+template <typename T>
+constexpr inline bool marked_as_special_awaiter =
+    requires { typename std::remove_cvref_t<T>::kelcoro_special_awaiter; };
+
 // tag for returning exception.
 // co_return dd::return_exception(my_ex); is EQUAL to throw, but more effective
 // should be used when task have exception ptr already to "rethrow" it more effectively
@@ -88,6 +141,8 @@ constexpr inline const rvo_tag_t rvo = rvo_tag_t{rvo_tag_t::do_not_break_constru
 // returning void (there are no available way to overload return_void with tag)
 // Note: DO NOT create awaiters for such things, because co_await my_return_exception(ex) will create
 // additional state for task - done, but .done() on handle is not true this may lead to memory leak
+//
+// NOTE: task using it should be awaited by someone. If not, unhandled_exception will not be triggered
 struct return_exception {
   std::exception_ptr exception;
 
@@ -264,6 +319,7 @@ struct [[nodiscard("co_await it!")]] transfer_control_to {
   }
   static constexpr void await_resume() noexcept {
   }
+  KELCORO_SPECIAL_AWAITER;
 };
 
 template <std::invocable<> F>
@@ -288,6 +344,7 @@ struct KELCORO_CO_AWAIT_REQUIRED destroy_coro_t {
   static void await_resume() noexcept {
     KELCORO_UNREACHABLE;
   }
+  KELCORO_SPECIAL_AWAITER;
 };
 
 template <typename F>
@@ -303,6 +360,8 @@ struct KELCORO_CO_AWAIT_REQUIRED suspend_and_t {
   }
   constexpr static void await_resume() noexcept {
   }
+
+  KELCORO_SPECIAL_AWAITER;
 };
 
 template <typename F>
@@ -327,6 +386,7 @@ struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
     [[nodiscard]] std::coroutine_handle<PromiseType> await_resume() const noexcept {
       return handle_;
     }
+    KELCORO_SPECIAL_AWAITER;
   };
 
   awaiter<void> operator co_await() const noexcept {
@@ -352,6 +412,8 @@ struct get_context_t {
     [[nodiscard]] Ctx& await_resume() const noexcept {
       return *ctx;
     }
+
+    KELCORO_SPECIAL_AWAITER;
   };
 };
 
@@ -363,7 +425,7 @@ constexpr inline destroy_coro_t destroy = destroy_coro_t{};
 // co_awaiting on this function suspends coroutine and invokes 'fn' with coroutine handle.
 // await suspend returns what 'fn' returns!
 constexpr auto suspend_and(auto&& fn) {
-  return suspend_and_t(std::forward<decltype(fn)>(fn));
+  return suspend_and_t{std::forward<decltype(fn)>(fn)};
 }
 
 struct [[nodiscard("co_await it!")]] destroy_and_transfer_control_to {
@@ -397,6 +459,8 @@ struct [[nodiscard("co_await it!")]] destroy_and_transfer_control_to {
   [[noreturn]] static void await_resume() noexcept {
     KELCORO_UNREACHABLE;
   }
+
+  KELCORO_SPECIAL_AWAITER;
 };
 
 }  // namespace this_coro

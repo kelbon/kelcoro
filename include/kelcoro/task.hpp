@@ -1,8 +1,8 @@
 #pragma once
 
-#include "common.hpp"
+#include "kelcoro/common.hpp"
 #include "kelcoro/async_task.hpp"
-#include "memory_support.hpp"
+#include "kelcoro/memory_support.hpp"
 
 namespace dd {
 
@@ -36,8 +36,36 @@ constexpr inline get_return_place_t return_place = get_return_place_t{};
 
 }  // namespace this_coro
 
+namespace noexport {
+
+template <typename Ctx>
+constexpr inline bool has_on_create_location =
+    requires(Ctx& c, source_location l) { c.on_create_location(l); };
+template <typename Ctx>
+constexpr inline bool has_on_start_location = requires(Ctx& c, source_location l) { c.on_start_location(l); };
+
+template <typename Ctx, typename T>
+constexpr inline bool has_transform = requires(Ctx& c, T&& v) { c.transform((T&&)(v)); };
+
+}  // namespace noexport
+
 // default task Ctx, also example of what context may do
 struct null_context {
+  // optional
+  // invoked when task promise created (`l` passed by implementation)
+  // void on_create_location(source_location l) noexcept {
+  // }
+
+  // optional
+  // invoked only when task is co_awaited
+  // void on_start_location(source_location l) noexcept {
+  // }
+
+  // optional
+  // if possible, result of ctx.transform(std::forward<X>(x)) retunred from Promise::await_transform
+  // instead of std::forward<X>(x) for all co_await's in task body (except marked_as_special_awaiter)
+  // decltype(auto) transform(auto&& x) noexcept;
+
   // invoked when task is scheduled to execute, 'owner' is handle of coroutine, which awaits task
   // never invoked with nullptrs
   // note: one task may have only one owner, but one owner can have many child tasks (when_all/when_any)
@@ -49,6 +77,8 @@ struct null_context {
   static void on_start(std::coroutine_handle<P>) noexcept {
   }
   // invoked when task ended with/without exception
+  // may change `who_waits` in task promise
+  // e.g. who_waits = std::noop_coroutine; executor.push(handle)
   template <typename P>
   static void on_end(std::coroutine_handle<P>) noexcept {
   }
@@ -77,6 +107,10 @@ struct task_promise : return_block<Result> {
   KELCORO_NO_UNIQUE_ADDRESS Ctx ctx;
   std::coroutine_handle<> who_waits;
 
+  using loc_t =
+      std::conditional_t<noexport::has_on_start_location<Ctx> || noexport::has_on_create_location<Ctx>,
+                         source_location, noexport::nolocation>;
+
   task_promise() = default;
   task_promise(task_promise&&) = delete;
   void operator=(task_promise&&) = delete;
@@ -90,7 +124,32 @@ struct task_promise : return_block<Result> {
   auto await_transform(this_coro::get_return_place_t) noexcept {
     return this_coro::get_return_place_t::awaiter<decltype(std::addressof(this->return_place()))>{};
   }
-  KELCORO_DEFAULT_AWAIT_TRANSFORM;
+
+  // no default argument at all for contexts without hooks:
+  // gcc keeps temporaries of co_await full-expression in coroutine frame even if unused
+  template <typename T>
+    requires(!noexport::has_on_start_location<Ctx>)
+  decltype(auto) await_transform(T&& v) noexcept {
+    if constexpr (noexport::has_transform<Ctx, T> && !marked_as_special_awaiter<T>)
+      return ctx.transform((T&&)v);
+    else
+      return (T&&)(v);
+  }
+
+  template <typename T>
+    requires(noexport::has_on_start_location<Ctx>)
+  decltype(auto) await_transform(T&& v, source_location l = source_location::current()) noexcept {
+    if constexpr (requires { typename std::remove_reference_t<T>::kelcoro_task_related_awaiter; }) {
+      using awaited_ctx = typename std::remove_reference_t<T>::kelcoro_task_related_awaiter;
+      // awaited task may have different context, only its hook matters
+      if constexpr (noexport::has_on_start_location<awaited_ctx>)
+        v.raw_handle().promise().ctx.on_start_location(l);
+    }
+    if constexpr (noexport::has_transform<Ctx, T> && !marked_as_special_awaiter<T>)
+      return ctx.transform((T&&)v);
+    else
+      return (T&&)(v);
+  }
 
   auto self_handle() noexcept {
     return std::coroutine_handle<task_promise>::from_promise(*this);
@@ -118,12 +177,21 @@ struct task_promise : return_block<Result> {
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
-  auto get_return_object() noexcept {
+  auto get_return_object() noexcept
+    requires(!noexport::has_on_create_location<Ctx>)
+  {
+    return self_handle();
+  }
+  // Note: invoked implicitly, so `l` is location of coroutine definition, not the call site
+  auto get_return_object(source_location l = source_location::current()) noexcept
+    requires(noexport::has_on_create_location<Ctx>)
+  {
+    ctx.on_create_location(l);
     return self_handle();
   }
   void unhandled_exception() noexcept(noexcept(ctx.on_ignored_exception(self_handle()))) {
     // if no one waits, throw exception to last .resume caller
-    if (who_waits == nullptr) [[unlikely]]
+    if (!who_waits) [[unlikely]]
       ctx.on_ignored_exception(self_handle());
     set_exception(std::current_exception());
   }
@@ -143,6 +211,8 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
 
  private:
   handle_type handle_;
+
+  using loc_t = typename promise_type::loc_t;
 
  public:
   constexpr task() noexcept = default;
@@ -242,11 +312,13 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
   // Its caller responsibility that coroutine should not go on another thread after first .resume
   // pre: !empty()
   // post: empty()
-  [[nodiscard]] start_result start() {
+  [[nodiscard]] start_result start(loc_t l = loc_t::current()) {
     handle_type h = release();
     assert(h);
     // task resumes itself at end and destroys itself or just stops with noop_coroutine
     h.promise().who_waits = std::noop_coroutine();
+    if constexpr (noexport::has_on_start_location<Ctx>)
+      h.promise().ctx.on_start_location(l);
     h.promise().ctx.on_start(h);
     h.resume();
     // at this point h.done() possible, but h cannot be destroyed - task holds value
@@ -258,7 +330,7 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
   // returns released task handle
   // if 'stop_at_end' is false, then task will delete itself at end,
   // otherwise handle.destroy() should be called
-  handle_type start_and_detach(bool stop_at_end = false) {
+  handle_type start_and_detach(bool stop_at_end = false, loc_t l = loc_t::current()) {
     if (!handle_)
       return nullptr;
     handle_type h = detach();
@@ -271,6 +343,8 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
     }
     // task resumes itself at end and destroys itself or just stops with noop_coroutine
     h.promise().who_waits = stop_at_end ? std::noop_coroutine() : std::coroutine_handle<>(nullptr);
+    if constexpr (noexport::has_on_start_location<Ctx>)
+      h.promise().ctx.on_start_location(l);
     h.promise().ctx.on_start(h);
     h.resume();
     return h;
@@ -311,6 +385,12 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
   // remembers handle of coroutine where co_await happen and starts task
   struct starter {
     handle_type task_handle;
+
+    using kelcoro_task_related_awaiter = Ctx;
+    // interface for await_transform in promise
+    handle_type raw_handle() const noexcept {
+      return task_handle;
+    }
 
     explicit starter(handle_type t) noexcept : task_handle(t) {
     }
@@ -374,6 +454,9 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
   };
 
  public:
+  // impl-related
+  using kelcoro_task_related_awaiter = Ctx;
+
   // precondition: !empty()
   // await_resume returns reference (result_type&& or void for void)
   constexpr auto operator co_await() & noexcept {
@@ -402,6 +485,15 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
     assert(!empty());
     return wait_with_proxy_owner_awaiter<OwnerPromise>(handle_, proxy_owner);
   }
+
+  // precondition: task is done, e.g. after co_await .wait()
+  [[nodiscard]] bool has_exception() const noexcept {
+    return raw_handle().promise().has_exception();
+  }
+  // precondition: has_exception()
+  [[nodiscard]] std::exception_ptr take_exception() const noexcept {
+    return raw_handle().promise().take_exception();
+  }
 };
 
 template <typename Ret, memory_resource R, typename Ctx = null_context>
@@ -420,5 +512,65 @@ struct operation_hash<std::coroutine_handle<task_promise<R, Ctx>>> {
     return operation_hash<std::coroutine_handle<>>()(handle.promise().who_waits);
   }
 };
+
+struct trace_context : null_context {
+  trace_context* owner = nullptr;
+  // where task promise was created
+  KELCORO_NO_UNIQUE_ADDRESS source_location created;
+  // where task was awaited/detached
+  KELCORO_NO_UNIQUE_ADDRESS source_location started;
+
+  void on_create_location(source_location l) noexcept {
+    created = l;
+  }
+  void on_start_location(source_location l) noexcept {
+    started = l;
+  }
+  // P1/P2 may be task_promise or derived from it (resourced_promise for task_r / pmr::task)
+  template <typename P1, typename P2>
+  static void on_owner_setted(std::coroutine_handle<P1> owner, std::coroutine_handle<P2> me) noexcept {
+    if constexpr (requires { requires std::is_same_v<decltype(owner.promise().ctx), trace_context>; })
+      me.promise().ctx.owner = &owner.promise().ctx;
+  }
+};
+
+namespace this_coro {
+
+// sets exception for `void` tasks. MUST BE followed by co_return for not breaking .done guarantee on
+// coroutine handle
+struct set_exception {
+  std::exception_ptr&& e;
+
+  bool await_ready() const noexcept {
+    assert(e);
+    return false;
+  }
+  template <typename Ctx>
+  bool await_suspend(std::coroutine_handle<task_promise<void, Ctx>> h) noexcept {
+    assert(h.promise().who_waits);  // unhandled_exception will not be triggered!
+    h.promise().set_exception(std::move(e));
+    return false;
+  }
+  template <typename Ctx, typename R>
+  bool await_suspend(std::coroutine_handle<resourced_promise<task_promise<void, Ctx>, R>> h) noexcept {
+    assert(h.promise().who_waits);  // unhandled_exception will not be triggered!
+    h.promise().set_exception(std::move(e));
+    return false;
+  }
+  static void await_resume() noexcept {
+  }
+
+  KELCORO_SPECIAL_AWAITER;
+};
+
+// only inside dd::task<void>. Accepts expression std::exception_ptr&& (not nullptr!)
+// for non-void tasks see dd::return_exception
+// precondition: coroutine which uses it must be awaited by someone!
+#define KELCORO_RETURN_EXCEPTION(...)                 \
+  co_return co_await ::dd::this_coro::set_exception { \
+    __VA_ARGS__                                       \
+  }
+
+}  // namespace this_coro
 
 }  // namespace dd

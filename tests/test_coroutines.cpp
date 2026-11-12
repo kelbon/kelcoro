@@ -31,7 +31,7 @@
 inline dd::thread_pool TP(8);
 
 // clang had bug which breaks all std::views
-#if !defined(__clang_major__) || __clang_major__ >= 15
+#if !defined(__clang_major__) || __clang_major__ > 15
 
   #define error_if(Cond) error_count += static_cast<bool>((Cond))
   #define TEST(NAME) inline size_t TEST##NAME(size_t error_count = 0)
@@ -986,7 +986,7 @@ TEST(chain_alg) {
   i = dd::chain(chain_strsize("0123456789"), [](int i) { return chain0i(i); }).get();
   error_if(i != 10);
   dd::chain(chain_strsize("0123456789"), [](int i) { return chain0i(i); }, dd::ignore_result, chain0()).get();
-  dd::chain(chain_strsize("str"), [](int) { return dd::avalue{10}; }).get();
+  dd::chain(chain_strsize("str"), [](int) { return dd::avalue<int>{10}; }).get();
   i = dd::chain(chain0i(10), chain_inc, chain_inc, chain_inc, chain_inc).get();
   error_if(i != 14);
   bool invoked = false;
@@ -1005,8 +1005,8 @@ TEST(chain_alg) {
       .get();
   error_if(!invoked);
   bool done = false;
-  error_if(10 != dd::chain(dd::jump_on(TP), dd::ignore_result, dd::avalue{10}).get());
-  error_if(42 != dd::chain(dd::avalue{41}, chain_inc).get());
+  error_if(10 != dd::chain(dd::jump_on(TP), dd::ignore_result, dd::avalue<int>{10}).get());
+  error_if(42 != dd::chain(dd::avalue<int>{41}, chain_inc).get());
   dd::schedule_status e = dd::chain(
                               dd::jump_on(TP), dd::ignore_result, dd::ignore_result,
                               [&] {

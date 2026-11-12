@@ -282,7 +282,7 @@ struct KELCORO_ELIDE_CTX generator : enable_resource_deduction {
   }
 
   void prepare_to_start() noexcept {
-    assert(raw_handle() != nullptr);
+    assert(raw_handle());
     if constexpr (!std::is_same_v<nothing_t, Yield>)
       top.promise()._consumer = this;
   }
@@ -361,7 +361,7 @@ struct KELCORO_ELIDE_CTX generator : enable_resource_deduction {
   // precondition: !raw_handle() != nullptr
   // if generator is not started, its 'before_begin' iterator, which may not be dereferenced
   iterator cur_iterator() noexcept {
-    assert(raw_handle() != nullptr);
+    assert(raw_handle());
     return iterator(*this);
   }
 };

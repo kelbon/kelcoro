@@ -29,7 +29,8 @@ using dd::generator;
     if (flip())                                           \
   (void)co_await dd::jump_on(dd::new_thread_executor)
 
-static bool flip() {
+// noinline - workaround clang < 17 (cache thread locals on coroutine frame)
+[[gnu::noinline]] static bool flip() {
   static thread_local std::mt19937 rng = [] {
     auto seed = std::random_device{}();
     return std::mt19937{seed};
@@ -350,7 +351,7 @@ TEST(nontrivial_references) {
 }
 
 // clang had bug which breaks all std::views
-#if !defined(__clang_major__) || __clang_major__ >= 15
+#if !defined(__clang_major__) || __clang_major__ > 15
 
 TEST(ranges_recursive) {
   int i = 0;
@@ -566,7 +567,7 @@ CHANNEL_TEST(toplevel_throw_channel) {
 CO_TEST(toplevel_throw_channel);
 
 // clang had bug which breaks all std::views
-#if !defined(__clang_major__) || __clang_major__ >= 15
+#if !defined(__clang_major__) || __clang_major__ > 15
 
 CHAN_OR_GEN
 G<int> inp() {
@@ -830,7 +831,7 @@ size_t check_gen() {
   // generate first value
   ++gen.cur_iterator();
   error_if(gen.empty());
-  error_if(gen.raw_handle() == nullptr);
+  error_if(!gen.raw_handle());
   error_if(!gen);
   for (int i = 0; i < 3; ++i)
     ++gen.cur_iterator();
@@ -936,7 +937,7 @@ int main() {
   RUN(nontrivial_references);
   RUN(empty_recursive2);
   // clang had bug which breaks all std::views
-#if !defined(__clang_major__) || __clang_major__ >= 15
+#if !defined(__clang_major__) || __clang_major__ > 15
   RUN(ranges_recursive);
   RUN(ranges_base2);
 #endif  // clang bug
@@ -957,7 +958,7 @@ int main() {
 #endif
   RUN(toplevel_throw_channel);
   // clang had bug which breaks all std::views
-#if !defined(__clang_major__) || __clang_major__ >= 15
+#if !defined(__clang_major__) || __clang_major__ > 15
   RUN(input_rng);
   RUN(input_rng_channel);
 #endif  // clang bug

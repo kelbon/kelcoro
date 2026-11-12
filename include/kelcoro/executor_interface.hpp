@@ -33,7 +33,7 @@ struct task_node {
   }
 
   bool is_deadpill() const noexcept {
-    return task == nullptr;
+    return !task;
   }
 };
 

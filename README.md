@@ -1006,7 +1006,7 @@ Prefered way with [CPM](https://github.com/cpm-cmake/CPM.cmake):
 CPMAddPackage(
   NAME KELCORO
   GIT_REPOSITORY https://github.com/kelbon/kelcoro
-  GIT_TAG v1.4.1
+  GIT_TAG v1.7.0
 )
 target_link_libraries(MyTargetName kelcorolib)
 ```
@@ -1020,7 +1020,7 @@ include(FetchContent)
 FetchContent_Declare(
   kelcoro
   GIT_REPOSITORY https://github.com/kelbon/kelcoro
-  GIT_TAG        v1.4.1
+  GIT_TAG        v1.7.0
 )
 FetchContent_MakeAvailable(kelcoro)
 target_link_libraries(MyTargetName kelcorolib)
