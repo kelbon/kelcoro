@@ -115,14 +115,24 @@ struct task_promise : return_block<Result> {
     return this_coro::get_return_place_t::awaiter<decltype(std::addressof(this->return_place()))>{};
   }
 
+  // no default argument at all for contexts without hooks:
+  // gcc keeps temporaries of co_await full-expression in coroutine frame even if unused
   template <typename T>
-  static T&& await_transform(T&& v, loc_t l = source_location::current()) noexcept {
+    requires(!noexport::has_on_start_location<Ctx>)
+  static T&& await_transform(T&& v) noexcept {
+    return (T&&)(v);
+  }
+
+  template <typename T>
+    requires(noexport::has_on_start_location<Ctx>)
+  static T&& await_transform(T&& v, source_location l = source_location::current()) noexcept {
     if constexpr (requires { typename std::remove_reference_t<T>::kelcoro_task_related_awaiter; }) {
-      if constexpr (noexport::has_on_start_location<Ctx>)
-        if constexpr (std::is_same_v<typename std::remove_reference_t<T>::kelcoro_task_related_awaiter, Ctx>)
-          v.raw_handle().promise().ctx.on_start_location(l);
+      using awaited_ctx = typename std::remove_reference_t<T>::kelcoro_task_related_awaiter;
+      // awaited task may have different context, only its hook matters
+      if constexpr (noexport::has_on_start_location<awaited_ctx>)
+        v.raw_handle().promise().ctx.on_start_location(l);
     }
-    return std::forward<T>(v);
+    return (T&&)(v);
   }
 
   auto self_handle() noexcept {
@@ -151,9 +161,16 @@ struct task_promise : return_block<Result> {
   static constexpr std::suspend_always initial_suspend() noexcept {
     return {};
   }
-  auto get_return_object(loc_t l = source_location::current()) noexcept {
-    if constexpr (noexport::has_on_create_location<Ctx>)
-      ctx.on_create_location(l);
+  auto get_return_object() noexcept
+    requires(!noexport::has_on_create_location<Ctx>)
+  {
+    return self_handle();
+  }
+  // Note: invoked implicitly, so `l` is location of coroutine definition, not the call site
+  auto get_return_object(source_location l = source_location::current()) noexcept
+    requires(noexport::has_on_create_location<Ctx>)
+  {
+    ctx.on_create_location(l);
     return self_handle();
   }
   void unhandled_exception() noexcept(noexcept(ctx.on_ignored_exception(self_handle()))) {
@@ -279,7 +296,7 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
   // Its caller responsibility that coroutine should not go on another thread after first .resume
   // pre: !empty()
   // post: empty()
-  [[nodiscard]] start_result start(loc_t l = source_location::current()) {
+  [[nodiscard]] start_result start(loc_t l = loc_t::current()) {
     handle_type h = release();
     assert(h);
     // task resumes itself at end and destroys itself or just stops with noop_coroutine
@@ -297,7 +314,7 @@ struct KELCORO_ELIDE_CTX [[nodiscard]] task : enable_resource_deduction {
   // returns released task handle
   // if 'stop_at_end' is false, then task will delete itself at end,
   // otherwise handle.destroy() should be called
-  handle_type start_and_detach(bool stop_at_end = false, loc_t l = source_location::current()) {
+  handle_type start_and_detach(bool stop_at_end = false, loc_t l = loc_t::current()) {
     if (!handle_)
       return nullptr;
     handle_type h = detach();
@@ -471,13 +488,12 @@ struct operation_hash<std::coroutine_handle<task_promise<R, Ctx>>> {
   }
 };
 
-// tasks with `trace_context` must be used in single thread
 struct trace_context : null_context {
   trace_context* owner = nullptr;
   // where task promise was created
-  source_location created;
+  KELCORO_NO_UNIQUE_ADDRESS source_location created;
   // where task was awaited/detached
-  source_location started;
+  KELCORO_NO_UNIQUE_ADDRESS source_location started;
 
   void on_create_location(source_location l) noexcept {
     created = l;
@@ -485,13 +501,11 @@ struct trace_context : null_context {
   void on_start_location(source_location l) noexcept {
     started = l;
   }
-  template <typename T, typename U>
-  static void on_owner_setted(std::coroutine_handle<task_promise<T, trace_context>> owner,
-                              std::coroutine_handle<task_promise<U, trace_context>> me) noexcept {
-    me.promise().ctx.owner = &owner.promise().ctx;
-  }
+  // P1/P2 may be task_promise or derived from it (resourced_promise for task_r / pmr::task)
   template <typename P1, typename P2>
-  static void on_owner_setted(std::coroutine_handle<P1>, std::coroutine_handle<P2>) noexcept {
+  static void on_owner_setted(std::coroutine_handle<P1> owner, std::coroutine_handle<P2> me) noexcept {
+    if constexpr (requires { requires std::is_same_v<decltype(owner.promise().ctx), trace_context>; })
+      me.promise().ctx.owner = &owner.promise().ctx;
   }
 };
 

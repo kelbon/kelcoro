@@ -6,7 +6,20 @@
 #include <coroutine>
 #include <cassert>
 #include <exception>
-#if __cpp_lib_source_location >= 201907L
+#if __has_include(<version>)
+  #include <version>
+#endif
+// 1 if std::source_location is available and works for this library. Disabled where it is broken:
+//  * gcc 13: `current()` as default argument of implicitly invoked get_return_object
+//    does not compile without inlining (-O0, -fno-inline): "taking address of an immediate function"
+//  * clang < 16: `current()` as default argument returns location of declaration, not of the call
+#if __cpp_lib_source_location >= 201907L && !(defined(__clang__) && __clang_major__ < 16) && \
+    !(defined(__GNUC__) && !defined(__clang__) && __GNUC__ == 13)
+  #define KELCORO_SOURCE_LOCATION_SUPPORTED 1
+#else
+  #define KELCORO_SOURCE_LOCATION_SUPPORTED 0
+#endif
+#if KELCORO_SOURCE_LOCATION_SUPPORTED
   #include <source_location>
 #endif
 #include "noexport/macro.hpp"
@@ -14,15 +27,27 @@
 
 namespace dd::noexport {
 
+// same interface as std::source_location
 struct nolocation {
-  nolocation() {
-  }
-#if __cpp_lib_source_location >= 201907L
-  nolocation(std::source_location) {
+  constexpr nolocation() = default;
+#if KELCORO_SOURCE_LOCATION_SUPPORTED
+  constexpr nolocation(std::source_location) noexcept {
   }
 #endif
-  static nolocation current() noexcept {
+  static constexpr nolocation current() noexcept {
     return {};
+  }
+  constexpr uint_least32_t line() const noexcept {
+    return 0;
+  }
+  constexpr uint_least32_t column() const noexcept {
+    return 0;
+  }
+  constexpr const char* file_name() const noexcept {
+    return "";
+  }
+  constexpr const char* function_name() const noexcept {
+    return "";
   }
 };
 
@@ -56,7 +81,7 @@ struct retblock_storage {
 namespace dd {
 
 using source_location =
-#if __cpp_lib_source_location >= 201907L
+#if KELCORO_SOURCE_LOCATION_SUPPORTED
     std::source_location;
 #else
     noexport::nolocation;
