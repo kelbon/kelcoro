@@ -44,6 +44,9 @@ constexpr inline bool has_on_create_location =
 template <typename Ctx>
 constexpr inline bool has_on_start_location = requires(Ctx& c, source_location l) { c.on_start_location(l); };
 
+template <typename Ctx, typename T>
+constexpr inline bool has_transform = requires(Ctx& c, T&& v) { c.transform((T&&)(v)); };
+
 }  // namespace noexport
 
 // default task Ctx, also example of what context may do
@@ -57,6 +60,11 @@ struct null_context {
   // invoked only when task is co_awaited
   // void on_start_location(source_location l) noexcept {
   // }
+
+  // optional
+  // if possible, result of ctx.transform(std::forward<X>(x)) retunred from Promise::await_transform
+  // instead of std::forward<X>(x) for all co_await's in task body (except marked_as_special_awaiter)
+  // decltype(auto) transform(auto&& x) noexcept;
 
   // invoked when task is scheduled to execute, 'owner' is handle of coroutine, which awaits task
   // never invoked with nullptrs
@@ -121,20 +129,26 @@ struct task_promise : return_block<Result> {
   // gcc keeps temporaries of co_await full-expression in coroutine frame even if unused
   template <typename T>
     requires(!noexport::has_on_start_location<Ctx>)
-  static T&& await_transform(T&& v) noexcept {
-    return (T&&)(v);
+  decltype(auto) await_transform(T&& v) noexcept {
+    if constexpr (noexport::has_transform<Ctx, T> && !marked_as_special_awaiter<T>)
+      return ctx.transform((T&&)v);
+    else
+      return (T&&)(v);
   }
 
   template <typename T>
     requires(noexport::has_on_start_location<Ctx>)
-  static T&& await_transform(T&& v, source_location l = source_location::current()) noexcept {
+  decltype(auto) await_transform(T&& v, source_location l = source_location::current()) noexcept {
     if constexpr (requires { typename std::remove_reference_t<T>::kelcoro_task_related_awaiter; }) {
       using awaited_ctx = typename std::remove_reference_t<T>::kelcoro_task_related_awaiter;
       // awaited task may have different context, only its hook matters
       if constexpr (noexport::has_on_start_location<awaited_ctx>)
         v.raw_handle().promise().ctx.on_start_location(l);
     }
-    return (T&&)(v);
+    if constexpr (noexport::has_transform<Ctx, T> && !marked_as_special_awaiter<T>)
+      return ctx.transform((T&&)v);
+    else
+      return (T&&)(v);
   }
 
   auto self_handle() noexcept {
@@ -532,21 +546,30 @@ struct set_exception {
     return false;
   }
   template <typename Ctx>
-  bool await_suspend(dd::task<void, Ctx>::handle_type h) noexcept {
+  bool await_suspend(std::coroutine_handle<task_promise<void, Ctx>> h) noexcept {
+    assert(h.promise().who_waits);  // unhandled_exception will not be triggered!
     h.promise().set_exception(std::move(e));
     return false;
   }
   template <typename Ctx, typename R>
-  bool await_suspend(dd::resourced<task<void, Ctx>, R>::handle_type h) noexcept {
+  bool await_suspend(std::coroutine_handle<resourced_promise<task_promise<void, Ctx>, R>> h) noexcept {
+    assert(h.promise().who_waits);  // unhandled_exception will not be triggered!
     h.promise().set_exception(std::move(e));
     return false;
   }
   static void await_resume() noexcept {
   }
+
+  KELCORO_SPECIAL_AWAITER;
 };
-// only inside dd::task<void>. `e` must be expression std::exception_ptr&&
+
+// only inside dd::task<void>. Accepts expression std::exception_ptr&& (not nullptr!)
 // for non-void tasks see dd::return_exception
-#define KELCORO_RETURN_EXCEPTION(e) co_return co_await ::dd::this_coro::set_exception_awaiter(e)
+// precondition: coroutine which uses it must be awaited by someone!
+#define KELCORO_RETURN_EXCEPTION(...)                 \
+  co_return co_await ::dd::this_coro::set_exception { \
+    __VA_ARGS__                                       \
+  }
 
 }  // namespace this_coro
 

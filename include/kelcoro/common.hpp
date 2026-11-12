@@ -127,6 +127,13 @@ struct rvo_tag_t {
 //
 constexpr inline const rvo_tag_t rvo = rvo_tag_t{rvo_tag_t::do_not_break_construction{}};
 
+// marks awaiter to not be transformed by any dd::task context .transform
+#define KELCORO_SPECIAL_AWAITER using kelcoro_special_awaiter = int
+
+template <typename T>
+constexpr inline bool marked_as_special_awaiter =
+    requires { typename std::remove_cvref_t<T>::kelcoro_special_awaiter; };
+
 // tag for returning exception.
 // co_return dd::return_exception(my_ex); is EQUAL to throw, but more effective
 // should be used when task have exception ptr already to "rethrow" it more effectively
@@ -134,6 +141,8 @@ constexpr inline const rvo_tag_t rvo = rvo_tag_t{rvo_tag_t::do_not_break_constru
 // returning void (there are no available way to overload return_void with tag)
 // Note: DO NOT create awaiters for such things, because co_await my_return_exception(ex) will create
 // additional state for task - done, but .done() on handle is not true this may lead to memory leak
+//
+// NOTE: task using it should be awaited by someone. If not, unhandled_exception will not be triggered
 struct return_exception {
   std::exception_ptr exception;
 
@@ -310,6 +319,7 @@ struct [[nodiscard("co_await it!")]] transfer_control_to {
   }
   static constexpr void await_resume() noexcept {
   }
+  KELCORO_SPECIAL_AWAITER;
 };
 
 template <std::invocable<> F>
@@ -334,6 +344,7 @@ struct KELCORO_CO_AWAIT_REQUIRED destroy_coro_t {
   static void await_resume() noexcept {
     KELCORO_UNREACHABLE;
   }
+  KELCORO_SPECIAL_AWAITER;
 };
 
 template <typename F>
@@ -349,6 +360,8 @@ struct KELCORO_CO_AWAIT_REQUIRED suspend_and_t {
   }
   constexpr static void await_resume() noexcept {
   }
+
+  KELCORO_SPECIAL_AWAITER;
 };
 
 template <typename F>
@@ -373,6 +386,7 @@ struct KELCORO_CO_AWAIT_REQUIRED get_handle_t {
     [[nodiscard]] std::coroutine_handle<PromiseType> await_resume() const noexcept {
       return handle_;
     }
+    KELCORO_SPECIAL_AWAITER;
   };
 
   awaiter<void> operator co_await() const noexcept {
@@ -398,6 +412,8 @@ struct get_context_t {
     [[nodiscard]] Ctx& await_resume() const noexcept {
       return *ctx;
     }
+
+    KELCORO_SPECIAL_AWAITER;
   };
 };
 
@@ -443,6 +459,8 @@ struct [[nodiscard("co_await it!")]] destroy_and_transfer_control_to {
   [[noreturn]] static void await_resume() noexcept {
     KELCORO_UNREACHABLE;
   }
+
+  KELCORO_SPECIAL_AWAITER;
 };
 
 }  // namespace this_coro
