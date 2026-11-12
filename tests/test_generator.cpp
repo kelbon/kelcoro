@@ -29,7 +29,8 @@ using dd::generator;
     if (flip())                                           \
   (void)co_await dd::jump_on(dd::new_thread_executor)
 
-static bool flip() {
+// noinline - workaround clang < 17 (cache thread locals on coroutine frame)
+[[gnu::noinline]] static bool flip() {
   static thread_local std::mt19937 rng = [] {
     auto seed = std::random_device{}();
     return std::mt19937{seed};
@@ -830,7 +831,7 @@ size_t check_gen() {
   // generate first value
   ++gen.cur_iterator();
   error_if(gen.empty());
-  error_if(gen.raw_handle() == nullptr);
+  error_if(!gen.raw_handle());
   error_if(!gen);
   for (int i = 0; i < 3; ++i)
     ++gen.cur_iterator();

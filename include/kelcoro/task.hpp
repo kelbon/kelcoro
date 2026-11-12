@@ -191,7 +191,7 @@ struct task_promise : return_block<Result> {
   }
   void unhandled_exception() noexcept(noexcept(ctx.on_ignored_exception(self_handle()))) {
     // if no one waits, throw exception to last .resume caller
-    if (who_waits == nullptr) [[unlikely]]
+    if (!who_waits) [[unlikely]]
       ctx.on_ignored_exception(self_handle());
     set_exception(std::current_exception());
   }

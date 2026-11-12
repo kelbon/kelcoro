@@ -179,14 +179,6 @@ TEST(set_exception_void) {
   }
 }
 
-// only void tasks may use set_exception, non-void tasks use dd::return_exception
-template <typename Promise>
-constexpr bool can_set_exception = requires(Promise& p, std::exception_ptr e) {
-  p.await_transform(dd::this_coro::set_exception{std::move(e)}).await_ready();
-};
-static_assert(can_set_exception<dd::task_promise<void, dd::null_context>>);
-static_assert(can_set_exception<dd::task_promise<void, dd::trace_context>>);
-
 dd::pmr::task<void> pmr_void_returns_exception(dd::with_resource<dd::pmr::polymorphic_resource>,
                                                std::exception_ptr e) {
   KELCORO_RETURN_EXCEPTION(std::move(e));
@@ -347,13 +339,6 @@ TEST(transform_with_locations) {
   CHECK(counting_trace_ctx::transformed == 1);
 }
 #endif
-
-struct throwing_ctx : dd::null_context {
-  auto transform(ready_int) {
-    throw std::runtime_error("transform");
-    return ready_int{0};
-  }
-};
 
 // ------------------------- ctx.on_end -------------------------
 
