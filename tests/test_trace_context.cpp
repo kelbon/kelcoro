@@ -322,6 +322,36 @@ TEST(other_contexts) {
   }
 }
 
+// on_await_location: on own context for each co_await in body (special awaiters too), except this_coro
+struct only_await : dd::null_context {
+  std::vector<dd::source_location> awaits;
+  void on_await_location(dd::source_location l) noexcept {
+    awaits.push_back(l);
+  }
+};
+static_assert(dd::noexport::has_on_await_location<only_await>);
+static_assert(!dd::noexport::has_on_await_location<dd::trace_context>);
+
+TEST(await_location) {
+  auto body = []() -> dd::task<void, only_await> {
+    only_await& self = co_await dd::this_coro::context;
+    (void)co_await dd::this_coro::handle;
+    CHECK(self.awaits.empty());
+    const int task_line = NEXT_LINE;
+    (void)co_await leaf(1);
+    const int awaiter_line = NEXT_LINE;
+    co_await std::suspend_never{};
+    const int special_line = NEXT_LINE;
+    co_await dd::this_coro::suspend_and([](auto) { return false; });
+    CHECK(self.awaits.size() == 3);
+    CHECK_LOC(self.awaits[0], task_line, task_line, nullptr);
+    CHECK_LOC(self.awaits[1], awaiter_line, awaiter_line, nullptr);
+    CHECK_LOC(self.awaits[2], special_line, special_line, nullptr);
+  };
+  body().get();
+  co_return;
+}
+
 dd::pmr::task<int, dd::trace_context> pmr_leaf(dd::with_resource<dd::pmr::polymorphic_resource>) {
   co_return 1;
 }
@@ -385,6 +415,7 @@ int main() {
   RUN(when_all_dynamic);
   RUN(when_any);
   RUN(other_contexts);
+  RUN(await_location);
   RUN(pmr_task);
   RUN(multithreaded);
 }

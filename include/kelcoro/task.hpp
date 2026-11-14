@@ -43,6 +43,11 @@ constexpr inline bool has_on_create_location =
     requires(Ctx& c, source_location l) { c.on_create_location(l); };
 template <typename Ctx>
 constexpr inline bool has_on_start_location = requires(Ctx& c, source_location l) { c.on_start_location(l); };
+template <typename Ctx>
+constexpr inline bool has_on_await_location = requires(Ctx& c, source_location l) { c.on_await_location(l); };
+// await_transform receives location of co_await
+template <typename Ctx>
+constexpr inline bool needs_await_location = has_on_start_location<Ctx> || has_on_await_location<Ctx>;
 
 template <typename Ctx, typename T>
 constexpr inline bool has_transform = requires(Ctx& c, T&& v) { c.transform((T&&)(v)); };
@@ -59,6 +64,12 @@ struct null_context {
   // optional
   // invoked only when task is co_awaited
   // void on_start_location(source_location l) noexcept {
+  // }
+
+  // optional
+  // invoked on context of the task itself for each co_await in its body, before the awaiter is used.
+  // Unlike .transform, special awaiters are reported too, except this_coro::context / handle / return_place
+  // void on_await_location(source_location l) noexcept {
   // }
 
   // optional
@@ -128,7 +139,7 @@ struct task_promise : return_block<Result> {
   // no default argument at all for contexts without hooks:
   // gcc keeps temporaries of co_await full-expression in coroutine frame even if unused
   template <typename T>
-    requires(!noexport::has_on_start_location<Ctx>)
+    requires(!noexport::needs_await_location<Ctx>)
   decltype(auto) await_transform(T&& v) noexcept {
     if constexpr (noexport::has_transform<Ctx, T> && !marked_as_special_awaiter<T>)
       return ctx.transform((T&&)v);
@@ -137,8 +148,10 @@ struct task_promise : return_block<Result> {
   }
 
   template <typename T>
-    requires(noexport::has_on_start_location<Ctx>)
+    requires(noexport::needs_await_location<Ctx>)
   decltype(auto) await_transform(T&& v, source_location l = source_location::current()) noexcept {
+    if constexpr (noexport::has_on_await_location<Ctx>)
+      ctx.on_await_location(l);
     if constexpr (requires { typename std::remove_reference_t<T>::kelcoro_task_related_awaiter; }) {
       using awaited_ctx = typename std::remove_reference_t<T>::kelcoro_task_related_awaiter;
       // awaited task may have different context, only its hook matters

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.05)
+cmake_minimum_required(VERSION 3.24)
 
 set(KELCORO_PARTS coroutines generator thread_pool stack_resource gate stealing_thread_pool trace_context task_context)
 foreach(PART ${KELCORO_PARTS})
